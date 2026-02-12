@@ -307,7 +307,7 @@ export default function BybitPage() {
             <Table bordered size="sm" responsive className="m-0">
               <thead>
                 <tr>
-                  <th>Leader</th><th>Follower</th><th>Corr (Корреляция)</th><th>Lag (Δt)</th><th>Подтверждение</th>
+                  <th>Leader</th><th>Follower</th><th>Corr (Корреляция)</th><th>Lag (Δt)</th><th>Подтверждение</th><th>TradeReady</th><th>Blockers</th>
                 </tr>
               </thead>
               <tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
@@ -318,9 +318,11 @@ export default function BybitPage() {
                     <td>{Number.isFinite(r.corr) ? r.corr.toFixed(3) : "—"}</td>
                     <td>{Number.isFinite(r.lagMs) ? `${r.lagMs}ms` : "—"}</td>
                     <td>{r.confirmed ? "✅" : "—"} <span className="text-muted">({r.samples ?? 0}/{r.impulses ?? 0})</span></td>
+                    <td>{r.tradeReady ? <Badge bg="success">ready</Badge> : <Badge bg="secondary">wait</Badge>}</td>
+                    <td className="small">{Array.isArray(r.blockers) ? r.blockers.map((b) => b.key).slice(0, 3).join("; ") : "—"}</td>
                   </tr>
                 )) : (
-                  <tr><td colSpan={5} className="text-muted">Нет расчётов ещё (нужно накопить ~50s микробаров).</td></tr>
+                  <tr><td colSpan={7} className="text-muted">Нет расчётов ещё (нужно накопить ~50s микробаров).</td></tr>
                 )}
               </tbody>
             </Table>

@@ -4,6 +4,18 @@ import crypto from "node:crypto";
 
 const DEFAULT_PATH = path.resolve(process.cwd(), "backend/data/presets.json");
 
+const PARAM_KEYS = [
+  "impulseZ",
+  "minSamples",
+  "minImpulses",
+  "minCorr",
+  "entryWindowMs",
+  "cooldownSec",
+  "edgeMult",
+  "confirmZ",
+  "riskQtyMultiplier",
+];
+
 function now() {
   return Date.now();
 }
@@ -13,26 +25,42 @@ function clampNum(v, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function defaultBounds() {
+  return {
+    impulseZ: { min: 1, max: 5 },
+    minSamples: { min: 30, max: 2000 },
+    minImpulses: { min: 1, max: 200 },
+    minCorr: { min: 0.02, max: 0.95 },
+    entryWindowMs: { min: 250, max: 15000 },
+    cooldownSec: { min: 0, max: 600 },
+    edgeMult: { min: 0.5, max: 5 },
+    confirmZ: { min: 0.2, max: 5 },
+    riskQtyMultiplier: { min: 0.1, max: 5 },
+  };
+}
+
+function defaultParams() {
+  return {
+    impulseZ: 2,
+    minSamples: 200,
+    minImpulses: 5,
+    minCorr: 0.12,
+    entryWindowMs: 3000,
+    cooldownSec: 15,
+    edgeMult: 1,
+    confirmZ: 1,
+    riskQtyMultiplier: 1,
+  };
+}
+
 function defaultPreset(name = "Default preset") {
   return {
     id: crypto.randomUUID(),
     name,
     shortlistMax: 10,
     excludedCoins: [],
-    impulseZ: 2,
-    confirmZ: 1,
-    minCorr: 0.12,
-    edgeMult: 1,
-    riskImpulseMargin: 0.001,
-    riskQtyMultiplier: 1,
-    cooldownSec: 15,
-    bounds: {
-      impulseZ: { min: 1, max: 4 },
-      minCorr: { min: 0.02, max: 0.9 },
-      edgeMult: { min: 0.5, max: 3 },
-      confirmZ: { min: 0.5, max: 3 },
-      riskQtyMultiplier: { min: 0.2, max: 3 },
-    },
+    params: defaultParams(),
+    bounds: defaultBounds(),
     stats: { pnlUsdt: 0, roiPct: 0, trades: 0, winRate: 0 },
     updatedAt: now(),
     isSessionClone: false,
@@ -53,41 +81,54 @@ function sanitizeExcluded(rows) {
     .filter((r) => Boolean(r.symbol));
 }
 
+function normalizeParams(input, fallbackParams) {
+  const params = {};
+  for (const key of PARAM_KEYS) {
+    const fromFlat = input?.[key];
+    const fromNested = input?.params?.[key];
+    params[key] = clampNum(fromNested ?? fromFlat, fallbackParams[key]);
+  }
+  params.minSamples = Math.max(2, Math.trunc(params.minSamples));
+  params.minImpulses = Math.max(1, Math.trunc(params.minImpulses));
+  params.entryWindowMs = Math.max(250, Math.trunc(params.entryWindowMs));
+  params.cooldownSec = Math.max(0, Math.trunc(params.cooldownSec));
+  return params;
+}
+
+function normalizeBounds(input, fallbackBounds) {
+  const out = {};
+  for (const key of PARAM_KEYS) {
+    const b = input?.bounds?.[key] || fallbackBounds[key] || { min: -Infinity, max: Infinity };
+    let min = clampNum(b?.min, fallbackBounds[key]?.min);
+    let max = clampNum(b?.max, fallbackBounds[key]?.max);
+    if (max < min) [min, max] = [max, min];
+    out[key] = { min, max };
+  }
+  return out;
+}
+
+function applyBounds(params, bounds) {
+  const next = { ...params };
+  for (const key of PARAM_KEYS) {
+    const min = clampNum(bounds?.[key]?.min, -Infinity);
+    const max = clampNum(bounds?.[key]?.max, Infinity);
+    next[key] = Math.max(min, Math.min(max, next[key]));
+  }
+  next.minSamples = Math.max(2, Math.trunc(next.minSamples));
+  next.minImpulses = Math.max(1, Math.trunc(next.minImpulses));
+  next.entryWindowMs = Math.max(250, Math.trunc(next.entryWindowMs));
+  next.cooldownSec = Math.max(0, Math.trunc(next.cooldownSec));
+  return next;
+}
+
 function sanitizePreset(input, fallback = defaultPreset()) {
   const safe = { ...fallback, ...(input && typeof input === "object" ? input : {}) };
   safe.id = String(safe.id || crypto.randomUUID());
   safe.name = String(safe.name || "Preset").trim() || "Preset";
-  safe.shortlistMax = Math.min(10, Math.max(1, Math.trunc(clampNum(safe.shortlistMax, 10))));
+  safe.shortlistMax = Math.min(300, Math.max(1, Math.trunc(clampNum(safe.shortlistMax, 10))));
   safe.excludedCoins = sanitizeExcluded(safe.excludedCoins);
-  safe.impulseZ = clampNum(safe.impulseZ, fallback.impulseZ);
-  safe.confirmZ = clampNum(safe.confirmZ, fallback.confirmZ);
-  safe.minCorr = clampNum(safe.minCorr, fallback.minCorr);
-  safe.edgeMult = clampNum(safe.edgeMult, fallback.edgeMult);
-  safe.riskImpulseMargin = clampNum(safe.riskImpulseMargin, fallback.riskImpulseMargin);
-  safe.riskQtyMultiplier = clampNum(safe.riskQtyMultiplier, fallback.riskQtyMultiplier);
-  safe.cooldownSec = Math.max(0, Math.trunc(clampNum(safe.cooldownSec, fallback.cooldownSec)));
-  safe.bounds = {
-    impulseZ: {
-      min: clampNum(safe?.bounds?.impulseZ?.min, fallback.bounds.impulseZ.min),
-      max: clampNum(safe?.bounds?.impulseZ?.max, fallback.bounds.impulseZ.max),
-    },
-    minCorr: {
-      min: clampNum(safe?.bounds?.minCorr?.min, fallback.bounds.minCorr.min),
-      max: clampNum(safe?.bounds?.minCorr?.max, fallback.bounds.minCorr.max),
-    },
-    edgeMult: {
-      min: clampNum(safe?.bounds?.edgeMult?.min, fallback.bounds.edgeMult.min),
-      max: clampNum(safe?.bounds?.edgeMult?.max, fallback.bounds.edgeMult.max),
-    },
-    confirmZ: {
-      min: clampNum(safe?.bounds?.confirmZ?.min, fallback.bounds.confirmZ.min),
-      max: clampNum(safe?.bounds?.confirmZ?.max, fallback.bounds.confirmZ.max),
-    },
-    riskQtyMultiplier: {
-      min: clampNum(safe?.bounds?.riskQtyMultiplier?.min, fallback.bounds.riskQtyMultiplier.min),
-      max: clampNum(safe?.bounds?.riskQtyMultiplier?.max, fallback.bounds.riskQtyMultiplier.max),
-    },
-  };
+  safe.bounds = normalizeBounds(safe, fallback.bounds);
+  safe.params = applyBounds(normalizeParams(safe, fallback.params), safe.bounds);
   safe.stats = {
     pnlUsdt: clampNum(safe?.stats?.pnlUsdt, 0),
     roiPct: clampNum(safe?.stats?.roiPct, 0),
@@ -140,7 +181,7 @@ export function createPresetsStore({ filePath = DEFAULT_PATH, logger = console }
   function getState() {
     return {
       activePresetId: state.activePresetId,
-      presets: state.presets.map((p) => ({ ...p, excludedCoins: p.excludedCoins.map((x) => ({ ...x })) })),
+      presets: state.presets.map((p) => ({ ...p, params: { ...p.params }, bounds: JSON.parse(JSON.stringify(p.bounds)), excludedCoins: p.excludedCoins.map((x) => ({ ...x })) })),
     };
   }
 

@@ -53,7 +53,11 @@ export function createLeadLag({
 } = {}) {
   const maxLagBars = Math.max(1, Math.floor(maxLagMs / bucketMs));
 
-  function computeTop({ leaders = [], symbols, getBars, topN = 10, windowBars = 400 } = {}) {
+  function computeTop({ leaders = [], symbols, getBars, topN = 10, windowBars = 400, params = {} } = {}) {
+    const localMinSamples = Number.isFinite(Number(params.minSamples)) ? Math.max(2, Math.trunc(Number(params.minSamples))) : minSamples;
+    const localMinImpulses = Number.isFinite(Number(params.minImpulses)) ? Math.max(1, Math.trunc(Number(params.minImpulses))) : minImpulses;
+    const localImpulseZ = Number.isFinite(Number(params.impulseZ)) ? Number(params.impulseZ) : impulseZ;
+    const localMinCorr = Number.isFinite(Number(params.minCorr)) ? Math.max(0, Math.abs(Number(params.minCorr))) : 0;
     const syms = (Array.isArray(symbols) ? symbols : [])
       .map((s) => String(s).trim().toUpperCase())
       .filter(Boolean);
@@ -84,7 +88,7 @@ export function createLeadLag({
         if (!leaderData || !followerData) continue;
 
         const leaderStd = leaderData.std;
-        const impulseThr = leaderStd > 0 ? impulseZ * leaderStd : Infinity;
+        const impulseThr = leaderStd > 0 ? localImpulseZ * leaderStd : Infinity;
         let best = null;
 
         for (let lagBars = -maxLagBars; lagBars <= maxLagBars; lagBars++) {
@@ -116,7 +120,7 @@ export function createLeadLag({
           if (n < 2) continue;
           const corr = pearsonFromSums(n, sumX, sumY, sumX2, sumY2, sumXY);
           const absCorr = Math.abs(corr);
-          const confirmed = n >= minSamples && impulses >= minImpulses;
+          const confirmed = n >= localMinSamples && impulses >= localMinImpulses && absCorr >= localMinCorr;
 
           if (!best || (confirmed ? 1 : 0) > (best.confirmed ? 1 : 0) || absCorr > best.absCorr) {
             best = { leader, follower, corr, absCorr, lagMs, samples: n, impulses, confirmed };

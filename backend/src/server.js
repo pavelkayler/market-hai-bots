@@ -9,6 +9,7 @@ import { createBybitPublicWs } from "./bybitPublicWs.js";
 import { createBinanceSpotWs } from "./binanceSpotWs.js";
 import { createMicroBarAggregator } from "./microBars.js";
 import { createLeadLag } from "./leadLag.js";
+import { evaluateTradeReady } from "./leadLagReadiness.js";
 import { createPaperTest } from "./paperTest.js";
 import { createCmcBybitUniverse } from "./cmcBybitUniverse.js";
 import { createBybitKlinesCache } from "./bybitKlinesCache.js";
@@ -175,8 +176,6 @@ const presetsStore = createPresetsStore({ logger: app.log });
 
 const paperTest = createPaperTest({
   getLeadLagTop: () => lastLeadLagTop,
-  getTicker: (sym) => marketData.getTicker(sym, "BT") || null,
-  getBars: (sym, n, source) => marketBars.getBars(sym, n, toTickerSourceCode(source) || "BT"),
   getUniverseSymbols: () => universe.getUniverse({ limit: 500 }).symbols,
   presetsStore,
   logger: app.log,
@@ -236,16 +235,40 @@ function getSnapshotPayload() {
 function computeLeadLagTop() {
   const symbols = bybit.getSymbols();
   const leaders = ["BTCUSDT", "ETHUSDT", "SOLUSDT"].filter((sym) => symbols.includes(sym));
-  const followers = symbols.filter((sym) => marketBars.getBars(sym, 200, "BNB").length >= 200);
+  const followers = symbols.filter((sym) => marketBars.getBars(sym, 200, "BNB").length >= 30);
   const eligible = [...new Set([...leaders, ...followers])];
+  const activePreset = presetsStore.getActivePreset();
+  const params = activePreset?.params || {};
+  const excludedCoins = Array.isArray(activePreset?.excludedCoins) ? activePreset.excludedCoins : [];
+
   const top = leadLag.computeTop({
     leaders,
     symbols: eligible,
     getBars: (sym, n) => marketBars.getBars(sym, n, "BNB"),
     topN: 10,
     windowBars: 480,
+    params,
   });
-  lastLeadLagTop = top.map((r) => ({ ...r, leaderSrc: "binance", followerSrc: "binance", source: "BNB" }));
+
+  lastLeadLagTop = top.map((r) => {
+    const readiness = evaluateTradeReady({
+      row: r,
+      preset: activePreset,
+      excludedCoins,
+      lastTradeAt: paperTest.getState({ includeHistory: false })?.startedAt || 0,
+      getBars: (sym, n, source) => marketBars.getBars(sym, n, source),
+      bucketMs: 250,
+    });
+    return {
+      ...r,
+      leaderSrc: "binance",
+      followerSrc: "binance",
+      source: "BNB",
+      tradeReady: readiness.tradeReady,
+      blockers: readiness.blockers,
+    };
+  });
+
   broadcast({ type: "leadlag.top", payload: lastLeadLagTop });
   broadcastEvent("leadlag.top", { ts: Date.now(), source: "BNB", rows: lastLeadLagTop });
 }
