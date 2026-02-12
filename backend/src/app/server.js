@@ -244,7 +244,7 @@ const impulseBot = createImpulseBot({
   getSymbols: () => bybit.getSymbols(),
   getCapsUniverse: () => universe.getUniverse({ limit: 500 }).symbols,
   getCandles: ({ symbol, interval, limit }) => klines.getCandles({ symbol, interval, limit }),
-  getOi: ({ symbol, interval, limit }) => bybitRest.getOpenInterest({ symbol, interval: interval === "15" ? "15" : "5", limit }),
+  getOi: ({ symbol, interval, limit }) => bybitRest.getOpenInterest({ symbol, interval: String(interval || '5'), limit }),
   logger: app.log,
   onEvent: ({ type, payload }) => broadcast({ type, payload }),
 });
@@ -580,6 +580,12 @@ app.get("/ws", { websocket: true }, (conn) => {
       return;
     }
     if (msg.type === "stopImpulseBot") { safeSend(ws, { type: "impulse.stop.ack", payload: { ok: true } }); impulseBot.stop({ reason: "manual" }); return; }
+    if (msg.type === "impulse.setConfig") {
+      const payload = impulseBot.setConfig(msg.settings && typeof msg.settings === 'object' ? msg.settings : {});
+      safeSend(ws, { type: "impulse.config.ack", payload: { ok: true } });
+      safeSend(ws, { type: "impulse.state", payload });
+      return;
+    }
     if (msg.type === "getImpulseState") return safeSend(ws, { type: "impulse.state", payload: impulseBot.getState() });
   });
 

@@ -1,4 +1,4 @@
-import { createContext, createElement, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, createElement, useContext, useEffect, useMemo, useState } from "react";
 
 const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 const WsContext = createContext(null);
@@ -28,6 +28,7 @@ export function createWsManager(
 ) {
   let ws = null;
   let manualClose = false;
+  let shouldCloseAfterConnect = false;
   let reconnectTimer = null;
   let heartbeatTimer = null;
   let lastPongAt = Date.now();
@@ -108,9 +109,16 @@ export function createWsManager(
 
     next.onopen = () => {
       if (next !== ws) return;
+      if (shouldCloseAfterConnect) {
+        shouldCloseAfterConnect = false;
+        closeSocketSafely(next, 1000, "deferred close after connect");
+        return;
+      }
       backoffMs = initialBackoffMs;
       lastPongAt = Date.now();
       notifyStatus("connected");
+      sendJson({ type: "ping", ts: Date.now() });
+      sendJson({ type: "getSnapshot" });
       startHeartbeat();
     };
 
@@ -133,6 +141,10 @@ export function createWsManager(
   const closeSocketSafely = (target, code = 1000, reason = "cleanup") => {
     if (!target) return;
     if (target.readyState === WebSocket.CLOSING || target.readyState === WebSocket.CLOSED) return;
+    if (target.readyState === WebSocket.CONNECTING) {
+      shouldCloseAfterConnect = true;
+      return;
+    }
     try {
       target.close(code, reason);
     } catch {
@@ -142,6 +154,12 @@ export function createWsManager(
 
   connect();
 
+  const sendJson = (payload) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(payload));
+    return true;
+  };
+
   return {
     get wsUrl() {
       return wsUrl;
@@ -149,11 +167,7 @@ export function createWsManager(
     getStatus() {
       return status;
     },
-    sendJson(payload) {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-      ws.send(JSON.stringify(payload));
-      return true;
-    },
+    sendJson,
     subscribe(handler) {
       listeners.add(handler);
       return () => listeners.delete(handler);
@@ -174,6 +188,7 @@ export function createWsManager(
     },
     close() {
       manualClose = true;
+      shouldCloseAfterConnect = true;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -186,20 +201,49 @@ export function createWsManager(
   };
 }
 
+const managerRegistry = new Map();
+
+function getManagerEntry(wsUrl) {
+  let entry = managerRegistry.get(wsUrl);
+  if (!entry) {
+    entry = { manager: createWsManager(wsUrl), refs: 0, cleanupTimer: null };
+    managerRegistry.set(wsUrl, entry);
+  }
+  return entry;
+}
+
+function retainManager(wsUrl) {
+  const entry = getManagerEntry(wsUrl);
+  if (entry.cleanupTimer) {
+    clearTimeout(entry.cleanupTimer);
+    entry.cleanupTimer = null;
+  }
+  entry.refs += 1;
+  return entry.manager;
+}
+
+function releaseManager(wsUrl) {
+  const entry = managerRegistry.get(wsUrl);
+  if (!entry) return;
+  entry.refs = Math.max(0, entry.refs - 1);
+  if (entry.refs > 0 || entry.cleanupTimer) return;
+  entry.cleanupTimer = setTimeout(() => {
+    const latest = managerRegistry.get(wsUrl);
+    if (!latest || latest.refs > 0) return;
+    latest.manager.close();
+    managerRegistry.delete(wsUrl);
+  }, 300);
+}
+
 export function WsProvider({ children, apiBase = DEFAULT_API_BASE }) {
   const wsUrl = useMemo(() => toWsUrl(apiBase), [apiBase]);
-  const managerRef = useRef(null);
-
-  if (!managerRef.current) {
-    managerRef.current = createWsManager(wsUrl);
-  }
+  const manager = useMemo(() => retainManager(wsUrl), [wsUrl]);
 
   useEffect(() => {
-    const mgr = managerRef.current;
-    return () => mgr?.close();
-  }, []);
+    return () => releaseManager(wsUrl);
+  }, [wsUrl]);
 
-  return createElement(WsContext.Provider, { value: managerRef.current }, children);
+  return createElement(WsContext.Provider, { value: manager }, children);
 }
 
 export function useWs() {
