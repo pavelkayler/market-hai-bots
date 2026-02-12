@@ -48,7 +48,10 @@ function pickRange(c60) {
     if (num(c.l) < lo) lo = c.l;
   }
   if (!Number.isFinite(hi) || !Number.isFinite(lo) || hi <= lo) return null;
-  return { hi, lo, size: hi - lo };
+  const closes = win.map((c) => num(c.c)).filter((x) => Number.isFinite(x));
+  const slope = closes.length > 1 ? Math.abs((closes[closes.length - 1] - closes[0]) / closes[0]) : 0;
+  const trendScore = Math.min(1, slope * 8);
+  return { hi, lo, size: hi - lo, mid: (hi + lo) / 2, trendScore };
 }
 
 function volSpike(c5, lookback = 30, mult = 2.0) {
@@ -101,6 +104,8 @@ export function createRangeMetricsTest({
     oiInterval: "15min",
     oiChangeThreshold: 0.0,
     triggerType: "reclaim",
+    maxGateFails: 1,
+    trendScoreMax: 0.65,
 
     // risk
     riskUSDT: 10,
@@ -196,7 +201,9 @@ export function createRangeMetricsTest({
     const edgeBand = r.size * p.edgeFrac;
     const nearLow = px <= (r.lo + edgeBand);
     const nearHigh = px >= (r.hi - edgeBand);
-    if (!nearLow && !nearHigh) return { ok: false, reason: "range_mid" };
+    const boundaryDistance = Math.min(Math.abs(px - r.lo), Math.abs(r.hi - px));
+    if (r.trendScore > p.trendScoreMax) return { ok: false, reason: "trendMode", trendScore: r.trendScore, threshold: p.trendScoreMax };
+    if (!nearLow && !nearHigh) return { ok: false, reason: "priceNotAtBoundary", boundaryDistance, threshold: edgeBand };
 
     const a5 = atr(c5, 14);
     const a60 = atr(c60, 14);
@@ -264,6 +271,7 @@ export function createRangeMetricsTest({
       side,
       px,
       range: r,
+      boundaryDistance,
       edgeBand,
       level,
       band,
@@ -283,11 +291,11 @@ export function createRangeMetricsTest({
       tp3,
       rr1,
       gates: [
-        { gateName: "trigger", value: trig ? 1 : 0, threshold: 1, pass: trig },
-        { gateName: "volSpike", value: vs?.ratio ?? 0, threshold: p.volSpikeMult, pass: Boolean(vs?.hit) },
-        { gateName: "liqSpikeUsd", value: liqUsd, threshold: p.liqSpikeUsdThreshold, pass: liq ? liqHit : true },
-        { gateName: "fundingAbs", value: Math.abs(funding ?? 0), threshold: p.fundingAbsMax, pass: fundingOk },
-        { gateName: "oiChangeAbs", value: Math.abs(oiChange ?? 0), threshold: p.oiChangeThreshold, pass: oiOk },
+        { name: "reclaim", pass: trig, value: trig ? 1 : 0, threshold: 1, detail: trig ? "reclaim" : "noReclaim" },
+        { name: "volumeSpike", pass: Boolean(vs?.hit), value: vs?.ratio ?? 0, threshold: p.volSpikeMult, detail: `ratio=${fmt(vs?.ratio ?? 0,2)}` },
+        { name: "liquidation", pass: liq ? liqHit : true, value: liqUsd, threshold: p.liqSpikeUsdThreshold, detail: `usd=${fmt(liqUsd,2)}` },
+        { name: "funding", pass: fundingOk, value: Math.abs(funding ?? 0), threshold: p.fundingAbsMax, detail: `abs=${fmt(Math.abs(funding ?? 0),6)}` },
+        { name: "openInterest", pass: oiOk, value: Math.abs(oiChange ?? 0), threshold: p.oiChangeThreshold, detail: `change=${fmt(oiChange ?? 0,4)}` },
       ],
       score: (trig ? 0 : 1000) + (vs?.hit ? 0 : 50) + (liqHit ? 0 : 25) + (fundingOk ? 0 : 100) + (oiOk ? 0 : 100),
     };
@@ -434,9 +442,9 @@ export function createRangeMetricsTest({
         reasonCounts.set(c.reason, (reasonCounts.get(c.reason) || 0) + 1);
         continue;
       }
-      // gates
-      if (!c.fundingOk || !c.oiOk) {
-        reasonCounts.set("funding_extreme", (reasonCounts.get("funding_extreme") || 0) + 1);
+      const gateFails = (c.gates || []).filter((g) => !g.pass).length;
+      if (gateFails > p.maxGateFails) {
+        reasonCounts.set("gateFail", (reasonCounts.get("gateFail") || 0) + 1);
         continue;
       }
       if (!best || c.score < best.score) best = c;
@@ -456,6 +464,10 @@ export function createRangeMetricsTest({
       volRatio: best.vol?.ratio ?? null,
       sl: best.sl,
       gates: best.gates,
+      rangeLow: best.range.lo,
+      rangeHigh: best.range.hi,
+      mid: best.range.mid,
+      boundaryDistance: best.boundaryDistance,
       tp1: best.tp1,
       tp2: best.tp2,
       tp3: best.tp3,
@@ -468,9 +480,9 @@ export function createRangeMetricsTest({
     // entry conditions
     const blockers = [];
     if (!inBand(best.px, best.level, best.band)) blockers.push("not_in_band");
-    if (!best.trigger) blockers.push("waiting_reclaim");
-    if (!best.vol?.hit) blockers.push("no_vol_spike");
-    if (best.liq && !best.liq.hit) blockers.push("no_liq_spike");
+    if (!best.trigger) blockers.push("noReclaim");
+    if (!best.vol?.hit) blockers.push("gateFail:volumeSpike");
+    if (best.liq && !best.liq.hit) blockers.push("gateFail:liquidation");
     if (best.rr1 < p.minRR1) blockers.push("rr_low");
 
     if (blockers.length) {
@@ -493,6 +505,10 @@ export function createRangeMetricsTest({
       entry: best.px,
       sl: best.sl,
       gates: best.gates,
+      rangeLow: best.range.lo,
+      rangeHigh: best.range.hi,
+      mid: best.range.mid,
+      boundaryDistance: best.boundaryDistance,
       qty,
       legs,
       mode: p.mode,
@@ -578,8 +594,9 @@ export function createRangeMetricsTest({
       const reasons = [];
       if (c) {
         const fails = (c.gates || []).filter((g) => !g.pass).slice(0, 3);
-        for (const g of fails) reasons.push(`${g.gateName}=${fmt(g.value,2)}<${fmt(g.threshold,2)}`);
-        if (!fails.length) reasons.push(`rr1=${fmt(c.rr1,2)}`);
+        for (const g of fails) reasons.push(`gateFail:${g.name} ${fmt(g.value,2)} vs ${fmt(g.threshold,2)}`);
+        if (!c.trigger) reasons.push("noReclaim");
+        reasons.push(`priceNotAtBoundary ${fmt(c.boundaryDistance,6)} vs ${fmt(c.edgeBand,6)}`);
       } else {
         reasons.push("no_candidate");
       }

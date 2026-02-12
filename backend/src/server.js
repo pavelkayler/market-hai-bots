@@ -68,8 +68,10 @@ function normalizeSymbols(symbols) {
 function tradeStatus(tradeExecutor) {
   const baseUrl = process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com";
   const recvWindow = Number(process.env.BYBIT_RECV_WINDOW || 5000);
+  const enabled = Boolean(tradeExecutor?.enabled?.());
   return {
-    enabled: Boolean(tradeExecutor?.enabled?.()),
+    enabled,
+    status: enabled ? "TRADE_ENABLED" : "TRADE_DISABLED",
     demo: /api-demo\.bybit\.com/i.test(baseUrl),
     baseUrl,
     recvWindow,
@@ -182,6 +184,19 @@ const klines = createBybitKlinesCache({ logger: app.log });
 const pullbackTest = createPullbackTest({ universe, klines, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
 const rangeTest = createRangeMetricsTest({ universe, klines, bybitRest, liqFeed, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
 
+async function getTradeSnapshot(symbol) {
+  if (!tradeExecutor?.enabled?.()) return { positions: [], orders: [] };
+  try {
+    const [positions, orders] = await Promise.all([
+      tradeExecutor.getPositions({ symbol }),
+      tradeExecutor.getOpenOrders({ symbol }),
+    ]);
+    return { positions, orders };
+  } catch {
+    return { positions: [], orders: [] };
+  }
+}
+
 function getSnapshotPayload() {
   const bybitTickers = marketData.getTickersBySource("BT");
   const binanceTickers = marketData.getTickersBySource("BNB");
@@ -202,6 +217,8 @@ function getSnapshotPayload() {
     warnings: tradeWarnings(tradeExecutor),
     universe: universe.getStatus().universe,
     presets: presetsStore.getState(),
+    tradePositions: [],
+    tradeOrders: [],
   };
 }
 
@@ -245,6 +262,8 @@ app.get("/api/universe/list", async () => ({ symbols: universe.getUniverse({ lim
 app.get("/api/universe", async () => universe.getUniverse({ limit: 300 }));
 app.post("/api/universe/refresh", async () => { await universe.refresh(); return universe.getStatus(); });
 app.get("/api/trade/status", async () => ({ tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
+app.get("/api/trade/positions", async (req) => ({ ...(await getTradeSnapshot(String(req.query?.symbol || "").toUpperCase() || undefined)), tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
+app.get("/api/trade/orders", async (req) => ({ ...(await getTradeSnapshot(String(req.query?.symbol || "").toUpperCase() || undefined)), tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
 app.get("/api/presets", async () => presetsStore.getState());
 app.post("/api/presets", async (req) => {
   const preset = presetsStore.createPreset(req.body || {});
@@ -276,7 +295,9 @@ app.post("/api/presets/:id/select", async (req) => {
 app.get("/ws", { websocket: true }, (conn) => {
   const ws = conn.socket;
   clients.add(ws);
-  safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+  Promise.resolve(getTradeSnapshot()).then((tradeSnap) => {
+    safeSend(ws, { type: "snapshot", payload: { ...getSnapshotPayload(), tradePositions: tradeSnap.positions, tradeOrders: tradeSnap.orders } });
+  });
   safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
   sendEvent(ws, "market.snapshot", { tickers: marketData.getTickersArray(), ts: Date.now() });
 
@@ -285,7 +306,7 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (!msg?.type) return;
     if (msg.type === "ping") return safeSend(ws, { type: "pong", payload: { now: Date.now() } });
     if (msg.type === "getSnapshot") {
-      safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+      Promise.resolve(getTradeSnapshot()).then((tradeSnap) => safeSend(ws, { type: "snapshot", payload: { ...getSnapshotPayload(), tradePositions: tradeSnap.positions, tradeOrders: tradeSnap.orders } }));
       safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
       sendEvent(ws, "market.snapshot", { tickers: marketData.getTickersArray(), ts: Date.now() });
       return;
@@ -296,7 +317,7 @@ app.get("/ws", { websocket: true }, (conn) => {
       bybit.setSymbols(next);
       binance.setSymbols(next);
       safeSend(ws, { type: "setSymbols.ack", payload: { symbols: bybit.getSymbols() } });
-      safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+      Promise.resolve(getTradeSnapshot()).then((tradeSnap) => safeSend(ws, { type: "snapshot", payload: { ...getSnapshotPayload(), tradePositions: tradeSnap.positions, tradeOrders: tradeSnap.orders } }));
       safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
       sendEvent(ws, "market.snapshot", { tickers: marketData.getTickersArray(), ts: Date.now() });
       return;

@@ -35,6 +35,8 @@ export default function PullbackTestPage() {
   const [logs, setLogs] = useState([]);
   const [trades, setTrades] = useState([]);
   const [ack, setAck] = useState(null);
+  const [positions, setPositions] = useState([]);
+  const [orders, setOrders] = useState([]);
 
   const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
 
@@ -67,6 +69,8 @@ export default function PullbackTestPage() {
         setTradeStatus(msg.payload?.tradeStatus || null);
         setLogs(msg.payload?.pullbackState?.logs || []);
         setTrades([...(msg.payload?.pullbackState?.trades || [])].reverse());
+        setPositions(msg.payload?.tradePositions || []);
+        setOrders(msg.payload?.tradeOrders || []);
       }
 
       if (msg.type === "pullback.status" || msg.type === "pullback.state") {
@@ -99,6 +103,31 @@ export default function PullbackTestPage() {
   const stop = () => wsRef.current?.send(JSON.stringify({ type: "stopPullbackTest" }));
   const refresh = () => wsRef.current?.send(JSON.stringify({ type: "getPullbackState" }));
 
+
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const symbol = pb?.position?.symbol || pb?.scan?.lastCandidate?.symbol || "";
+        const q = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+        const res = await fetch(`${API_BASE}/api/trade/positions${q}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setPositions(data.positions || []);
+        setOrders(data.orders || []);
+        setTradeStatus(data.tradeStatus || null);
+        setWarnings(data.warnings || []);
+      } catch (e) {
+        console.debug(e);
+      }
+    };
+    const id = setInterval(poll, 3000);
+    poll();
+    return () => { cancelled = true; clearInterval(id); };
+  }, [pb?.position?.symbol, pb?.scan?.lastCandidate?.symbol]);
+
   const wsConnected = wsStatus === "connected";
   const status = pb?.status || "STOPPED";
   const startDisabled = !wsConnected || status === "RUNNING" || status === "STARTING";
@@ -126,9 +155,22 @@ export default function PullbackTestPage() {
     </Col>
     <Col md={8}>
       <Card className="mb-3"><Card.Body>
+        <strong>Summary</strong>
+        <div className="small mb-2">context={pb?.scan?.lastCandidate?.trend || "—"} level={fmtNum(pb?.scan?.lastCandidate?.level)} status={pb?.position ? "IN_TRADE" : status === "RUNNING" ? (pb?.scan?.lastCandidate?.trigger ? "ARMED" : "SEARCHING") : status}</div>
         <strong>Trades</strong>
         <Table size="sm"><thead><tr><th style={{ width: "24%" }}>t</th><th>sym</th><th>side</th><th className="text-end" style={{ width: "20%" }}>price</th><th className="text-end" style={{ width: "20%" }}>pnl</th></tr></thead><tbody>
           {trades.slice(0, 50).map((t, i) => <tr key={i}><td>{fmtTs(t.tClose || t.t)}</td><td>{t.symbol}</td><td>{t.side}</td><td className="text-end font-monospace">{fmtNum(t.price || t.entryPrice)}</td><td className="text-end font-monospace">{fmtNum(t.pnlUSDT, 4)}</td></tr>)}
+        </tbody></Table>
+      </Card.Body></Card>
+
+      <Card className="mb-3"><Card.Body>
+        <strong>Positions</strong>
+        <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th className="text-end">Size</th><th className="text-end">Avg</th></tr></thead><tbody>
+          {positions.slice(0, 20).map((r, i) => <tr key={i}><td>{r.symbol}</td><td>{r.side}</td><td className="text-end font-monospace">{fmtNum(r.size,4)}</td><td className="text-end font-monospace">{fmtNum(r.avgPrice)}</td></tr>)}
+        </tbody></Table>
+        <strong>Open orders</strong>
+        <Table size="sm"><thead><tr><th>ID</th><th>Side</th><th className="text-end">Qty</th><th className="text-end">Price</th></tr></thead><tbody>
+          {orders.slice(0, 20).map((r, i) => <tr key={i}><td>{r.orderId?.slice(0,10) || "—"}</td><td>{r.side}</td><td className="text-end font-monospace">{fmtNum(r.qty,4)}</td><td className="text-end font-monospace">{fmtNum(r.price)}</td></tr>)}
         </tbody></Table>
       </Card.Body></Card>
       <Card><Card.Body>

@@ -36,6 +36,8 @@ export default function RangeMetricsPage() {
   const [logs, setLogs] = useState([]);
   const [trades, setTrades] = useState([]);
   const [ack, setAck] = useState(null);
+  const [positions, setPositions] = useState([]);
+  const [orders, setOrders] = useState([]);
 
   const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
 
@@ -68,6 +70,8 @@ export default function RangeMetricsPage() {
         setTradeStatus(msg.payload?.tradeStatus || null);
         setLogs(msg.payload?.rangeState?.logs || []);
         setTrades([...(msg.payload?.rangeState?.trades || [])].reverse());
+        setPositions(msg.payload?.tradePositions || []);
+        setOrders(msg.payload?.tradeOrders || []);
       }
 
       if (msg.type === "range.status" || msg.type === "range.state") {
@@ -101,11 +105,36 @@ export default function RangeMetricsPage() {
   const stop = () => wsRef.current?.send(JSON.stringify({ type: "stopRangeTest" }));
   const refresh = () => wsRef.current?.send(JSON.stringify({ type: "getRangeState" }));
 
+
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const symbol = range?.position?.symbol || range?.scan?.lastCandidate?.symbol || "";
+        const q = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+        const res = await fetch(`${API_BASE}/api/trade/orders${q}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setPositions(data.positions || []);
+        setOrders(data.orders || []);
+        setTradeStatus(data.tradeStatus || null);
+        setWarnings(data.warnings || []);
+      } catch (e) {
+        console.debug(e);
+      }
+    };
+    const id = setInterval(poll, 3000);
+    poll();
+    return () => { cancelled = true; clearInterval(id); };
+  }, [range?.position?.symbol, range?.scan?.lastCandidate?.symbol]);
+
   const status = range?.status || "STOPPED";
   const wsConnected = wsStatus === "connected";
   const startDisabled = !wsConnected || ["RUNNING", "STARTING"].includes(status);
   const stopDisabled = !wsConnected || ["STOPPED", "STOPPING"].includes(status);
-  const topFails = gates.filter((g) => !g.pass).slice(0, 3).map((g) => g.gateName);
+  const topFails = gates.filter((g) => !g.pass).slice(0, 3).map((g) => g.name);
 
   return <Row className="g-3">
     <Col md={4}><Card><Card.Body className="d-grid gap-2">
@@ -120,18 +149,28 @@ export default function RangeMetricsPage() {
         <Button variant="outline-danger" onClick={stop} disabled={stopDisabled}>Stop</Button>
         <Button variant="outline-secondary" onClick={refresh} disabled={!wsConnected}>Refresh</Button>
       </div>
-      <div className="small">Current range: {range?.scan?.lastCandidate?.symbol || "—"} / atr={fmt(range?.position?.meta?.range?.size)}</div>
+      <div className="small">rangeLow={fmt(range?.scan?.lastCandidate?.rangeLow)} rangeHigh={fmt(range?.scan?.lastCandidate?.rangeHigh)} mid={fmt(range?.scan?.lastCandidate?.mid)} status={range?.position ? "IN_TRADE" : range?.scan?.lastCandidate?.trigger ? "ARMED" : "WAIT_BOUNDARY"}</div>
     </Card.Body></Card></Col>
     <Col md={8}>
       <Card className="mb-3"><Card.Body><strong>Gates</strong>
         <div className="small text-muted mb-2">Top fails: {topFails.length ? topFails.join(", ") : "All gates pass"}</div>
         <Table size="sm"><thead><tr><th>Gate</th><th className="text-end" style={{ width: "18%" }}>Value</th><th className="text-end" style={{ width: "18%" }}>Threshold</th><th style={{ width: "15%" }}>PASS</th></tr></thead><tbody>
-          {gates.map((g, i) => <tr key={i}><td>{g.gateName}</td><td className="text-end font-monospace">{fmt(g.value)}</td><td className="text-end font-monospace">{fmt(g.threshold)}</td><td><Badge bg={g.pass ? "success" : "danger"}>{g.pass ? "PASS" : "FAIL"}</Badge></td></tr>)}
+          {gates.map((g, i) => <tr key={i}><td>{g.name}</td><td className="text-end font-monospace">{fmt(g.value)}</td><td className="text-end font-monospace">{fmt(g.threshold)}</td><td><Badge bg={g.pass ? "success" : "danger"}>{g.pass ? "PASS" : "FAIL"}</Badge></td></tr>)}
         </tbody></Table>
       </Card.Body></Card>
       <Card className="mb-3"><Card.Body><strong>Trades</strong>
         <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th className="text-end" style={{ width: "22%" }}>PnL</th></tr></thead><tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
           {trades.slice(0, 50).map((t, i) => <tr key={i}><td>{t.symbol}</td><td>{t.side}</td><td className="text-end">{fmt(t.pnlUSDT)}</td></tr>)}
+        </tbody></Table>
+      </Card.Body></Card>
+
+      <Card className="mb-3"><Card.Body><strong>Positions</strong>
+        <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th className="text-end">Size</th><th className="text-end">Avg</th></tr></thead><tbody>
+          {positions.slice(0,20).map((r,i)=><tr key={i}><td>{r.symbol}</td><td>{r.side}</td><td className="text-end font-monospace">{fmt(r.size,4)}</td><td className="text-end font-monospace">{fmt(r.avgPrice)}</td></tr>)}
+        </tbody></Table>
+        <strong>Open orders</strong>
+        <Table size="sm"><thead><tr><th>ID</th><th>Side</th><th className="text-end">Qty</th><th className="text-end">Price</th></tr></thead><tbody>
+          {orders.slice(0,20).map((r,i)=><tr key={i}><td>{r.orderId?.slice(0,10) || "—"}</td><td>{r.side}</td><td className="text-end font-monospace">{fmt(r.qty,4)}</td><td className="text-end font-monospace">{fmt(r.price)}</td></tr>)}
         </tbody></Table>
       </Card.Body></Card>
       <Card><Card.Body><strong>Logs (newest first)</strong><div style={{ minHeight: 220, maxHeight: 380, overflow: "auto", resize: "vertical", border: "1px solid #e5e7eb", borderRadius: 6, padding: 8, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace", fontSize: 12 }}>{logs.map((l, i) => <div key={i}>{l?.t || l?.ts ? `[${fmtTs(l.ts || l.t)}] ` : ""}{l.msg || "—"}</div>)}</div></Card.Body></Card>
