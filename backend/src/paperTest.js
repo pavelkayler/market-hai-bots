@@ -61,6 +61,21 @@ export function createPaperTest({
       signalsPerHour: 0,
       entriesPerHour: 0,
     },
+    settings: null,
+    manual: {
+      enabled: false,
+      leaderSymbol: null,
+      followerSymbol: null,
+      leaderMovePct: 0,
+      followerTpPct: 0,
+      followerSlPct: 0,
+      allowShort: true,
+      leaderBaseline: null,
+      leaderPrice: null,
+      followerPrice: null,
+      leaderMovePctNow: 0,
+      lastNoEntryReason: null,
+    },
   };
 
   let logs = [];
@@ -141,6 +156,7 @@ export function createPaperTest({
   }
 
   function maybeEmitNoEntry(now) {
+    if (state.manual?.enabled) return;
     if (now - lastNoEntryAt < reasonsEveryMs) return;
     const rows = Array.isArray(state.lastLeadLagTop) ? state.lastLeadLagTop : [];
     const hasReady = rows.some((r) => r?.tradeReady);
@@ -159,7 +175,115 @@ export function createPaperTest({
     lastNoEntryAt = now;
   }
 
+  function getTickerPrice(symbol) {
+    const t = getMarketTicker(symbol, "BNB") || getMarketTicker(symbol, "BT");
+    return {
+      ticker: t,
+      px: safeNum(t?.mid, safeNum(t?.lastPrice, null)),
+    };
+  }
+
+  function setManualNoEntryReason(now, key, detail, extra = {}) {
+    if (now - lastNoEntryAt < reasonsEveryMs) return;
+    const reason = {
+      key,
+      count: 1,
+      detail,
+      ...extra,
+      ts: now,
+    };
+    state.lastNoEntryReasons = [reason];
+    state.manual.lastNoEntryReason = reason;
+    pushLog("info", detail, { reason });
+    lastNoEntryAt = now;
+  }
+
+  function maybeOpenManualTrade(now) {
+    if (!state.manual?.enabled || state.position) return;
+    const m = state.manual;
+    const leaderSymbol = String(m.leaderSymbol || "").toUpperCase();
+    const followerSymbol = String(m.followerSymbol || "").toUpperCase();
+    if (!leaderSymbol || !followerSymbol) return;
+
+    const leader = getTickerPrice(leaderSymbol);
+    m.leaderPrice = leader.px;
+    if (!Number.isFinite(leader.px) || leader.px <= 0) {
+      setManualNoEntryReason(now, "NO_LEADER_PRICE", `NO_LEADER_PRICE ${leaderSymbol}`);
+      return;
+    }
+    if (!Number.isFinite(m.leaderBaseline) || m.leaderBaseline <= 0) m.leaderBaseline = leader.px;
+
+    const movePctNow = ((leader.px - m.leaderBaseline) / m.leaderBaseline) * 100;
+    m.leaderMovePctNow = movePctNow;
+    const moveThreshold = Math.max(0, safeNum(m.leaderMovePct, 1));
+
+    if (Math.abs(movePctNow) < moveThreshold) {
+      setManualNoEntryReason(now, "WAIT_LEADER_MOVE", `WAIT_LEADER_MOVE ${movePctNow.toFixed(3)}% < ${moveThreshold.toFixed(3)}%`, {
+        value: movePctNow,
+        threshold: moveThreshold,
+        pass: false,
+      });
+      return;
+    }
+
+    const side = movePctNow >= 0 ? "LONG" : "SHORT";
+    if (side === "SHORT" && !m.allowShort) {
+      setManualNoEntryReason(now, "SHORT_DISABLED", `SHORT_DISABLED leaderMovePctNow=${movePctNow.toFixed(3)}%`);
+      return;
+    }
+
+    const follower = getTickerPrice(followerSymbol);
+    m.followerPrice = follower.px;
+    if (!Number.isFinite(follower.px) || follower.px <= 0) {
+      setManualNoEntryReason(now, "NO_FOLLOWER_PRICE", `NO_FOLLOWER_PRICE ${followerSymbol}`);
+      return;
+    }
+
+    const tpPct = Math.max(0, safeNum(m.followerTpPct, 1));
+    const slPct = Math.max(0, safeNum(m.followerSlPct, 1));
+    const tp = side === "LONG" ? follower.px * (1 + tpPct / 100) : follower.px * (1 - tpPct / 100);
+    const sl = side === "LONG" ? follower.px * (1 - slPct / 100) : follower.px * (1 + slPct / 100);
+
+    const riskNotional = Math.max(1, safeNum(getPreset()?.params?.maxNotionalUsd, 100));
+    const qty = riskNotional / follower.px;
+
+    state.position = {
+      symbol: followerSymbol,
+      side,
+      entryPrice: follower.px,
+      slPrice: sl,
+      tpPrices: [tp],
+      openedAt: now,
+      qty,
+      tpsHit: 0,
+      feeRate: 0.0002,
+    };
+    state.lastNoEntryReasons = [];
+    state.manual.lastNoEntryReason = null;
+    state.quality.signalsCount += 1;
+    state.quality.lastSignalTs = now;
+    state.quality.entriesCount += 1;
+    state.quality.lastEntryTs = now;
+    updateQualityRates(now);
+
+    emitLeadLag("leadlag.position", state.position);
+    emitLeadLag("leadlag.trade", {
+      ts: now,
+      event: "OPEN",
+      symbol: followerSymbol,
+      side,
+      entry: follower.px,
+      sl,
+      tp,
+      tpPrices: [tp],
+      qty,
+      mode: state.executionMode,
+    });
+    pushLog("info", `OPEN ${side} ${followerSymbol} @ ${follower.px.toFixed(4)} (manual)`);
+  }
+
   function maybeOpenTrade(now) {
+    if (state.manual?.enabled) return;
     if (state.position) return;
     const rows = Array.isArray(state.lastLeadLagTop) ? state.lastLeadLagTop : [];
     const ready = rows.find((r) => r?.tradeReady);
@@ -170,8 +294,7 @@ export function createPaperTest({
 
     const follower = String(ready.follower || "").toUpperCase();
     if (!follower) return;
-    const t = getMarketTicker(follower, "BNB") || getMarketTicker(follower, "BT");
-    const px = safeNum(t?.mid, safeNum(t?.lastPrice, null));
+    const { ticker: t, px } = getTickerPrice(follower);
     if (!Number.isFinite(px) || px <= 0) return;
 
     const direction = (safeNum(ready.impulseSign, 0) || 0) >= 0 ? "LONG" : "SHORT";
@@ -207,8 +330,7 @@ export function createPaperTest({
     const p = state.position;
     if (!p) return;
 
-    const t = getMarketTicker(p.symbol, "BNB") || getMarketTicker(p.symbol, "BT");
-    const px = safeNum(t?.mid, safeNum(t?.lastPrice, null));
+    const { ticker: t, px } = getTickerPrice(p.symbol);
     if (!Number.isFinite(px) || px <= 0) return;
 
     const stopHit = p.side === "LONG" ? px <= p.slPrice : px >= p.slPrice;
@@ -276,6 +398,11 @@ export function createPaperTest({
 
     state.position = null;
     emitLeadLag("leadlag.position", null);
+    if (state.manual?.enabled) {
+      const leaderSymbol = String(state.manual.leaderSymbol || "").toUpperCase();
+      const leaderPx = getTickerPrice(leaderSymbol).px;
+      if (Number.isFinite(leaderPx) && leaderPx > 0) state.manual.leaderBaseline = leaderPx;
+    }
     lastTradeAt = now;
   }
 
@@ -284,6 +411,17 @@ export function createPaperTest({
     const now = Date.now();
     state.ticks += 1;
     state.lastLeadLagTop = Array.isArray(getLeadLagTop?.()) ? getLeadLagTop().slice(0, 10) : [];
+    if (state.manual?.enabled) {
+      const m = state.manual;
+      const leaderPx = getTickerPrice(m.leaderSymbol).px;
+      const followerPx = getTickerPrice(m.followerSymbol).px;
+      m.leaderPrice = leaderPx;
+      m.followerPrice = followerPx;
+      if (Number.isFinite(leaderPx) && Number.isFinite(m.leaderBaseline) && m.leaderBaseline > 0) {
+        m.leaderMovePctNow = ((leaderPx - m.leaderBaseline) / m.leaderBaseline) * 100;
+      }
+    }
+    maybeOpenManualTrade(now);
     maybeOpenTrade(now);
     maybeCloseTrade(now);
     maybeEmitNoEntry(now);
@@ -296,7 +434,7 @@ export function createPaperTest({
     try { step(); } catch (e) { logger?.warn?.({ err: e }, "leadlag paper step failed"); }
   }, tickMs);
 
-  function start({ presetId, mode = "paper" } = {}) {
+  function start({ presetId, mode = "paper", settings = null } = {}) {
     if (state.status === "RUNNING" || state.status === "STARTING") return { ok: false };
     state.status = "STARTING";
     state.executionMode = mode;
@@ -319,6 +457,29 @@ export function createPaperTest({
       signalsPerHour: 0,
       entriesPerHour: 0,
     };
+    const normalizedSettings = settings && typeof settings === "object" ? {
+      leaderSymbol: String(settings.leaderSymbol || "").toUpperCase() || null,
+      followerSymbol: String(settings.followerSymbol || "").toUpperCase() || null,
+      leaderMovePct: Math.max(0, safeNum(settings.leaderMovePct, 1)),
+      followerTpPct: Math.max(0, safeNum(settings.followerTpPct, 1)),
+      followerSlPct: Math.max(0, safeNum(settings.followerSlPct, 1)),
+      allowShort: settings.allowShort !== false,
+    } : null;
+    state.settings = normalizedSettings;
+    state.manual = {
+      enabled: Boolean(normalizedSettings?.leaderSymbol && normalizedSettings?.followerSymbol),
+      leaderSymbol: normalizedSettings?.leaderSymbol || null,
+      followerSymbol: normalizedSettings?.followerSymbol || null,
+      leaderMovePct: normalizedSettings?.leaderMovePct ?? 1,
+      followerTpPct: normalizedSettings?.followerTpPct ?? 1,
+      followerSlPct: normalizedSettings?.followerSlPct ?? 1,
+      allowShort: normalizedSettings?.allowShort !== false,
+      leaderBaseline: null,
+      leaderPrice: null,
+      followerPrice: null,
+      leaderMovePctNow: 0,
+      lastNoEntryReason: null,
+    };
     peakEquity = 0;
     rollingPnl = [];
     pushLog("info", "Starting...");
@@ -340,7 +501,7 @@ export function createPaperTest({
     setTimeout(() => {
       state.startedAt = Date.now();
       state.status = "RUNNING";
-      pushLog("info", `RUNNING mode=${mode}`);
+      pushLog("info", `RUNNING mode=${mode}${state.manual.enabled ? " manual" : " auto"}`);
       emitState();
     }, 10);
     emitState();
