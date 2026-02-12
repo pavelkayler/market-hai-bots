@@ -219,7 +219,8 @@ export default function LeadLagPage() {
                   <div className="d-flex align-items-center justify-content-between"><div className="fw-semibold">Started</div><div style={monoStyle}>{paper?.startedAt ? fmtTs(paper.startedAt) : "—"}</div></div>
                   <div className="d-flex align-items-center justify-content-between"><div className="fw-semibold">Elapsed</div><div style={monoStyle}>{running ? `${(elapsedMs / 1000).toFixed(1)}s` : paper?.endedAt && paper?.startedAt ? `${((paper.endedAt - paper.startedAt) / 1000).toFixed(1)}s` : "—"}</div></div>
                   <div className="fw-semibold mt-2">Summary</div>
-                  <div style={monoStyle}>trades: {paper?.stats?.trades ?? 0} | winRate: {fmtNum(paper?.stats?.winRate, 2)}%<br />pnlUSDT: {fmtNum(paper?.stats?.pnlUSDT, 4)}</div>
+                  <div style={monoStyle}>trades: {paper?.stats?.trades ?? 0} | winRate: {fmtNum(paper?.stats?.winRate, 2)}%<br />pnlUSDT: {fmtNum(paper?.stats?.pnlUSDT, 4)}<br />signals/h: {fmtNum(paper?.quality?.signalsPerHour, 2)} | entries/h: {fmtNum(paper?.quality?.entriesPerHour, 2)} | avgPnL: {fmtNum(paper?.quality?.avgPnL, 4)} | maxDD: {fmtNum(paper?.quality?.maxDrawdownUSDT, 4)}</div>
+                  <div style={monoStyle}>position: {position?.symbol ? `${position.symbol} ${position.side}` : 'none'} | pending: {pending ? 'yes' : 'no'}</div>
                   <div className="fw-semibold mt-2">No Entry: top reasons</div>
                   {!noEntryReasons.length ? <div className="text-muted">—</div> : (
                     <Table size="sm" className="mb-0" responsive>

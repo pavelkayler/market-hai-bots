@@ -50,10 +50,22 @@ export function createImpulseBot({
     cooldownsBySymbol: {},
     openPositionsBySymbol: {},
     watchlistSize: 0,
+    blacklist: [],
+    attemptsBySymbol: {},
+    entriesBySymbol: {},
+    quality: { signalsCount: 0, entriesCount: 0, winsCount: 0, lossesCount: 0, pnlUSDT: 0, avgPnL: 0, maxDrawdownUSDT: 0, lastSignalTs: null, lastEntryTs: null, signalsPerHour: 0, entriesPerHour: 0 },
   };
 
   let timer = null;
   let idx = 0;
+  let lastNoEntryLogAt = 0;
+  let peakEquity = 0;
+
+  function refreshRates() {
+    const elapsedHours = Math.max(1 / 3600, ((now() - (state.startedAt || now())) / 3_600_000));
+    state.quality.signalsPerHour = state.quality.signalsCount / elapsedHours;
+    state.quality.entriesPerHour = state.quality.entriesCount / elapsedHours;
+  }
 
   function emit(type, payload) { onEvent({ type, payload }); }
   function pushLog(level, msg, meta) {
@@ -80,7 +92,8 @@ export function createImpulseBot({
 
   function getWatchlist() {
     const feed = new Set((getSymbols() || []).map((s) => String(s || '').toUpperCase()));
-    const capped = (getCapsUniverse() || []).map((s) => String(s || '').toUpperCase()).filter((s) => feed.has(s));
+    const black = new Set((state.blacklist || []).map((x) => String(x?.symbol || '').toUpperCase()));
+    const capped = (getCapsUniverse() || []).map((s) => String(s || '').toUpperCase()).filter((s) => feed.has(s) && !black.has(s));
     return capped.slice(0, 500);
   }
 
@@ -94,6 +107,15 @@ export function createImpulseBot({
     const cd = Number(state.cooldownsBySymbol[symbol] || 0);
     if (cd > now()) return;
     if (state.openPositionsBySymbol[symbol]) return;
+    state.attemptsBySymbol[symbol] = Number(state.attemptsBySymbol[symbol] || 0) + 1;
+    if (state.attemptsBySymbol[symbol] >= 500 && Number(state.entriesBySymbol[symbol] || 0) === 0) {
+      if (!state.blacklist.find((x) => x.symbol === symbol)) {
+        state.blacklist.unshift({ symbol, reason: '500 attempts without entry', ts: now() });
+        state.blacklist = state.blacklist.slice(0, 500);
+        pushLog('warn', 'Auto-blacklist applied', { symbol, reason: '500 attempts without entry' });
+      }
+      return;
+    }
 
     try {
       const windowSec = clampWindowSec(state.settings.windowSec);
@@ -139,6 +161,9 @@ export function createImpulseBot({
         confirmation: { confirmA: !!state.settings.confirmA, confirmB: !!state.settings.confirmB },
       };
       pushSignal(signal);
+      state.quality.signalsCount += 1;
+      state.quality.lastSignalTs = signal.ts;
+      refreshRates();
 
       const useA = state.settings.confirmA;
       const useB = state.settings.confirmB;
@@ -159,6 +184,10 @@ export function createImpulseBot({
       const sl = side === 'LONG' ? entry * 0.995 : entry * 1.005;
       const position = { symbol, side, openedAt: now(), entry, tp, sl, mode: state.mode };
       state.openPositionsBySymbol[symbol] = position;
+      state.entriesBySymbol[symbol] = Number(state.entriesBySymbol[symbol] || 0) + 1;
+      state.quality.entriesCount += 1;
+      state.quality.lastEntryTs = now();
+      refreshRates();
       pushTrade({ ts: now(), symbol, side, event: 'OPEN', entry, tp, sl, mode: state.mode });
 
       // close immediately on next 1m candle approximation (paper loop simplification)
@@ -170,7 +199,18 @@ export function createImpulseBot({
       const pnl = (side === 'LONG' ? (closePx - entry) : (entry - closePx)) * (100 / entry);
       delete state.openPositionsBySymbol[symbol];
       state.cooldownsBySymbol[symbol] = now() + state.settings.cooldownMs;
+      state.quality.pnlUSDT += pnl;
+      if (pnl >= 0) state.quality.winsCount += 1;
+      else state.quality.lossesCount += 1;
+      const closed = state.quality.winsCount + state.quality.lossesCount;
+      state.quality.avgPnL = closed ? state.quality.pnlUSDT / closed : 0;
+      peakEquity = Math.max(peakEquity, state.quality.pnlUSDT);
+      state.quality.maxDrawdownUSDT = Math.max(state.quality.maxDrawdownUSDT, peakEquity - state.quality.pnlUSDT);
       pushTrade({ ts: now(), symbol, side, event: 'CLOSE', entry, exit: closePx, pnlUSDT: pnl, exitReason, roiPct: (pnl / 100) * 100 });
+      if (now() - lastNoEntryLogAt >= 10_000) {
+        lastNoEntryLogAt = now();
+        pushLog('info', 'NO ENTRY: blockers', { blockers: ['confirmation_failed', 'cooldown', 'insufficient_history'], whatWeWaitFor: 'confirm candle + cooldown=0 + history ready' });
+      }
     } catch (e) {
       logger?.warn?.({ err: e }, 'impulse tick failed');
     }

@@ -57,6 +57,8 @@ function isActiveOrder(row) {
 }
 
 export function createBybitTradeExecutor({ privateRest, instruments, logger = console } = {}) {
+  const REAL_ACK = process.env.I_UNDERSTAND_REAL_RISK === "1";
+  const tradeBaseUrl = String(process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com");
   const state = {
     executionMode: "paper",
     killSwitch: false,
@@ -75,7 +77,12 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   }
 
   function setExecutionMode(mode) {
-    state.executionMode = mode === "real" ? "real" : mode === "demo" ? "demo" : "paper";
+    const next = mode === "real" ? "real" : mode === "demo" ? "demo" : "paper";
+    if (next === "real" && (!REAL_ACK || process.env.TRADE_REAL_ENABLED !== "1")) {
+      state.executionMode = "paper";
+      return;
+    }
+    state.executionMode = next;
   }
 
   function getExecutionMode() {
@@ -130,6 +137,8 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     if (state.executionMode === "paper") return { ok: true, reasons };
     if (state.killSwitch && !reduceOnly) reasons.push("KILL_SWITCH_ENABLED");
     if (state.executionMode === "demo" || state.executionMode === "real") {
+      if (state.executionMode === "demo" && !/api-demo\.bybit\.com/i.test(tradeBaseUrl)) reasons.push("DEMO_BASE_URL_REQUIRED");
+      if (state.executionMode === "real" && !/api\.bybit\.com/i.test(tradeBaseUrl)) reasons.push("REAL_BASE_URL_REQUIRED");
       const rows = await getPositions({});
       const active = rows.filter((r) => Number(r?.size || 0) > 0);
       if (active.length >= state.maxActivePositions && !active.some((r) => r.symbol === symbol)) reasons.push("MAX_ONE_POSITION_GLOBAL");
@@ -343,5 +352,24 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     detectPositionMode,
     resolvePositionIdx,
     createHedgeOrders,
+    placeEntryMarket: async (botName, symbol, side, notionalUSD, leverage) => {
+      if (!enabled()) throw new Error("TRADE_DISABLED");
+      const safeNotional = Math.min(100, Math.max(1, Number(notionalUSD || 0)));
+      const pxHint = 1;
+      const qty = safeNotional / pxHint;
+      return openPosition({ symbol, side, qty, leverage: Math.min(10, Number(leverage || 1)) });
+    },
+    placeTpLadder: async (botName, symbol, side, qty, tps = []) => {
+      const closeSide = side === "Buy" ? "Sell" : "Buy";
+      const results = [];
+      for (const tp of tps.slice(0, 3)) {
+        results.push(await placeReduceLimit({ symbol, side: closeSide, qty, price: tp?.price }));
+      }
+      return results;
+    },
+    setStopLoss: async (botName, symbol, side, slPrice) => privateRest.setTradingStop({ category: "linear", symbol, tpslMode: "Full", slOrderType: "Market", sl: String(slPrice), positionIdx: await resolvePositionIdx({ symbol, side }) }),
+    fetchPositions: getPositions,
+    fetchOrders: getOpenOrders,
+    fetchHistory: getClosedPnl,
   };
 }
