@@ -674,6 +674,26 @@ app.get("/ws", { websocket: true }, (conn) => {
       return;
     }
 
+    if (msg.type === "leadlag.setAutoTuneConfig") {
+      const payload = paperTest.setAutoTuneConfig(msg?.payload && typeof msg.payload === 'object' ? msg.payload : msg?.settings && typeof msg.settings === 'object' ? msg.settings : {});
+      safeSend(ws, { type: "leadlag.autotune.ack", payload: { ok: true, config: payload?.autoTuneConfig || null } });
+      safeSend(ws, { type: "leadlag.state", payload });
+      return;
+    }
+
+    if (msg.type === "leadlag.clearLearningLog") {
+      const payload = paperTest.clearLearningLog();
+      safeSend(ws, { type: "leadlag.learningLog.cleared", payload: { ok: true } });
+      safeSend(ws, { type: "leadlag.state", payload });
+      return;
+    }
+
+    if (msg.type === "leadlag.getLearningLog") {
+      const payload = paperTest.getState({ includeHistory: false });
+      safeSend(ws, { type: "leadlag.learningLog", payload: payload?.learningLog || [] });
+      return;
+    }
+
     if (msg.type === "refreshUniverse") {
       safeSend(ws, { type: "universe.refresh.ack", payload: { ok: true } });
       universe.refresh().then(() => broadcast({ type: "universe.status", payload: universe.getStatus() }));
