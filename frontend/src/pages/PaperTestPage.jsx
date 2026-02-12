@@ -4,13 +4,9 @@ import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Tab, Table, Tabs 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
 function toWsUrl(apiBase) {
-  try {
-    const u = new URL(apiBase);
-    const proto = u.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${u.host}/ws`;
-  } catch {
-    return "ws://localhost:8080/ws";
-  }
+  const u = new URL(apiBase);
+  const proto = u.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${u.host}/ws`;
 }
 
 function fmtNum(x, d = 4) {
@@ -34,6 +30,7 @@ function statusBadge(s) {
 export default function PaperTestPage() {
   const wsRef = useRef(null);
   const ackTimerRef = useRef(null);
+  const pendingRef = useRef(new Map());
 
   const [wsStatus, setWsStatus] = useState("connecting");
 
@@ -51,7 +48,7 @@ export default function PaperTestPage() {
   const [executionMode, setExecutionMode] = useState("paper");
   const [tuneChanges, setTuneChanges] = useState([]);
 
-  const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
+  const wsUrl = useMemo(() => toWsUrl(API_BASE), [API_BASE]);
 
   const showAck = (variant, text) => {
     setAck({ variant, text });
@@ -60,10 +57,35 @@ export default function PaperTestPage() {
   };
 
   useEffect(() => {
+    let shouldClose = false;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen = () => setWsStatus("connected");
+    const flushTimer = setInterval(() => {
+      if (!pendingRef.current.size) return;
+      const next = {};
+      for (const [key, value] of pendingRef.current.entries()) next[key] = value;
+      pendingRef.current.clear();
+
+      if (Array.isArray(next.trades)) setTrades((prev) => [...next.trades, ...prev].slice(0, 200));
+      if (Array.isArray(next.logs)) setLogs((prev) => [...next.logs, ...prev].slice(0, 300));
+      if (next.position !== undefined) setPosition(next.position || null);
+      if (next.pending !== undefined) setPending(next.pending || null);
+      if (next.tuneChange) setTuneChanges((prev) => [next.tuneChange, ...prev].slice(0, 10));
+    }, 350);
+
+    ws.onopen = () => {
+      if (shouldClose) {
+        try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        return;
+      }
+      setWsStatus("connected");
+      try {
+        ws.send(JSON.stringify({ type: "getPaperState" }));
+      } catch {
+        // ignore
+      }
+    };
     ws.onclose = () => setWsStatus("disconnected");
     ws.onerror = () => setWsStatus("error");
 
@@ -99,45 +121,53 @@ export default function PaperTestPage() {
       }
 
       if (msg.type === "paper.start.ack") {
+        if (msg.payload?.state) {
+          setPaper(msg.payload.state);
+        }
         if (msg.payload?.ok) showAck("success", "Тест запущен");
         else showAck("danger", msg.payload?.error || "Start failed");
         return;
       }
 
       if (msg.type === "paper.stop.ack") {
+        if (msg.payload?.state) {
+          setPaper(msg.payload.state);
+        }
         if (msg.payload?.ok) showAck("success", "Тест остановлен");
         else showAck("danger", msg.payload?.error || "Stop failed");
         return;
       }
 
       if (msg.type === "paper.position") {
-        setPosition(msg.payload || null);
+        pendingRef.current.set("position", msg.payload || null);
         return;
       }
 
       if (msg.type === "paper.pending") {
-        setPending(msg.payload || null);
+        pendingRef.current.set("pending", msg.payload || null);
         return;
       }
 
 
       if (msg.type === "paper.tune") {
         if (!msg.payload) return;
-        setTuneChanges((prev) => [msg.payload, ...prev].slice(0, 10));
+        pendingRef.current.set("tuneChange", msg.payload);
         return;
       }
 
       if (msg.type === "paper.trade") {
         const t = msg.payload;
         if (!t) return;
-        setTrades((prev) => [t, ...prev].slice(0, 200));
+        const queued = pendingRef.current.get("trades") || [];
+        pendingRef.current.set("trades", [t, ...queued].slice(0, 30));
         return;
       }
 
       if (msg.type === "paper.log") {
         const l = msg.payload;
         if (!l) return;
-        setLogs((prev) => [l, ...prev].slice(0, 300));
+        const queued = pendingRef.current.get("logs") || [];
+        pendingRef.current.set("logs", [l, ...queued].slice(0, 50));
         return;
       }
 
@@ -153,10 +183,15 @@ export default function PaperTestPage() {
     };
 
     return () => {
+      shouldClose = true;
       if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
-      try {
-        ws.close();
-      } catch { /* ignore */ }
+      clearInterval(flushTimer);
+      pendingRef.current.clear();
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.close(1000, "cleanup");
+        } catch { /* ignore */ }
+      }
     };
   }, [wsUrl]);
 
@@ -275,7 +310,7 @@ export default function PaperTestPage() {
 
                   <div className="fw-semibold mt-2">Summary</div>
                   <div style={monoStyle}>
-                    trades: {paper?.stats?.trades ?? 0} | wins: {paper?.stats?.wins ?? 0} | losses: {paper?.stats?.losses ?? 0}
+                    trades: {paper?.stats?.trades ?? 0} | winRate: {fmtNum(paper?.stats?.winRate, 2)}%
                     <br />
                     pnlUSDT: {fmtNum(paper?.stats?.pnlUSDT, 4)}
                   </div>

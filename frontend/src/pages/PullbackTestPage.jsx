@@ -4,13 +4,9 @@ import { Alert, Badge, Button, Card, Col, Form, Nav, Row, Tab, Table } from "rea
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
 function toWsUrl(apiBase) {
-  try {
-    const u = new URL(apiBase);
-    const proto = u.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${u.host}/ws`;
-  } catch {
-    return "ws://localhost:8080/ws";
-  }
+  const u = new URL(apiBase);
+  const proto = u.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${u.host}/ws`;
 }
 
 const fmtNum = (x, d = 6) => (Number.isFinite(Number(x)) ? Number(x).toFixed(d) : "—");
@@ -19,8 +15,8 @@ const modeBadge = (m) => (m === "real" ? "danger" : m === "demo" ? "warning" : "
 
 export default function PullbackTestPage() {
   const wsRef = useRef(null);
-  const shouldCloseRef = useRef(false);
   const ackTimerRef = useRef(null);
+  const pendingRef = useRef(new Map());
   const [wsStatus, setWsStatus] = useState("connecting");
   const [mode, setMode] = useState("paper");
   const [realConfirmText, setRealConfirmText] = useState("");
@@ -33,8 +29,12 @@ export default function PullbackTestPage() {
   const [history, setHistory] = useState([]);
   const [ack, setAck] = useState(null);
 
-  const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
-  const symbol = pb?.position?.symbol || pb?.scan?.lastCandidate?.symbol || "BTCUSDT";
+  const wsUrl = useMemo(() => toWsUrl(API_BASE), [API_BASE]);
+  const symbolRef = useRef("BTCUSDT");
+
+  useEffect(() => {
+    symbolRef.current = pb?.position?.symbol || pb?.scan?.lastCandidate?.symbol || "BTCUSDT";
+  }, [pb]);
 
   const showAck = (variant, text) => {
     setAck({ variant, text });
@@ -43,6 +43,7 @@ export default function PullbackTestPage() {
   };
 
   const pollTrade = async () => {
+    const symbol = symbolRef.current;
     const q = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
     const [stateRes, posRes, ordRes, histRes] = await Promise.all([
       fetch(`${API_BASE}/api/trade/state`),
@@ -63,13 +64,35 @@ export default function PullbackTestPage() {
   };
 
   useEffect(() => {
-    let stopped = false;
+    let shouldClose = false;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    const flushTimer = setInterval(() => {
+      if (!pendingRef.current.size) return;
+      const next = {};
+      for (const [key, value] of pendingRef.current.entries()) next[key] = value;
+      pendingRef.current.clear();
+
+      if (next.pb !== undefined) setPb(next.pb);
+      if (next.positions !== undefined) setPositions(next.positions || []);
+      if (next.orders !== undefined) setOrders(next.orders || []);
+      if (next.warnings !== undefined) setWarnings(next.warnings || []);
+      if (next.tradeStatus !== undefined) setTradeStatus(next.tradeStatus || null);
+    }, 350);
+
     ws.onopen = () => {
+      if (shouldClose) {
+        try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        return;
+      }
       setWsStatus("connected");
-      if (shouldCloseRef.current) ws.close();
+      try {
+        ws.send(JSON.stringify({ type: "getPullbackState" }));
+      } catch {
+        // ignore
+      }
+      pollTrade().catch(() => {});
     };
     ws.onclose = () => setWsStatus("disconnected");
     ws.onerror = () => setWsStatus("error");
@@ -86,22 +109,39 @@ export default function PullbackTestPage() {
       if (type === "pullback.status" || type === "pullback.state") {
         setPb(payload || null);
       }
-      if (type === "trade.positions") setPositions(payload?.positions || []);
-      if (type === "trade.orders") setOrders(payload?.orders || []);
+      if (type === "trade.positions") {
+        pendingRef.current.set("positions", payload?.positions || []);
+        pendingRef.current.set("tradeStatus", payload?.tradeStatus || null);
+        pendingRef.current.set("warnings", payload?.warnings || []);
+      }
+      if (type === "trade.orders") pendingRef.current.set("orders", payload?.orders || []);
       if (type === "trade.killswitch") setTradeState((p) => ({ ...(p || {}), killSwitch: payload?.enabled }));
-      if (type === "pullback.start.ack") showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест запущен" : (payload?.error || "Start failed"));
-      if (type === "pullback.stop.ack") showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест остановлен" : (payload?.error || "Stop failed"));
+      if (type === "pullback.start.ack") {
+        if (payload?.state) setPb(payload.state);
+        showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест запущен" : (payload?.error || "Start failed"));
+      }
+      if (type === "pullback.stop.ack") {
+        if (payload?.state) setPb(payload.state);
+        showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест остановлен" : (payload?.error || "Stop failed"));
+      }
     };
 
-    const id = setInterval(() => { if (!stopped) pollTrade().catch(() => {}); }, 4000);
+    const id = setInterval(() => pollTrade().catch(() => {}), 4000);
     return () => {
-      stopped = true;
+      shouldClose = true;
       clearInterval(id);
+      clearInterval(flushTimer);
+      pendingRef.current.clear();
       if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
-      shouldCloseRef.current = true;
-      if (ws.readyState === WebSocket.OPEN) ws.close();
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.close(1000, "cleanup");
+        } catch {
+          // ignore
+        }
+      }
     };
-  }, [wsUrl, symbol]);
+  }, [wsUrl]);
 
   const start = () => {
     if (mode === "real" && realConfirmText !== "REAL") return showAck("warning", "Введите REAL для подтверждения.");

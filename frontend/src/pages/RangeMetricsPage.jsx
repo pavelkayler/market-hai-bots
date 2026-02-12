@@ -2,11 +2,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Badge, Button, Card, Col, Form, Nav, Row, Tab, Table } from "react-bootstrap";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
-const toWsUrl = (apiBase) => { try { const u = new URL(apiBase); return `${u.protocol === "https:" ? "wss:" : "ws:"}//${u.host}/ws`; } catch { return "ws://localhost:8080/ws"; } };
+
+function toWsUrl(apiBase) {
+  const u = new URL(apiBase);
+  const proto = u.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${u.host}/ws`;
+}
+
 const fmt = (x, d = 6) => (Number.isFinite(Number(x)) ? Number(x).toFixed(d) : "—");
 
 export default function RangeMetricsPage() {
   const wsRef = useRef(null);
+  const pendingRef = useRef(new Map());
   const [wsStatus, setWsStatus] = useState("connecting");
   const [mode, setMode] = useState("paper");
   const [realConfirmText, setRealConfirmText] = useState("");
@@ -18,10 +25,15 @@ export default function RangeMetricsPage() {
   const [history, setHistory] = useState([]);
   const [logs, setLogs] = useState([]);
   const [detectedMode, setDetectedMode] = useState("—");
-  const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
-  const symbol = range?.position?.symbol || range?.scan?.lastCandidate?.symbol || "BTCUSDT";
+  const wsUrl = useMemo(() => toWsUrl(API_BASE), [API_BASE]);
+  const symbolRef = useRef("BTCUSDT");
+
+  useEffect(() => {
+    symbolRef.current = range?.position?.symbol || range?.scan?.lastCandidate?.symbol || "BTCUSDT";
+  }, [range]);
 
   const poll = async () => {
+    const symbol = symbolRef.current;
     const q = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
     const [stateRes, posRes, ordRes, histRes] = await Promise.all([
       fetch(`${API_BASE}/api/trade/state`),
@@ -43,24 +55,73 @@ export default function RangeMetricsPage() {
   };
 
   useEffect(() => {
+    let shouldClose = false;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-    ws.onopen = () => setWsStatus("connected");
+
+    const flushTimer = setInterval(() => {
+      if (!pendingRef.current.size) return;
+      const next = {};
+      for (const [key, value] of pendingRef.current.entries()) next[key] = value;
+      pendingRef.current.clear();
+
+      if (next.positions !== undefined) setPositions(next.positions || []);
+      if (next.orders !== undefined) setOrders(next.orders || []);
+      if (next.logs !== undefined) setLogs((prev) => [...next.logs, ...prev].slice(0, 200));
+    }, 400);
+
+    ws.onopen = () => {
+      if (shouldClose) {
+        try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        return;
+      }
+      setWsStatus("connected");
+      try {
+        ws.send(JSON.stringify({ type: "getRangeState" }));
+      } catch {
+        // ignore
+      }
+      poll().catch(() => {});
+    };
     ws.onclose = () => setWsStatus("disconnected");
     ws.onerror = () => setWsStatus("error");
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
       const type = msg?.type === "event" ? msg.topic : msg.type;
       const payload = msg?.type === "event" ? msg.payload : msg.payload;
-      if (type === "snapshot") { setRange(payload?.rangeState || null); setLogs(payload?.rangeState?.logs || []); }
-      if (type === "range.status" || type === "range.state") { setRange(payload || null); setLogs(payload?.logs || []); }
-      if (type === "trade.positions") setPositions(payload?.positions || []);
-      if (type === "trade.orders") setOrders(payload?.orders || []);
-      if (type === "range.log") setLogs((p) => [payload, ...p].slice(0, 200));
+      if (type === "snapshot") {
+        setRange(payload?.rangeState || null);
+        setLogs(payload?.rangeState?.logs || []);
+      }
+      if (type === "range.status" || type === "range.state") {
+        setRange(payload || null);
+        setLogs(payload?.logs || []);
+      }
+      if (type === "trade.positions") pendingRef.current.set("positions", payload?.positions || []);
+      if (type === "trade.orders") pendingRef.current.set("orders", payload?.orders || []);
+      if (type === "range.log") {
+        const queued = pendingRef.current.get("logs") || [];
+        pendingRef.current.set("logs", [payload, ...queued].slice(0, 50));
+      }
+      if (type === "range.start.ack" || type === "range.stop.ack") {
+        if (payload?.state) setRange(payload.state);
+      }
     };
     const id = setInterval(() => poll().catch(() => {}), 4000);
-    return () => { clearInterval(id); if (ws.readyState === WebSocket.OPEN) ws.close(); };
-  }, [wsUrl, symbol]);
+    return () => {
+      shouldClose = true;
+      clearInterval(flushTimer);
+      clearInterval(id);
+      pendingRef.current.clear();
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.close(1000, "cleanup");
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [wsUrl]);
 
   const start = () => {
     if (mode === "real" && realConfirmText !== "REAL") return;
