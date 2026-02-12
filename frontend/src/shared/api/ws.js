@@ -24,6 +24,7 @@ export function createWsManager(
     heartbeatMs = 18000,
     initialBackoffMs = 500,
     maxBackoffMs = 10000,
+    outboxLimit = 200,
   } = {},
 ) {
   let ws = null;
@@ -34,6 +35,7 @@ export function createWsManager(
   let lastPongAt = Date.now();
   let backoffMs = initialBackoffMs;
   let status = "idle";
+  const outbox = [];
 
   const listeners = new Set();
   const statusListeners = new Set();
@@ -79,6 +81,19 @@ export function createWsManager(
     for (const fn of listeners) fn(event, parsed);
   };
 
+  const flushOutbox = () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !outbox.length) return;
+    while (outbox.length) {
+      const raw = outbox.shift();
+      try {
+        ws.send(raw);
+      } catch {
+        outbox.unshift(raw);
+        break;
+      }
+    }
+  };
+
   const startHeartbeat = () => {
     stopHeartbeat();
     heartbeatTimer = setInterval(() => {
@@ -120,6 +135,7 @@ export function createWsManager(
       sendJson({ type: "ping", ts: Date.now() });
       sendJson({ type: "getStatus" });
       sendJson({ type: "getSnapshot" });
+      flushOutbox();
       startHeartbeat();
     };
 
@@ -156,8 +172,13 @@ export function createWsManager(
   connect();
 
   const sendJson = (payload) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(JSON.stringify(payload));
+    const raw = JSON.stringify(payload);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      if (outbox.length >= outboxLimit) outbox.shift();
+      outbox.push(raw);
+      return true;
+    }
+    ws.send(raw);
     return true;
   };
 
