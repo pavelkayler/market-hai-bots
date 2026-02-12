@@ -2,7 +2,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, Col, Form, Row, Table } from "react-bootstrap";
 
-const WS_URL = "ws://localhost:8080/ws";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+
+function toWsUrl(apiBase) {
+  try {
+    const u = new URL(apiBase);
+    const proto = u.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${u.host}/ws`;
+  } catch {
+    return "ws://localhost:8080/ws";
+  }
+}
 
 function toSymbolList(text) {
   return text
@@ -53,8 +63,10 @@ export default function BybitPage() {
   const pendingBybitRef = useRef(new Map());
   const pendingBinanceRef = useRef(new Map());
 
+  const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
+
   useEffect(() => {
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     setWsStatus("connecting");
 
@@ -177,7 +189,7 @@ export default function BybitPage() {
       } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [wsUrl]);
 
   const selectedBybit = useMemo(() => bybitTickers[selected] || null, [bybitTickers, selected]);
   const selectedBinance = useMemo(() => binanceTickers[selected] || null, [binanceTickers, selected]);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Button, Card, Col, Form, Row, Table } from "react-bootstrap";
+import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Tab, Table, Tabs } from "react-bootstrap";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
@@ -33,6 +33,8 @@ function statusBadge(s) {
 
 export default function PaperTestPage() {
   const wsRef = useRef(null);
+  const startPopupTimerRef = useRef(null);
+  const startPopupVisibleRef = useRef(false);
 
   const [wsStatus, setWsStatus] = useState("disconnected");
 
@@ -45,8 +47,21 @@ export default function PaperTestPage() {
   const [pending, setPending] = useState(null);
 
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [showStartPopup, setShowStartPopup] = useState(false);
+  const [showPreset, setShowPreset] = useState(false);
 
   const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
+
+  const triggerStartPopup = () => {
+    if (startPopupVisibleRef.current) return;
+    startPopupVisibleRef.current = true;
+    setShowStartPopup(true);
+    if (startPopupTimerRef.current) clearTimeout(startPopupTimerRef.current);
+    startPopupTimerRef.current = setTimeout(() => {
+      startPopupVisibleRef.current = false;
+      setShowStartPopup(false);
+    }, 2000);
+  };
 
   useEffect(() => {
     const ws = new WebSocket(wsUrl);
@@ -86,6 +101,11 @@ export default function PaperTestPage() {
         return;
       }
 
+      if (msg.type === "paper.start.ack" && msg.payload?.ok) {
+        triggerStartPopup();
+        return;
+      }
+
       if (msg.type === "paper.position") {
         setPosition(msg.payload || null);
         return;
@@ -117,18 +137,17 @@ export default function PaperTestPage() {
         setPosition(msg.payload?.position || null);
         setPending(msg.payload?.pending || null);
         if (msg.payload?.preset) setPresetText(JSON.stringify(msg.payload.preset, null, 2));
-        return;
       }
     };
 
     return () => {
+      if (startPopupTimerRef.current) clearTimeout(startPopupTimerRef.current);
       try {
         ws.close();
       } catch {}
     };
   }, [wsUrl]);
 
-  // elapsed timer (ticks only while RUNNING)
   useEffect(() => {
     const t = setInterval(() => {
       if (paper?.status !== "RUNNING") return;
@@ -142,8 +161,8 @@ export default function PaperTestPage() {
 
   const startPaper = () => {
     try {
-      // preset can be edited later; for now send nothing (use backend defaults)
       wsRef.current?.send(JSON.stringify({ type: "startPaperTest" }));
+      triggerStartPopup();
     } catch {}
   };
 
@@ -160,6 +179,7 @@ export default function PaperTestPage() {
   };
 
   const running = paper?.status === "RUNNING";
+  const monoStyle = { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" };
 
   return (
     <Row className="g-3">
@@ -180,6 +200,8 @@ export default function PaperTestPage() {
               </Badge>
             </div>
 
+            {showStartPopup ? <Alert variant="success" className="mb-0 py-2">Тест запущен</Alert> : null}
+
             <div className="text-muted">
               WS URL: {wsUrl}
             </div>
@@ -195,64 +217,27 @@ export default function PaperTestPage() {
                 Refresh
               </Button>
             </div>
-
-            <hr className="my-2" />
-
-            <div className="d-flex align-items-center justify-content-between">
-              <div className="fw-semibold">Started</div>
-              <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-                {paper?.startedAt ? fmtTs(paper.startedAt) : "—"}
-              </div>
-            </div>
-
-            <div className="d-flex align-items-center justify-content-between">
-              <div className="fw-semibold">Elapsed</div>
-              <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-                {running ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}
-              </div>
-            </div>
-
-            <hr className="my-2" />
-
-            <div className="fw-semibold">Summary</div>
-            <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-              trades: {paper?.stats?.trades ?? 0} | wins: {paper?.stats?.wins ?? 0} | losses: {paper?.stats?.losses ?? 0}
-              <br />
-              pnlUSDT: {fmtNum(paper?.stats?.pnlUSDT, 4)}
-            </div>
-
-            <hr className="my-2" />
-
-            <div className="fw-semibold">Position</div>
-            {!position ? (
-              <div className="text-muted">—</div>
-            ) : (
-              <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-                {position.side} {position.symbol}
-                <br />
-                entry: {fmtNum(position.entryPrice)} | tp: {fmtNum(position.tpPrice)} | sl: {fmtNum(position.slPrice)}
-              </div>
-            )}
-
-            <hr className="my-2" />
-
-            <div className="fw-semibold">Pending</div>
-            {!pending ? (
-              <div className="text-muted">—</div>
-            ) : (
-              <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-                {pending.side} {pending.symbol}
-                <br />
-                execAt: {fmtTs(pending.executeAt)}
-              </div>
-            )}
           </Card.Body>
         </Card>
 
         <Card className="mt-3">
           <Card.Body>
-            <div className="fw-semibold mb-2">Preset (current)</div>
-            <Form.Control as="textarea" rows={12} value={presetText} readOnly style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }} />
+            <Button
+              variant="outline-secondary"
+              size="sm"
+              onClick={() => setShowPreset((p) => !p)}
+              aria-controls="paper-preset"
+              aria-expanded={showPreset}
+              className="mb-2"
+            >
+              {showPreset ? "Hide preset" : "Show preset"}
+            </Button>
+            <Collapse in={showPreset}>
+              <div id="paper-preset">
+                <div className="fw-semibold mb-2">Preset (current)</div>
+                <Form.Control as="textarea" rows={12} value={presetText} readOnly style={monoStyle} />
+              </div>
+            </Collapse>
           </Card.Body>
         </Card>
       </Col>
@@ -260,70 +245,118 @@ export default function PaperTestPage() {
       <Col md={8}>
         <Card>
           <Card.Body>
-            <div className="fw-semibold mb-2">Trades (latest)</div>
-            <Table bordered size="sm" responsive>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <th>PnL USDT</th>
-                  <th>Reason</th>
-                </tr>
-              </thead>
-              <tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-                {trades.slice(0, 20).map((t, i) => (
-                  <tr key={i}>
-                    <td>{fmtTs(t.closedAt)}</td>
-                    <td>{t.symbol}</td>
-                    <td>{t.side}</td>
-                    <td>{fmtNum(t.entryPrice)}</td>
-                    <td>{fmtNum(t.exitPrice)}</td>
-                    <td>{fmtNum(t.pnlUSDT, 4)}</td>
-                    <td>{t.reason}</td>
-                  </tr>
-                ))}
-                {trades.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="text-muted">Пока нет сделок.</td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </Table>
-          </Card.Body>
-        </Card>
-
-        <Card className="mt-3">
-          <Card.Body>
-            <div className="d-flex align-items-center justify-content-between mb-2">
-              <div className="fw-semibold">Logs (newest first)</div>
-              <div className="text-muted">{logs.length} rows</div>
-            </div>
-
-            <div
-              style={{
-                height: 280,
-                overflow: "auto",
-                border: "1px solid #e5e7eb",
-                borderRadius: 6,
-                padding: 8,
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-                fontSize: 12,
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {logs.length === 0 ? (
-                <div className="text-muted">—</div>
-              ) : (
-                logs.map((l, idx) => (
-                  <div key={idx}>
-                    [{fmtTs(l.ts)}] {l.level?.toUpperCase?.() || "INFO"} — {l.msg}
+            <Tabs defaultActiveKey="summary" id="paper-tabs" className="mb-3">
+              <Tab eventKey="summary" title="Кратко">
+                <div className="d-grid gap-2">
+                  <div className="d-flex align-items-center justify-content-between">
+                    <div className="fw-semibold">Started</div>
+                    <div style={monoStyle}>{paper?.startedAt ? fmtTs(paper.startedAt) : "—"}</div>
                   </div>
-                ))
-              )}
-            </div>
+                  <div className="d-flex align-items-center justify-content-between">
+                    <div className="fw-semibold">Elapsed</div>
+                    <div style={monoStyle}>{running ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}</div>
+                  </div>
+
+                  <div className="fw-semibold mt-2">Summary</div>
+                  <div style={monoStyle}>
+                    trades: {paper?.stats?.trades ?? 0} | wins: {paper?.stats?.wins ?? 0} | losses: {paper?.stats?.losses ?? 0}
+                    <br />
+                    pnlUSDT: {fmtNum(paper?.stats?.pnlUSDT, 4)}
+                  </div>
+
+                  <div className="fw-semibold mt-2">Position</div>
+                  {!position ? (
+                    <div className="text-muted">—</div>
+                  ) : (
+                    <div style={monoStyle}>
+                      {position.side} {position.symbol}
+                      <br />
+                      entry: {fmtNum(position.entryPrice)} | tp: {fmtNum(position.tpPrice)} | sl: {fmtNum(position.slPrice)}
+                    </div>
+                  )}
+
+                  <div className="fw-semibold mt-2">Pending</div>
+                  {!pending ? (
+                    <div className="text-muted">—</div>
+                  ) : (
+                    <div style={monoStyle}>
+                      {pending.side} {pending.symbol}
+                      <br />
+                      execAt: {fmtTs(pending.executeAt)}
+                    </div>
+                  )}
+                </div>
+              </Tab>
+
+              <Tab eventKey="details" title="Детально">
+                <div className="fw-semibold mb-2">Trades (latest)</div>
+                <Table bordered size="sm" responsive>
+                  <thead>
+                    <tr>
+                      <th style={{ width: "16%" }}>Time</th>
+                      <th style={{ width: "12%" }}>Symbol</th>
+                      <th style={{ width: "9%" }}>Side</th>
+                      <th className="text-end" style={{ width: "14%" }}>Entry</th>
+                      <th className="text-end" style={{ width: "14%" }}>Exit</th>
+                      <th className="text-end" style={{ width: "14%" }}>PnL USDT</th>
+                      <th>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody style={monoStyle}>
+                    {trades.slice(0, 20).map((t, i) => (
+                      <tr key={i}>
+                        <td>{fmtTs(t.closedAt)}</td>
+                        <td>{t.symbol}</td>
+                        <td>{t.side}</td>
+                        <td className="text-end">{fmtNum(t.entryPrice)}</td>
+                        <td className="text-end">{fmtNum(t.exitPrice)}</td>
+                        <td className="text-end">{fmtNum(t.pnlUSDT, 4)}</td>
+                        <td>{t.reason}</td>
+                      </tr>
+                    ))}
+                    {trades.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="text-muted">Пока нет сделок.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </Table>
+
+                <Card className="mt-3">
+                  <Card.Body>
+                    <div className="d-flex align-items-center justify-content-between mb-2">
+                      <div className="fw-semibold">Logs (newest first)</div>
+                      <div className="text-muted">{logs.length} rows</div>
+                    </div>
+
+                    <div
+                      style={{
+                        minHeight: 220,
+                        maxHeight: 420,
+                        overflow: "auto",
+                        resize: "vertical",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 6,
+                        padding: 8,
+                        ...monoStyle,
+                        fontSize: 12,
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {logs.length === 0 ? (
+                        <div className="text-muted">—</div>
+                      ) : (
+                        logs.map((l, idx) => (
+                          <div key={idx}>
+                            [{fmtTs(l.ts || l.t)}] {l.level?.toUpperCase?.() || "INFO"} — {l.msg}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </Card.Body>
+                </Card>
+              </Tab>
+            </Tabs>
           </Card.Body>
         </Card>
       </Col>
