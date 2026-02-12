@@ -1,8 +1,7 @@
 export function sourceTag(source) {
   const src = String(source || "").toUpperCase();
   if (src === "BT" || src === "BYBIT") return "BT";
-  if (src === "BNB" || src === "BINANCE") return "BNB";
-  return "?";
+    return "?";
 }
 
 export function formatPriceWithSource(ticker, fallback = "—") {

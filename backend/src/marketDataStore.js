@@ -1,5 +1,3 @@
-// backend/src/marketDataStore.js
-
 function normalizeSymbol(symbol) {
   return String(symbol || "").trim().toUpperCase();
 }
@@ -7,7 +5,6 @@ function normalizeSymbol(symbol) {
 function normalizeSource(source) {
   const src = String(source || "").trim().toUpperCase();
   if (src === "BT" || src === "BYBIT") return "BT";
-  if (src === "BNB" || src === "BINANCE") return "BNB";
   return null;
 }
 
@@ -17,7 +14,7 @@ function numOrNull(v) {
 }
 
 export function createMarketDataStore() {
-  const tickers = new Map(); // key: `${source}:${symbol}` -> ticker
+  const tickers = new Map();
 
   function keyOf(source, symbol) {
     return `${source}:${symbol}`;
@@ -31,45 +28,41 @@ export function createMarketDataStore() {
     const bid = numOrNull(input?.bid);
     const ask = numOrNull(input?.ask);
     const last = numOrNull(input?.last);
-    const mark = source === "BT" ? numOrNull(input?.mark) : null;
+    const mark = numOrNull(input?.mark);
+    const fundingRate = numOrNull(input?.fundingRate ?? input?.funding);
+    const bybitTs = numOrNull(input?.bybitTs ?? input?.tsExchange ?? input?.exchangeTs ?? input?.msgTs);
 
     const mid = bid !== null && ask !== null ? (bid + ask) / 2 : last;
     const tsRaw = Number(input?.ts ?? input?.receivedAt ?? Date.now());
     const ts = Number.isFinite(tsRaw) ? tsRaw : Date.now();
 
-    const ticker = { symbol, source, ts, bid, ask, mid, last, mark };
+    const ticker = { symbol, source, ts, bid, ask, mid, last, mark, fundingRate, bybitTs };
     tickers.set(keyOf(source, symbol), ticker);
     return ticker;
   }
 
-  function getTicker(symbol, source) {
+  function getTicker(symbol, source = 'BT') {
     const sym = normalizeSymbol(symbol);
     const src = normalizeSource(source);
     if (!sym || !src) return null;
     return tickers.get(keyOf(src, sym)) || null;
   }
 
-  function getTickersArray() {
-    return [...tickers.values()];
-  }
+  function getTickersArray() { return [...tickers.values()]; }
 
   function getTickersBySource(source) {
     const src = normalizeSource(source);
     if (!src) return {};
     const out = {};
-    for (const t of tickers.values()) {
-      if (t.source === src) out[t.symbol] = t;
-    }
+    for (const t of tickers.values()) if (t.source === src) out[t.symbol] = t;
     return out;
   }
 
   return { upsertTicker, getTicker, getTickersArray, getTickersBySource };
 }
 
-export function toLegacySource(source) {
-  const src = normalizeSource(source);
-  if (src === "BNB") return "binance";
-  return "bybit";
+export function toLegacySource() {
+  return 'bybit';
 }
 
 export function toTickerSourceCode(source) {

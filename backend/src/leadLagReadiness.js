@@ -42,8 +42,8 @@ export function evaluateTradeReady({
   const params = preset?.params || {};
   const follower = String(row?.follower || "").toUpperCase();
   const leader = String(row?.leader || "").toUpperCase();
-  const followersBars = getBars?.(follower, 200, "BNB") || [];
-  const leaderBars = getBars?.(leader, 200, "BNB") || [];
+  const followersBars = getBars?.(follower, 200, "BT") || [];
+  const leaderBars = getBars?.(leader, 200, "BT") || [];
 
   const blockers = [];
 
@@ -54,7 +54,7 @@ export function evaluateTradeReady({
   const sinceTrade = Date.now() - n(lastTradeAt, 0);
   blockers.push({ key: "cooldown", value: sinceTrade, threshold: cooldownMs, pass: sinceTrade >= cooldownMs, detail: `sinceTradeMs=${Math.trunc(sinceTrade)}` });
 
-  const excluded = excludedCoins.some((x) => String(x?.symbol || "").toUpperCase() === follower && ["ANY", "BNB"].includes(String(x?.source || "ANY").toUpperCase()));
+  const excluded = excludedCoins.some((x) => String(x?.symbol || "").toUpperCase() === follower && ["ANY", "BT"].includes(String(x?.source || "ANY").toUpperCase()));
   blockers.push({ key: "excluded", value: excluded ? 1 : 0, threshold: 0, pass: !excluded, detail: excluded ? "follower in blacklist" : "not excluded" });
 
   const impulseInfo = hasFreshImpulse(leaderBars, n(params.impulseZ, 2), Math.max(bucketMs * 4, n(params.entryWindowMs, 3000)));

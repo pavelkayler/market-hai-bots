@@ -6,7 +6,6 @@ import dotenv from "dotenv";
 import WebSocket from "ws";
 
 import { createBybitPublicWs } from "../bybitPublicWs.js";
-import { createBinanceSpotWs } from "../binanceSpotWs.js";
 import { createMicroBarAggregator } from "../microBars.js";
 import { createLeadLag } from "../leadLag.js";
 import { evaluateTradeReady } from "../leadLagReadiness.js";
@@ -18,7 +17,7 @@ import { createBybitPrivateRest } from "../bybitPrivateRest.js";
 import { createBybitInstrumentsCache } from "../bybitInstrumentsCache.js";
 import { createBybitTradeExecutor } from "../bybitTradeExecutor.js";
 import { createBybitRest } from "../bybitRest.js";
-import { createMarketDataStore, toTickerSourceCode } from "../marketDataStore.js";
+import { createMarketDataStore } from "../marketDataStore.js";
 import { createPresetsStore } from "../presetsStore.js";
 import { createImpulseBot } from "../impulseBot.js";
 import { createJournalStore } from "../journalStore.js";
@@ -56,7 +55,7 @@ function broadcastEvent(topic, payload) {
 const DEFAULT_SYMBOL_LIMIT = Number(process.env.DEFAULT_SYMBOL_LIMIT || 500);
 
 const DEFAULT_SYMBOLS = [
-  "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
+  "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
   "DOTUSDT","MATICUSDT","TONUSDT","LTCUSDT","BCHUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","ATOMUSDT",
   "FILUSDT","ETCUSDT","HBARUSDT","XLMUSDT","SUIUSDT","SEIUSDT","INJUSDT","AAVEUSDT","UNIUSDT","ALGOUSDT",
   "RUNEUSDT","GALAUSDT","PEPEUSDT","SHIBUSDT","WIFUSDT","TIAUSDT","JUPUSDT","PYTHUSDT","CRVUSDT","MKRUSDT",
@@ -152,8 +151,7 @@ const marketBars = createMicroBarAggregator({
   bucketMs: 250,
   keepMs: 120000,
   onBar: (bar) => {
-    const legacyType = bar.source === "BNB" ? "binance.bar" : "bybit.bar";
-    broadcast({ type: legacyType, payload: bar });
+    broadcast({ type: "bybit.bar", payload: bar });
   },
 });
 const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 5000, minSamples: 200, impulseZ: 2.0, minImpulses: 5 });
@@ -175,21 +173,8 @@ const bybit = createBybitPublicWs({
   },
   onLiquidation: (ev) => pushLiq(ev),
 });
-const binance = createBinanceSpotWs({
-  symbols: [],
-  logger: app.log,
-  onStatus: (s) => broadcast({ type: "binance.status", payload: s }),
-  onTicker: (t) => {
-    const normalized = marketData.upsertTicker({ ...t, source: "BNB" });
-    if (!normalized) return;
-    marketBars.ingest(normalized);
-    broadcast({ type: "binance.ticker", payload: normalized });
-    broadcast({ type: "market.ticker", payload: normalized });
-    broadcastEvent("market.ticker", normalized);
-  },
-});
 
-const subscriptions = createSubscriptionManager({ bybit, binance, logger: app.log });
+const subscriptions = createSubscriptionManager({ bybit, logger: app.log });
 
 const tradeBaseUrl = process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com";
 const privateRest = createBybitPrivateRest({
@@ -265,7 +250,6 @@ const universe = createCmcBybitUniverse({
   minMarketCapUsd: 10_000_000,
   maxUniverse: 500,
   getBybitFeedSymbols: () => bybit.getSymbols(),
-  getBinanceFeedSymbols: () => binance.getSymbols(),
   onUniverseUpdated: (payload) => {
     broadcastEvent("universe.updated", payload);
   },
@@ -326,15 +310,12 @@ async function getTradeSnapshot(symbol) {
 
 function getSnapshotPayload() {
   const bybitTickers = marketData.getTickersBySource("BT");
-  const binanceTickers = marketData.getTickersBySource("BNB");
   return {
     now: Date.now(),
     bybit: bybit.getStatus(),
-    binance: binance.getStatus(),
     symbols: bybit.getSymbols(),
     symbolLimit: DEFAULT_SYMBOL_LIMIT,
     bybitTickers,
-    binanceTickers,
     marketTickers: marketData.getTickersArray(),
     leadLagTop: lastLeadLagTop,
     paperState: paperTest.getState(),
@@ -386,7 +367,7 @@ function getBotsOverview() {
 function computeLeadLagTop() {
   const symbols = bybit.getSymbols();
   const leaders = ["BTCUSDT", "ETHUSDT", "SOLUSDT"].filter((sym) => symbols.includes(sym));
-  const followers = symbols.filter((sym) => marketBars.getBars(sym, 200, "BNB").length >= 30);
+  const followers = symbols.filter((sym) => marketBars.getBars(sym, 200, "BT").length >= 30);
   const eligible = [...new Set([...leaders, ...followers])];
   const activePreset = presetsStore.getActivePreset();
   const params = activePreset?.params || {};
@@ -395,7 +376,7 @@ function computeLeadLagTop() {
   const top = leadLag.computeTop({
     leaders,
     symbols: eligible,
-    getBars: (sym, n) => marketBars.getBars(sym, n, "BNB"),
+    getBars: (sym, n) => marketBars.getBars(sym, n, "BT"),
     topN: 10,
     windowBars: 480,
     params,
@@ -412,16 +393,17 @@ function computeLeadLagTop() {
     });
     return {
       ...r,
-      leaderSrc: "binance",
-      followerSrc: "binance",
-      source: "BNB",
+      leaderSrc: "bybit",
+      followerSrc: "bybit",
+      source: "BT",
       tradeReady: readiness.tradeReady,
       blockers: readiness.blockers,
     };
   });
 
+  paperTest.setSearchRows?.(lastLeadLagTop);
   broadcast({ type: "leadlag.top", payload: lastLeadLagTop });
-  broadcastEvent("leadlag.top", { ts: Date.now(), source: "BNB", rows: lastLeadLagTop });
+  broadcastEvent("leadlag.top", { ts: Date.now(), source: "BT", rows: lastLeadLagTop });
 }
 function shouldComputeLeadLagTop() {
   if (leadLagSearchActive) return true;
@@ -456,9 +438,6 @@ app.get("/api/heartbeat", async () => ({ status: "ok", now: Date.now(), uptime_m
 app.get("/api/bybit/status", async () => bybit.getStatus());
 app.get("/api/bybit/symbols", async () => ({ symbols: bybit.getSymbols() }));
 app.get("/api/bybit/tickers", async () => bybit.getTickers());
-app.get("/api/binance/status", async () => binance.getStatus());
-app.get("/api/binance/symbols", async () => ({ symbols: binance.getSymbols() }));
-app.get("/api/binance/tickers", async () => binance.getTickers());
 app.get("/api/market/tickers", async () => ({ ts: Date.now(), tickers: marketData.getTickersArray() }));
 app.get("/api/market/snapshot", async () => ({ ts: Date.now(), tickers: marketData.getTickersArray() }));
 app.get("/api/subscriptions", async () => subscriptions.getState());
@@ -541,6 +520,45 @@ app.post("/api/presets/:id/select", async (req) => {
   return { ok, ...payload };
 });
 
+
+const statusWatchers = new Map();
+function getBybitHealth() {
+  const t = marketData.getTicker('BTCUSDT', 'BT');
+  const now = Date.now();
+  const lastTickerAt = Number(t?.ts || 0) || null;
+  const lastBybitTs = Number(t?.bybitTs || t?.ts || 0) || null;
+  const ageMs = lastTickerAt ? Math.max(0, now - lastTickerAt) : null;
+  return {
+    status: bybit.getStatus?.()?.status || 'disconnected',
+    url: bybit.getStatus?.()?.url || null,
+    symbol: 'BTCUSDT',
+    lastTickerAt,
+    lastBybitTs,
+    ageMs,
+  };
+}
+function stopStatusWatcher(ws) {
+  const st = statusWatchers.get(ws);
+  if (!st) return;
+  if (st.timer) clearInterval(st.timer);
+  statusWatchers.delete(ws);
+  subscriptions.releaseFeed(`status-page:${st.id}`);
+}
+function startStatusWatcher(ws) {
+  const existing = statusWatchers.get(ws);
+  if (existing) return;
+  const id = Math.random().toString(36).slice(2);
+  subscriptions.requestFeed(`status-page:${id}`, { bybitSymbols: ['BTCUSDT'], streams: ['ticker'] });
+  const st = { id, lastSeenAt: Date.now(), rttMs: null, lastPongAt: null, timer: null };
+  st.timer = setInterval(() => {
+    sendEvent(ws, 'status.health', {
+      backendWs: { connected: true, lastSeenAt: st.lastSeenAt, rttMs: st.rttMs, lastPongAt: st.lastPongAt },
+      bybitWs: getBybitHealth(),
+    });
+  }, 5000);
+  statusWatchers.set(ws, st);
+}
+
 app.get("/ws", { websocket: true }, (conn) => {
   const ws = conn.socket;
   clients.add(ws);
@@ -554,6 +572,19 @@ app.get("/ws", { websocket: true }, (conn) => {
     let msg; try { msg = JSON.parse(raw.toString("utf8")); } catch { return; }
     if (!msg?.type) return;
     if (msg.type === "ping") return safeSend(ws, { type: "pong", payload: { now: Date.now() } });
+    if (msg.type === "status.watch") {
+      if (msg?.active || msg?.payload?.active) startStatusWatcher(ws);
+      else stopStatusWatcher(ws);
+      safeSend(ws, { type: "status.watch.ack", payload: { active: Boolean(statusWatchers.get(ws)) } });
+      return;
+    }
+    if (msg.type === "status.ping") {
+      const ts = Number(msg?.ts || msg?.payload?.ts || Date.now());
+      const st = statusWatchers.get(ws);
+      if (st) { st.lastSeenAt = Date.now(); st.rttMs = Math.max(0, Date.now() - ts); st.lastPongAt = Date.now(); }
+      safeSend(ws, { type: "status.pong", payload: { tsEcho: ts, now: Date.now() } });
+      return;
+    }
     if (msg.type === "getSnapshot") {
       Promise.resolve(getTradeSnapshot()).then((tradeSnap) => safeSend(ws, { type: "snapshot", payload: { ...getSnapshotPayload(), tradePositions: tradeSnap.positions, tradeOrders: tradeSnap.orders } }));
       safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
@@ -564,7 +595,7 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "setSymbols") {
       const maxSymbols = Number(msg.maxSymbols || 100);
       const next = normalizeSymbols(msg.symbols, Math.max(1, Math.min(100, maxSymbols)));
-      subscriptions.requestFeed("manual-watchlist", { bybitSymbols: next, binanceSymbols: next, streams: ["ticker"] });
+      subscriptions.requestFeed("manual-watchlist", { bybitSymbols: next, streams: ["ticker"] });
       safeSend(ws, { type: "setSymbols.ack", payload: { symbols: next } });
       Promise.resolve(getTradeSnapshot()).then((tradeSnap) => safeSend(ws, { type: "snapshot", payload: { ...getSnapshotPayload(), tradePositions: tradeSnap.positions, tradeOrders: tradeSnap.orders } }));
       safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
@@ -574,7 +605,7 @@ app.get("/ws", { websocket: true }, (conn) => {
 
     if (msg.type === "getBars") {
       const symbol = String(msg.symbol || "").toUpperCase();
-      const sourceCode = toTickerSourceCode(msg.source === "binance" ? "BNB" : msg.source === "bybit" ? "BT" : msg.source) || "BT";
+      const sourceCode = "BT";
       const requestedN = Number(msg.n);
       const n = Number.isFinite(requestedN) ? Math.max(1, Math.min(2000, Math.trunc(requestedN))) : 200;
       const bars = marketBars.getBars(symbol, n, sourceCode);
@@ -597,7 +628,7 @@ app.get("/ws", { websocket: true }, (conn) => {
       applyPresetGuardrails(presetsStore.getPresetById?.(presetId) || presetsStore.getActivePreset?.());
       const leader = String(settings?.leaderSymbol || "BTCUSDT").toUpperCase();
       const follower = String(settings?.followerSymbol || "ETHUSDT").toUpperCase();
-      subscriptions.requestFeed("leadlag-trading", { bybitSymbols: [leader, follower], binanceSymbols: [leader, follower], streams: ["ticker"] });
+      subscriptions.requestFeed("leadlag-trading", { bybitSymbols: [leader, follower], streams: ["ticker"] });
       const result = paperTest.start({ presetId, mode: msg.mode || "paper", settings });
       const currentState = paperTest.getState();
       safeSend(ws, { type: "leadlag.start.ack", payload: { ok: Boolean(result?.ok), state: currentState, settings: currentState?.settings || settings } });
@@ -616,7 +647,7 @@ app.get("/ws", { websocket: true }, (conn) => {
 
     if (msg.type === "startLeadLagSearch") {
       const universe = normalizeSymbols(msg.symbols || universeGet(), 80);
-      subscriptions.requestFeed("leadlag-search", { bybitSymbols: universe, binanceSymbols: universe, streams: ["ticker"] });
+      subscriptions.requestFeed("leadlag-search", { bybitSymbols: universe, streams: ["ticker"] });
       leadLagSearchActive = true;
       safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: true } });
       return;
@@ -625,6 +656,14 @@ app.get("/ws", { websocket: true }, (conn) => {
       subscriptions.releaseFeed("leadlag-search");
       leadLagSearchActive = false;
       safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: false } });
+      return;
+    }
+
+    if (msg.type === "resetLeadLag") {
+      paperTest.stop({ reason: "reset" });
+      subscriptions.releaseFeed("leadlag-trading");
+      const payload = paperTest.reset();
+      safeSend(ws, { type: "leadlag.reset.ack", payload });
       return;
     }
 
@@ -672,7 +711,7 @@ app.get("/ws", { websocket: true }, (conn) => {
       applyPresetGuardrails(presetsStore.getActivePreset?.());
       safeSend(ws, { type: "range.start.ack", payload: { ok: true, mode } });
       const symbols = universe.getUniverse({ limit: 120 }).symbols || [];
-      subscriptions.requestFeed("range", { bybitSymbols: symbols, binanceSymbols: symbols, streams: ["ticker"], needsOi: true });
+      subscriptions.requestFeed("range", { bybitSymbols: symbols, streams: ["ticker"], needsOi: true });
       rangeTest.start({ mode, preset: msg.preset && typeof msg.preset === "object" ? msg.preset : null });
       return;
     }
@@ -683,7 +722,7 @@ app.get("/ws", { websocket: true }, (conn) => {
       const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
       safeSend(ws, { type: "impulse.start.ack", payload: { ok: true, mode } });
       const symbols = universe.getUniverse({ limit: 80 }).symbols || [];
-      subscriptions.requestFeed("impulse", { bybitSymbols: symbols, binanceSymbols: [], streams: ["ticker"], needsOi: true });
+      subscriptions.requestFeed("impulse", { bybitSymbols: symbols, streams: ["ticker"], needsOi: true });
       impulseBot.start({ mode, settings: msg.settings && typeof msg.settings === "object" ? msg.settings : {} });
       return;
     }
@@ -697,7 +736,7 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "getImpulseState") return safeSend(ws, { type: "impulse.state", payload: impulseBot.getState() });
   });
 
-  ws.on("close", () => clients.delete(ws));
+  ws.on("close", () => { stopStatusWatcher(ws); clients.delete(ws); });
 });
 
 await app.listen({ port: PORT, host: HOST });

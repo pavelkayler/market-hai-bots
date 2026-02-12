@@ -10,36 +10,30 @@ async function fetchJson(path) {
   return res.json()
 }
 
+const age = (ts) => (Number.isFinite(Number(ts)) ? Math.max(0, Date.now() - Number(ts)) : null)
+
 export default function StatusPage() {
   const [loading, setLoading] = useState(true)
   const [health, setHealth] = useState(null)
   const [heartbeat, setHeartbeat] = useState(null)
   const [error, setError] = useState('')
-  const [backendWs, setBackendWs] = useState({ bybit: null, binance: null })
+  const [healthWs, setHealthWs] = useState({ backendWs: { connected: false }, bybitWs: { status: 'waiting' }, lastPongAt: null, rttMs: null })
 
   const onWsMessage = useMemo(() => (ev) => {
     let msg
     try { msg = JSON.parse(ev.data) } catch { return }
     const type = msg.type === 'event' ? msg.topic : msg.type
-    if (type === 'snapshot') {
-      setBackendWs({ bybit: msg.payload?.bybit || null, binance: msg.payload?.binance || null })
+    if (type === 'status.health') {
+      setHealthWs((prev) => ({ ...prev, ...(msg.payload || {}) }))
       return
     }
-    if (type === 'bybit.status') {
-      setBackendWs((prev) => ({ ...prev, bybit: msg.payload || null }))
-      return
-    }
-    if (type === 'binance.status') {
-      setBackendWs((prev) => ({ ...prev, binance: msg.payload || null }))
+    if (type === 'status.pong') {
+      const tsEcho = Number(msg.payload?.tsEcho || Date.now())
+      setHealthWs((prev) => ({ ...prev, lastPongAt: Date.now(), rttMs: Math.max(0, Date.now() - tsEcho) }))
     }
   }, [])
 
-  const { status: localhostWsStatus, wsUrl } = useWsClient({ onMessage: onWsMessage })
-
-  const bybitStatus = String(backendWs.bybit?.status || 'disconnected').toLowerCase()
-  const binanceStatus = String(backendWs.binance?.status || 'disconnected').toLowerCase()
-
-  const wsBadgeVariant = (s) => (s === 'connected' ? 'success' : s === 'connecting' || s === 'reconnecting' ? 'warning' : 'secondary')
+  const { status: localhostWsStatus, wsUrl, sendJson } = useWsClient({ onMessage: onWsMessage })
 
   async function loadHttp() {
     setError('')
@@ -49,9 +43,7 @@ export default function StatusPage() {
       setHeartbeat(hb)
     } catch (e) {
       setError(String(e?.message || e))
-    } finally {
-      setLoading(false)
-    }
+    } finally { setLoading(false) }
   }
 
   useEffect(() => {
@@ -60,59 +52,34 @@ export default function StatusPage() {
     return () => clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    if (localhostWsStatus !== 'connected') return
+    sendJson({ type: 'status.watch', active: true })
+    const pingTimer = setInterval(() => sendJson({ type: 'status.ping', ts: Date.now() }), 5000)
+    return () => {
+      clearInterval(pingTimer)
+      sendJson({ type: 'status.watch', active: false })
+    }
+  }, [localhostWsStatus, sendJson])
+
+  const wsBadgeVariant = (s) => (s === 'connected' ? 'success' : s === 'waiting' || s === 'connecting' || s === 'reconnecting' ? 'warning' : 'secondary')
+
   return (
     <div className='d-grid gap-3'>
       <h3 className='m-0'>Backend status</h3>
       {error && <Alert variant='danger'>{error}</Alert>}
-      <Card>
-        <Card.Body className='d-flex align-items-center justify-content-between'>
-          <div>
-            <div className='fw-semibold'>API Base</div>
-            <div className='text-muted'>{API_BASE}</div>
-          </div>
-          <Button onClick={loadHttp} variant='primary' disabled={loading}>{loading ? 'Loading...' : 'Refresh'}</Button>
-        </Card.Body>
-      </Card>
+      <Card><Card.Body className='d-flex align-items-center justify-content-between'><div><div className='fw-semibold'>API Base</div><div className='text-muted'>{API_BASE}</div></div><Button onClick={loadHttp} variant='primary' disabled={loading}>{loading ? 'Loading...' : 'Refresh'}</Button></Card.Body></Card>
       <Card>
         <Card.Body>
-          <div className='fw-semibold mb-3'>WebSocket connections</div>
+          <div className='fw-semibold mb-3'>WebSocket health</div>
           <div className='d-grid gap-2'>
-            <div className='d-flex align-items-center justify-content-between'>
-              <div>
-                <div className='fw-semibold'>Localhost ↔ Frontend</div>
-                <div className='text-muted small'>{wsUrl}</div>
-              </div>
-              <Badge bg={wsBadgeVariant(localhostWsStatus)}>{localhostWsStatus}</Badge>
-            </div>
-            <div className='d-flex align-items-center justify-content-between'>
-              <div>
-                <div className='fw-semibold'>Server ↔ Bybit</div>
-                <div className='text-muted small'>{backendWs.bybit?.url || '—'}</div>
-              </div>
-              <Badge bg={wsBadgeVariant(bybitStatus)}>{bybitStatus}</Badge>
-            </div>
-            <div className='d-flex align-items-center justify-content-between'>
-              <div>
-                <div className='fw-semibold'>Server ↔ Binance</div>
-                <div className='text-muted small'>{backendWs.binance?.url || '—'}</div>
-              </div>
-              <Badge bg={wsBadgeVariant(binanceStatus)}>{binanceStatus}</Badge>
-            </div>
+            <div className='d-flex align-items-center justify-content-between'><div><div className='fw-semibold'>Frontend ↔ Backend</div><div className='text-muted small'>{wsUrl} · RTT: {Number.isFinite(healthWs.rttMs) ? `${healthWs.rttMs} ms` : '—'} · pong age: {age(healthWs.lastPongAt) ?? '—'} ms</div></div><Badge bg={wsBadgeVariant(localhostWsStatus)}>{localhostWsStatus}</Badge></div>
+            <div className='d-flex align-items-center justify-content-between'><div><div className='fw-semibold'>Server ↔ Bybit WS</div><div className='text-muted small'>{healthWs.bybitWs?.url || '—'} · Bybit TS: {healthWs.bybitWs?.lastBybitTs || '—'} · age: {healthWs.bybitWs?.ageMs ?? '—'} ms</div></div><Badge bg={wsBadgeVariant(String(healthWs.bybitWs?.status || 'waiting').toLowerCase())}>{String(healthWs.bybitWs?.status || 'waiting').toLowerCase()}</Badge></div>
           </div>
         </Card.Body>
       </Card>
-      <Card>
-        <Card.Body>
-          <div className='fw-semibold mb-2'>/health</div>
-          {loading && !health ? <div className='d-flex align-items-center gap-2'><Spinner size='sm' />Loading...</div> : <pre className='m-0'>{JSON.stringify(health, null, 2)}</pre>}
-        </Card.Body>
-      </Card>
-      <Card>
-        <Card.Body>
-          <div className='fw-semibold mb-2'>/api/heartbeat</div>
-          {loading && !heartbeat ? <div className='d-flex align-items-center gap-2'><Spinner size='sm' />Loading...</div> : <pre className='m-0'>{JSON.stringify(heartbeat, null, 2)}</pre>}
-        </Card.Body>
-      </Card>
+      <Card><Card.Body><div className='fw-semibold mb-2'>/health</div>{loading && !health ? <div className='d-flex align-items-center gap-2'><Spinner size='sm' />Loading...</div> : <pre className='m-0'>{JSON.stringify(health, null, 2)}</pre>}</Card.Body></Card>
+      <Card><Card.Body><div className='fw-semibold mb-2'>/api/heartbeat</div>{loading && !heartbeat ? <div className='d-flex align-items-center gap-2'><Spinner size='sm' />Loading...</div> : <pre className='m-0'>{JSON.stringify(heartbeat, null, 2)}</pre>}</Card.Body></Card>
     </div>
   )
 }

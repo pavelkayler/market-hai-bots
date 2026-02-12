@@ -82,7 +82,7 @@ function sanitizeExcluded(rows) {
   return rows
     .map((r) => ({
       symbol: String(r?.symbol || "").trim().toUpperCase(),
-      source: ["ANY", "BT", "BNB"].includes(String(r?.source || "ANY").toUpperCase()) ? String(r?.source || "ANY").toUpperCase() : "ANY",
+      source: ["ANY", "BT"].includes(String(r?.source || "ANY").toUpperCase()) ? String(r?.source || "ANY").toUpperCase() : "ANY",
       reason: String(r?.reason || "").trim(),
       attempts: Math.max(0, Math.trunc(clampNum(r?.attempts, 0))),
       updatedAt: clampNum(r?.updatedAt, now()),

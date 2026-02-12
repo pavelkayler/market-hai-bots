@@ -1,7 +1,3 @@
-// backend/src/leadLag.js
-// Rolling lead-lag estimator on fixed-interval microbars.
-// Output: top-N pairs with best lag + confirmation (samples/impulses).
-
 function meanStd(values) {
   const n = values.length;
   if (n < 2) return { mean: 0, std: 0 };
@@ -13,8 +9,7 @@ function meanStd(values) {
     const d = values[i] - mean;
     v += d * d;
   }
-  const std = Math.sqrt(v / (n - 1));
-  return { mean, std };
+  return { mean, std: Math.sqrt(v / (n - 1)) };
 }
 
 function pearsonFromSums(n, sumX, sumY, sumX2, sumY2, sumXY) {
@@ -44,13 +39,21 @@ function toReturnMap(bars) {
   return { map, rets };
 }
 
-export function createLeadLag({
-  bucketMs = 250,
-  maxLagMs = 5000,
-  minSamples = 200,
-  impulseZ = 2.0,
-  minImpulses = 5,
-} = {}) {
+function countConfirmations(leaderMap, followerMap, lagMs, thresholdPct) {
+  const thr = Math.max(0, Number(thresholdPct) || 0) / 100;
+  if (thr <= 0) return 0;
+  let confirmations = 0;
+  for (const [tFollower, followerRet] of followerMap.entries()) {
+    const tLeader = tFollower - lagMs;
+    const leaderRet = leaderMap.get(tLeader);
+    if (leaderRet === undefined) continue;
+    if (Math.abs(leaderRet) < thr || Math.abs(followerRet) < thr) continue;
+    if (Math.sign(leaderRet) === Math.sign(followerRet)) confirmations += 1;
+  }
+  return confirmations;
+}
+
+export function createLeadLag({ bucketMs = 250, maxLagMs = 5000, minSamples = 200, impulseZ = 2.0, minImpulses = 5 } = {}) {
   const maxLagBars = Math.max(1, Math.floor(maxLagMs / bucketMs));
 
   function computeTop({ leaders = [], symbols, getBars, topN = 10, windowBars = 400, params = {} } = {}) {
@@ -58,14 +61,9 @@ export function createLeadLag({
     const localMinImpulses = Number.isFinite(Number(params.minImpulses)) ? Math.max(1, Math.trunc(Number(params.minImpulses))) : minImpulses;
     const localImpulseZ = Number.isFinite(Number(params.impulseZ)) ? Number(params.impulseZ) : impulseZ;
     const localMinCorr = Number.isFinite(Number(params.minCorr)) ? Math.max(0, Math.abs(Number(params.minCorr))) : 0;
-    const syms = (Array.isArray(symbols) ? symbols : [])
-      .map((s) => String(s).trim().toUpperCase())
-      .filter(Boolean);
-    const leaderSet = new Set(
-      (Array.isArray(leaders) ? leaders : syms)
-        .map((s) => String(s).trim().toUpperCase())
-        .filter((s) => syms.includes(s)),
-    );
+    const leaderMoveTriggerPct = Number.isFinite(Number(params.leaderMoveTriggerPct)) ? Math.abs(Number(params.leaderMoveTriggerPct)) : 0.5;
+    const syms = (Array.isArray(symbols) ? symbols : []).map((s) => String(s).trim().toUpperCase()).filter(Boolean);
+    const leaderSet = new Set((Array.isArray(leaders) ? leaders : syms).map((s) => String(s).trim().toUpperCase()).filter((s) => syms.includes(s)));
 
     const per = new Map();
     for (const s of syms) {
@@ -77,77 +75,44 @@ export function createLeadLag({
     }
 
     const results = [];
-
     for (const leader of syms) {
       if (!leaderSet.has(leader)) continue;
       for (const follower of syms) {
         if (leader === follower) continue;
-
         const leaderData = per.get(leader);
         const followerData = per.get(follower);
         if (!leaderData || !followerData) continue;
 
-        const leaderStd = leaderData.std;
-        const impulseThr = leaderStd > 0 ? localImpulseZ * leaderStd : Infinity;
+        const impulseThr = leaderData.std > 0 ? localImpulseZ * leaderData.std : Infinity;
         let best = null;
 
         for (let lagBars = -maxLagBars; lagBars <= maxLagBars; lagBars++) {
           if (lagBars === 0) continue;
           const lagMs = lagBars * bucketMs;
-
-          let n = 0;
-          let sumX = 0;
-          let sumY = 0;
-          let sumX2 = 0;
-          let sumY2 = 0;
-          let sumXY = 0;
-          let impulses = 0;
-
+          let n = 0; let sumX = 0; let sumY = 0; let sumX2 = 0; let sumY2 = 0; let sumXY = 0; let impulses = 0;
           for (const [tFollower, y] of followerData.map.entries()) {
             const tLeader = tFollower - lagMs;
             const x = leaderData.map.get(tLeader);
             if (x === undefined) continue;
-
-            n++;
-            sumX += x;
-            sumY += y;
-            sumX2 += x * x;
-            sumY2 += y * y;
-            sumXY += x * y;
+            n++; sumX += x; sumY += y; sumX2 += x * x; sumY2 += y * y; sumXY += x * y;
             if (Math.abs(x) >= impulseThr) impulses++;
           }
-
           if (n < 2) continue;
           const corr = pearsonFromSums(n, sumX, sumY, sumX2, sumY2, sumXY);
           const absCorr = Math.abs(corr);
           const confirmed = n >= localMinSamples && impulses >= localMinImpulses && absCorr >= localMinCorr;
+          const confirmations = countConfirmations(leaderData.map, followerData.map, lagMs, leaderMoveTriggerPct);
 
           if (!best || (confirmed ? 1 : 0) > (best.confirmed ? 1 : 0) || absCorr > best.absCorr) {
-            best = { leader, follower, corr, absCorr, lagMs, samples: n, impulses, confirmed };
+            best = { leader, follower, corr, absCorr, lagMs, samples: n, impulses, confirmed, confirmations };
           }
         }
 
-        if (!best) continue;
-
-        results.push({
-          leader: best.leader,
-          follower: best.follower,
-          corr: best.corr,
-          lagMs: best.lagMs,
-          samples: best.samples,
-          impulses: best.impulses,
-          confirmed: best.confirmed,
-        });
+        if (best) results.push(best);
       }
     }
 
-    results.sort((a, b) => {
-      if (a.confirmed !== b.confirmed) return a.confirmed ? -1 : 1;
-      const absDiff = Math.abs(b.corr) - Math.abs(a.corr);
-      if (absDiff !== 0) return absDiff;
-      return Math.abs(a.lagMs) - Math.abs(b.lagMs);
-    });
-
+    results.sort((a, b) => (a.confirmed !== b.confirmed ? (a.confirmed ? -1 : 1) : Math.abs(b.corr) - Math.abs(a.corr) || Math.abs(a.lagMs) - Math.abs(b.lagMs)));
     return results.slice(0, Math.max(0, topN | 0));
   }
 

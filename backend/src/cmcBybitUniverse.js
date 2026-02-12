@@ -16,9 +16,7 @@ async function fetchJsonWithTimeout(url, { headers = {}, timeoutMs = 15000 } = {
     const data = JSON.parse(text);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return data;
-  } finally {
-    clearTimeout(t);
-  }
+  } finally { clearTimeout(t); }
 }
 
 async function fetchCmcListings({ apiKey, minMarketCapUsd, limit = 5000 }) {
@@ -46,25 +44,10 @@ export function createCmcBybitUniverse({
   maxUniverse = 300,
   bybitBaseUrl,
   getBybitFeedSymbols = () => [],
-  getBinanceFeedSymbols = () => [],
   onUniverseUpdated = () => {},
 } = {}) {
   const bybit = createBybitRest({ baseUrl: bybitBaseUrl, logger });
-
-  const state = {
-    status: "idle",
-    lastRefreshAt: null,
-    nextRefreshAt: null,
-    error: null,
-    warnings: [],
-    universeUpdatedAt: null,
-    cmcEligibleCount: 0,
-    bybitLinearCount: 0,
-    universeCount: 0,
-    universeSymbols: [],
-    universeRows: [],
-  };
-
+  const state = { status: "idle", lastRefreshAt: null, nextRefreshAt: null, error: null, warnings: [], universeUpdatedAt: null, cmcEligibleCount: 0, bybitLinearCount: 0, universeCount: 0, universeSymbols: [], universeRows: [] };
   let timer = null;
   let inflight = null;
 
@@ -74,7 +57,6 @@ export function createCmcBybitUniverse({
       state.status = "loading";
       state.error = null;
       state.warnings = [];
-
       const apiKey = process.env.CMC_API_KEY || process.env.COINMARKETCAP_API_KEY || "";
       if (!apiKey) {
         state.status = "ready";
@@ -93,7 +75,6 @@ export function createCmcBybitUniverse({
       try {
         const cmcCandidates = await fetchCmcListings({ apiKey, minMarketCapUsd });
         state.cmcEligibleCount = cmcCandidates.size;
-
         const instruments = await bybit.getInstrumentsLinearAll();
         const bybitPerps = new Set();
         for (const it of instruments) {
@@ -109,24 +90,13 @@ export function createCmcBybitUniverse({
         }
 
         state.bybitLinearCount = bybitPerps.size;
-
-        const raw = [];
-        for (const candidate of cmcCandidates) {
-          if (!bybitPerps.has(candidate)) continue;
-          raw.push(candidate);
-        }
-
-        const symbols = raw.slice(0, maxUniverse);
+        const symbols = [...cmcCandidates].filter((s) => bybitPerps.has(s)).slice(0, maxUniverse);
         const bybitFeed = new Set((getBybitFeedSymbols() || []).map((s) => String(s || "").toUpperCase()));
-        const binanceFeed = new Set((getBinanceFeedSymbols() || []).map((s) => String(s || "").toUpperCase()));
         const rows = symbols.map((tradeSymbol) => ({
           tradeSymbol,
           baseSymbol: normBaseCoin(tradeSymbol.replace(/USDT$/, "")),
-          dataSourcesAvailable: {
-            BT: bybitFeed.has(tradeSymbol),
-            BNB: binanceFeed.has(tradeSymbol),
-          },
-          preferredDataSourceForAnalytics: "BNB",
+          dataSourcesAvailable: { BT: bybitFeed.has(tradeSymbol) },
+          preferredDataSourceForAnalytics: "BT",
         }));
 
         state.universeSymbols = symbols;
@@ -143,10 +113,7 @@ export function createCmcBybitUniverse({
         state.lastRefreshAt = Date.now();
         state.nextRefreshAt = Date.now() + refreshMs;
         logger?.warn?.({ err: e }, "universe refresh failed");
-      } finally {
-        inflight = null;
-      }
-
+      } finally { inflight = null; }
       return state;
     })();
     return inflight;
@@ -155,36 +122,15 @@ export function createCmcBybitUniverse({
   function start() {
     if (timer) return;
     refreshOnce().catch(() => {});
-    timer = setInterval(() => {
-      refreshOnce().catch(() => {});
-    }, refreshMs);
+    timer = setInterval(() => { refreshOnce().catch(() => {}); }, refreshMs);
   }
-
-  function stop() {
-    if (timer) clearInterval(timer);
-    timer = null;
-  }
-
+  function stop() { if (timer) clearInterval(timer); timer = null; }
   function getStatus() {
-    return {
-      status: state.status,
-      lastRefreshAt: state.lastRefreshAt,
-      nextRefreshAt: state.nextRefreshAt,
-      error: state.error,
-      warnings: state.warnings.slice(),
-      universe: { updatedAt: state.universeUpdatedAt, size: state.universeCount },
-      cmcEligibleCount: state.cmcEligibleCount,
-      bybitLinearCount: state.bybitLinearCount,
-    };
+    return { status: state.status, lastRefreshAt: state.lastRefreshAt, nextRefreshAt: state.nextRefreshAt, error: state.error, warnings: state.warnings.slice(), universe: { updatedAt: state.universeUpdatedAt, size: state.universeCount }, cmcEligibleCount: state.cmcEligibleCount, bybitLinearCount: state.bybitLinearCount };
   }
-
   function getUniverse({ limit = 300 } = {}) {
     const n = Math.max(1, Math.min(2000, Number(limit) || 300));
-    return {
-      updatedAt: state.universeUpdatedAt,
-      symbols: state.universeSymbols.slice(0, n),
-      rows: state.universeRows.slice(0, n),
-    };
+    return { updatedAt: state.universeUpdatedAt, symbols: state.universeSymbols.slice(0, n), rows: state.universeRows.slice(0, n) };
   }
 
   return { start, stop, refresh: refreshOnce, getStatus, getUniverse };
