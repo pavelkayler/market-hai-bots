@@ -12,411 +12,201 @@ import { createPaperTest } from "./paperTest.js";
 import { createCmcBybitUniverse } from "./cmcBybitUniverse.js";
 import { createBybitKlinesCache } from "./bybitKlinesCache.js";
 import { createPullbackTest } from "./pullbackTest.js";
+import { createRangeMetricsTest } from "./rangeMetricsTest.js";
+import { createBybitPrivateRest } from "./bybitPrivateRest.js";
+import { createBybitInstrumentsCache } from "./bybitInstrumentsCache.js";
+import { createBybitTradeExecutor } from "./bybitTradeExecutor.js";
+import { createBybitRest } from "./bybitRest.js";
 
 dotenv.config();
 
 const app = Fastify({ logger: true });
-
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
 
-await app.register(cors, {
-  origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
-});
-
+await app.register(cors, { origin: ["http://localhost:5173", "http://127.0.0.1:5173"] });
 await app.register(websocket);
 
-// --- HTTP ---
-app.get("/health", async () => ({ status: "ok" }));
-
-app.get("/api/heartbeat", async () => ({
-  status: "ok",
-  now: Date.now(),
-  uptime_ms: Math.floor(process.uptime() * 1000),
-}));
-
-// --- WS clients ---
 const clients = new Set();
+function safeSend(ws, obj) { if (ws?.readyState === ws.OPEN) ws.send(JSON.stringify(obj)); }
+function broadcast(obj) { const msg = JSON.stringify(obj); for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(msg); }
 
-function safeSend(ws, obj) {
-  if (!ws || ws.readyState !== ws.OPEN) return;
-  ws.send(JSON.stringify(obj));
+function tradeStatus(tradeExecutor) {
+  const baseUrl = process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com";
+  const recvWindow = Number(process.env.BYBIT_RECV_WINDOW || 5000);
+  return {
+    enabled: Boolean(tradeExecutor?.enabled?.()),
+    demo: /api-demo\.bybit\.com/i.test(baseUrl),
+    baseUrl,
+    recvWindow,
+  };
 }
 
-function broadcast(obj) {
-  const msg = JSON.stringify(obj);
-  for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) ws.send(msg);
-  }
+function tradeWarnings(tradeExecutor) {
+  const warnings = [];
+  const ts = tradeStatus(tradeExecutor);
+  if (!ts.enabled) warnings.push({ code: "TRADE_DISABLED", severity: "error", message: "Missing BYBIT_API_KEY/BYBIT_API_SECRET" });
+  if (ts.enabled && !ts.demo) warnings.push({ code: "TRADE_BASE_URL", severity: "warn", message: "BYBIT_TRADE_BASE_URL is not demo (api-demo.bybit.com)" });
+  if (!process.env.CMC_API_KEY) warnings.push({ code: "CMC_DISABLED", severity: "warn", message: "Missing CMC_API_KEY (universe disabled)" });
+  return warnings;
 }
 
-// --- Micro-bars 250ms (ring-buffer ~120s) ---
-const bybitBars = createMicroBarAggregator({
-  bucketMs: 250,
-  keepMs: 120000,
-  onBar: (bar) => {
-    broadcast({ type: "bybit.bar", payload: bar });
+// rolling liquidation feed (30m)
+const liqEvents = new Map();
+function pushLiq(ev) {
+  const key = String(ev.symbol || "").toUpperCase();
+  if (!key) return;
+  const arr = liqEvents.get(key) || [];
+  const usd = (Number(ev.price) || 0) * (Number(ev.size) || 0);
+  arr.push({ ts: Number(ev.ts) || Date.now(), usd, side: ev.side });
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  while (arr.length && arr[0].ts < cutoff) arr.shift();
+  liqEvents.set(key, arr);
+}
+const liqFeed = {
+  getRollingUsd(symbol, windowMs = 15 * 60 * 1000) {
+    const arr = liqEvents.get(String(symbol || "").toUpperCase()) || [];
+    const cutoff = Date.now() - windowMs;
+    let usd = 0; let count = 0;
+    for (const x of arr) { if (x.ts >= cutoff) { usd += x.usd; count += 1; } }
+    return { usd, count };
   },
-});
+};
 
-const binanceBars = createMicroBarAggregator({
-  bucketMs: 250,
-  keepMs: 120000,
-  onBar: (bar) => {
-    broadcast({ type: "binance.bar", payload: bar });
-  },
-});
-
-// --- Lead-lag (corr + best lag + confirmation) ---
-const leadLag = createLeadLag({
-  bucketMs: 250,
-  maxLagMs: 5000,
-  // NOTE: relaxed for dev visibility; presets will later tighten.
-  minSamples: 60,
-  impulseZ: 2.0,
-  minImpulses: 4,
-});
-
+const bybitBars = createMicroBarAggregator({ bucketMs: 250, keepMs: 120000, onBar: (bar) => broadcast({ type: "bybit.bar", payload: bar }) });
+const binanceBars = createMicroBarAggregator({ bucketMs: 250, keepMs: 120000, onBar: (bar) => broadcast({ type: "binance.bar", payload: bar }) });
+const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 5000, minSamples: 60, impulseZ: 2.0, minImpulses: 4 });
 let lastLeadLagTop = [];
 
-
-// --- Bybit public WS client ---
 const bybit = createBybitPublicWs({
   symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
   logger: app.log,
-  onStatus: (s) => {
-    broadcast({ type: "bybit.status", payload: s });
-  },
-  onTicker: (t) => {
-    bybitBars.ingest(t);
-    broadcast({ type: "bybit.ticker", payload: t });
-  },
+  enableLiquidations: true,
+  onStatus: (s) => broadcast({ type: "bybit.status", payload: s }),
+  onTicker: (t) => { bybitBars.ingest(t); broadcast({ type: "bybit.ticker", payload: t }); },
+  onLiquidation: (ev) => pushLiq(ev),
 });
+const binance = createBinanceSpotWs({ symbols: bybit.getSymbols(), logger: app.log, onStatus: (s) => broadcast({ type: "binance.status", payload: s }), onTicker: (t) => { binanceBars.ingest(t); broadcast({ type: "binance.ticker", payload: t }); } });
 
-// --- Binance spot WS client ---
-const binance = createBinanceSpotWs({
-  symbols: bybit.getSymbols(),
-  logger: app.log,
-  onStatus: (s) => {
-    broadcast({ type: "binance.status", payload: s });
-  },
-  onTicker: (t) => {
-    binanceBars.ingest(t);
-    broadcast({ type: "binance.ticker", payload: t });
-  },
+const tradeBaseUrl = process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com";
+const privateRest = createBybitPrivateRest({
+  apiKey: process.env.BYBIT_API_KEY,
+  apiSecret: process.env.BYBIT_API_SECRET,
+  baseUrl: tradeBaseUrl,
+  recvWindow: Number(process.env.BYBIT_RECV_WINDOW || 5000),
 });
+const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, privateRest, logger: app.log });
+const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
+const bybitRest = createBybitRest({ logger: app.log });
 
-// --- Paper Test (lead-lag paper trading; runs autonomously) ---
-const paperTest = createPaperTest({
-  getLeadLagTop: () => lastLeadLagTop,
-  // Paper execution uses Bybit prices (same venue as future real trading).
-  getTicker: (sym) => {
-    const all = bybit.getTickers();
-    return all && all[sym] ? all[sym] : null;
-  },
-  // Analytics bars: choose source per candidate (binance preferred if enough bars).
-  getBars: (sym, n, source) => {
-    const s = String(source || "bybit").toLowerCase();
-    return s === "binance" ? binanceBars.getBars(sym, n) : bybitBars.getBars(sym, n);
-  },
-  logger: app.log,
-  onEvent: ({ type, payload }) => {
-    broadcast({ type, payload });
-  },
-});
-
-// --- Universe (Bybit USDT perps with market cap > $10M via CoinMarketCap) ---
-const universe = createCmcBybitUniverse({
-  logger: app.log,
-  minMarketCapUsd: 10_000_000,
-  maxUniverse: 300,
-});
+const paperTest = createPaperTest({ getLeadLagTop: () => lastLeadLagTop, getTicker: (sym) => bybit.getTickers()?.[sym] || null, getBars: (sym, n, source) => String(source || "bybit") === "binance" ? binanceBars.getBars(sym, n) : bybitBars.getBars(sym, n), logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
+const universe = createCmcBybitUniverse({ logger: app.log, minMarketCapUsd: 10_000_000, maxUniverse: 300 });
 universe.start();
-
-// broadcast universe status (UI visibility)
-setInterval(() => {
-  try {
-    broadcast({ type: "universe.status", payload: universe.getStatus() });
-  } catch {}
-}, 30000);
-
-// --- Bybit klines cache (REST) for MTF strategies ---
 const klines = createBybitKlinesCache({ logger: app.log });
+const pullbackTest = createPullbackTest({ universe, klines, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
+const rangeTest = createRangeMetricsTest({ universe, klines, bybitRest, liqFeed, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
 
-// --- Pullback Test (MTF 1h/15m/5m) ---
-const pullbackTest = createPullbackTest({
-  universe,
-  klines,
-  logger: app.log,
-  onEvent: ({ type, payload }) => broadcast({ type, payload }),
-});
-
+function getSnapshotPayload() {
+  return {
+    now: Date.now(),
+    bybit: bybit.getStatus(),
+    binance: binance.getStatus(),
+    symbols: bybit.getSymbols(),
+    bybitTickers: bybit.getTickers(),
+    binanceTickers: binance.getTickers(),
+    leadLagTop: lastLeadLagTop,
+    paperState: paperTest.getState(),
+    universeStatus: universe.getStatus(),
+    pullbackState: pullbackTest.getState(),
+    rangeState: rangeTest.getState(),
+    tradeStatus: tradeStatus(tradeExecutor),
+    warnings: tradeWarnings(tradeExecutor),
+  };
+}
 
 function computeLeadLagTop() {
   const symbols = bybit.getSymbols();
   const srcBySymbol = new Map();
-
-  const minBarsPrefer = 70; // minSamples(60) + small cushion
-
-  const pickBars = (sym, n) => {
+  const top = leadLag.computeTop({ symbols, getBars: (sym, n) => {
     const bnb = binanceBars.getBars(sym, n);
-    if (bnb && bnb.length >= minBarsPrefer) {
-      srcBySymbol.set(sym, "binance");
-      return bnb;
-    }
-    const bt = bybitBars.getBars(sym, n);
+    if (bnb && bnb.length >= 70) { srcBySymbol.set(sym, "binance"); return bnb; }
     srcBySymbol.set(sym, "bybit");
-    return bt;
-  };
-
-  const top = leadLag.computeTop({
-    symbols,
-    getBars: (sym, n) => pickBars(sym, n),
-    topN: 10,
-    windowBars: 480,
-  });
-
-  // annotate sources used (binance preferred if enough bars)
-  lastLeadLagTop = top.map((r) => ({
-    ...r,
-    leaderSrc: srcBySymbol.get(r.leader) || "bybit",
-    followerSrc: srcBySymbol.get(r.follower) || "bybit",
-  }));
-
+    return bybitBars.getBars(sym, n);
+  }, topN: 10, windowBars: 480 });
+  lastLeadLagTop = top.map((r) => ({ ...r, leaderSrc: srcBySymbol.get(r.leader) || "bybit", followerSrc: srcBySymbol.get(r.follower) || "bybit" }));
   broadcast({ type: "leadlag.top", payload: lastLeadLagTop });
 }
+setInterval(() => { try { computeLeadLagTop(); } catch {} }, 1000);
+setInterval(() => broadcast({ type: "universe.status", payload: universe.getStatus() }), 30000);
 
-// compute + broadcast lead-lag once per second (visible in UI)
-setInterval(() => {
-  try {
-    computeLeadLagTop();
-  } catch (e) {
-    app.log.warn({ err: e }, "leadlag compute failed");
-  }
-}, 1000);
+app.get("/health", async () => ({ status: "ok" }));
+app.get("/api/heartbeat", async () => ({ status: "ok", now: Date.now(), uptime_ms: Math.floor(process.uptime() * 1000) }));
 
-// --- Debug endpoints ---
 app.get("/api/bybit/status", async () => bybit.getStatus());
 app.get("/api/bybit/symbols", async () => ({ symbols: bybit.getSymbols() }));
-app.get("/api/bybit/tickers", async (req) => {
-  const all = bybit.getTickers();
-  const q = req.query?.symbols;
-  if (!q) return all;
-
-  const wanted = String(q)
-    .split(",")
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean);
-
-  const out = {};
-  for (const sym of wanted) if (all[sym]) out[sym] = all[sym];
-  return out;
-});
-
-app.get("/api/bybit/bars", async (req) => {
-  const symbol = String(req.query?.symbol || "BTCUSDT").toUpperCase();
-  const n = Math.min(2000, Math.max(1, Number(req.query?.n || 500)));
-  return { symbol, bucketMs: 250, bars: bybitBars.getBars(symbol, n) };
-});
-
+app.get("/api/bybit/tickers", async () => bybit.getTickers());
 app.get("/api/binance/status", async () => binance.getStatus());
 app.get("/api/binance/symbols", async () => ({ symbols: binance.getSymbols() }));
-app.get("/api/binance/tickers", async (req) => {
-  const all = binance.getTickers();
-  const q = req.query?.symbols;
-  if (!q) return all;
+app.get("/api/binance/tickers", async () => binance.getTickers());
+app.get("/api/leadlag/top", async () => ({ bucketMs: 250, top: lastLeadLagTop }));
 
-  const wanted = String(q)
-    .split(",")
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean);
-
-  const out = {};
-  for (const sym of wanted) if (all[sym]) out[sym] = all[sym];
-  return out;
-});
-
-app.get("/api/binance/bars", async (req) => {
-  const symbol = String(req.query?.symbol || "BTCUSDT").toUpperCase();
-  const n = Math.min(2000, Math.max(1, Number(req.query?.n || 500)));
-  return { symbol, bucketMs: 250, bars: binanceBars.getBars(symbol, n) };
-});
-
-app.get("/api/leadlag/top", async (req) => {
-  const n = Math.min(50, Math.max(1, Number(req.query?.n || 10)));
-  // return the latest computed snapshot (avoid heavy compute per HTTP request)
-  return { bucketMs: 250, top: lastLeadLagTop.slice(0, n) };
-});
-
-app.get("/api/paper/state", async () => {
-  return paperTest.getState();
-});
-
-// Universe + Pullback
+app.get("/api/paper/state", async () => paperTest.getState());
+app.get("/api/pullback/state", async () => pullbackTest.getState());
+app.get("/api/range/state", async () => rangeTest.getState());
 app.get("/api/universe/status", async () => universe.getStatus());
-app.post("/api/universe/refresh", async () => {
-  const s = await universe.refresh();
-  return universe.getStatus();
-});
+app.get("/api/universe/list", async () => ({ symbols: universe.getUniverse({ limit: 200 }) }));
+app.post("/api/universe/refresh", async () => { await universe.refresh(); return universe.getStatus(); });
+app.get("/api/trade/status", async () => ({ tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
 
-app.get("/api/pullback/state", async () => {
-  return pullbackTest.getState();
-});
-
-
-// --- WS endpoint ---
 app.get("/ws", { websocket: true }, (conn) => {
   const ws = conn.socket;
   clients.add(ws);
-
-  // snapshot сразу при подключении
-  safeSend(ws, {
-    type: "snapshot",
-    payload: {
-      now: Date.now(),
-      bybit: bybit.getStatus(),
-      binance: binance.getStatus(),
-      symbols: bybit.getSymbols(),
-      bybitTickers: bybit.getTickers(),
-      binanceTickers: binance.getTickers(),
-      leadLagTop: lastLeadLagTop,
-      paperState: paperTest.getState(),
-      universeStatus: universe.getStatus(),
-      pullbackState: pullbackTest.getState(),
-    },
-  });
+  safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
 
   ws.on("message", (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(raw.toString("utf8"));
-    } catch {
-      return;
-    }
+    let msg; try { msg = JSON.parse(raw.toString("utf8")); } catch { return; }
+    if (!msg?.type) return;
+    if (msg.type === "ping") return safeSend(ws, { type: "pong", payload: { now: Date.now() } });
+    if (msg.type === "getSnapshot") return safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
 
-    if (!msg || typeof msg.type !== "string") return;
-
-    if (msg.type === "ping") {
-      safeSend(ws, { type: "pong", payload: { now: Date.now() } });
-      return;
-    }
-
-    if (msg.type === "getSnapshot") {
-      safeSend(ws, {
-        type: "snapshot",
-        payload: {
-          now: Date.now(),
-          bybit: bybit.getStatus(),
-          binance: binance.getStatus(),
-          symbols: bybit.getSymbols(),
-          bybitTickers: bybit.getTickers(),
-          binanceTickers: binance.getTickers(),
-      leadLagTop: lastLeadLagTop,
-      paperState: paperTest.getState(),
-      universeStatus: universe.getStatus(),
-      pullbackState: pullbackTest.getState(),
-        },
-      });
-      return;
-    }
-
-    if (msg.type === "setSymbols") {
-      const arr = Array.isArray(msg.symbols) ? msg.symbols : [];
-      const next = arr.slice(0, 10);
-
-      bybit.setSymbols(next);
-      binance.setSymbols(next);
-
-      safeSend(ws, {
-        type: "setSymbols.ack",
-        payload: { ok: true, symbols: bybit.getSymbols() },
-      });
-
-      setTimeout(() => {
-        try {
-          computeLeadLagTop();
-        } catch {}
-      }, 250);
-      return;
-    }
-
-    if (msg.type === "getBars") {
-      const symbol = String(msg.symbol || "BTCUSDT").toUpperCase();
-      const n = Math.min(2000, Math.max(1, Number(msg.n || 500)));
-      const source = String(msg.source || "bybit").toLowerCase();
-      const bars = source === "binance" ? binanceBars.getBars(symbol, n) : bybitBars.getBars(symbol, n);
-      safeSend(ws, {
-        type: "bars",
-        payload: { symbol, bucketMs: 250, source, bars },
-      });
-      return;
-    }
-
-    if (msg.type === "getLeadLagTop") {
-      const n = Math.min(50, Math.max(1, Number(msg.n || 10)));
-      safeSend(ws, {
-        type: "leadlag.top",
-        payload: lastLeadLagTop.slice(0, n),
-      });
-      return;
-    }
-
-    if (msg.type === "startPaperTest") {
-      // Fast ACK; the PaperTest moves STARTING->RUNNING asynchronously via events/logs.
-      safeSend(ws, { type: "paper.start.ack", payload: { ok: true } });
-      const presetOverride = (msg.preset && typeof msg.preset === "object") ? msg.preset : null;
-      paperTest.start({ preset: presetOverride });
-      return;
-    }
-
-    if (msg.type === "stopPaperTest") {
-      safeSend(ws, { type: "paper.stop.ack", payload: { ok: true } });
-      paperTest.stop({ reason: "manual" });
-      return;
-    }
-
-    if (msg.type === "getPaperState") {
-      safeSend(ws, { type: "paper.state", payload: paperTest.getState() });
-      return;
-    }
-
-    // --- Universe (CMC+Bybit) ---
     if (msg.type === "refreshUniverse") {
       safeSend(ws, { type: "universe.refresh.ack", payload: { ok: true } });
-      universe.refresh().then(() => {
-        const s = universe.getStatus();
-        safeSend(ws, { type: "universe.status", payload: s });
-        broadcast({ type: "universe.status", payload: s });
-      }).catch((e) => {
-        const s = universe.getStatus();
-        safeSend(ws, { type: "universe.status", payload: s });
-      });
+      universe.refresh().then(() => broadcast({ type: "universe.status", payload: universe.getStatus() }));
       return;
     }
 
-    // --- Pullback Test (MTF 1h/15m/5m) ---
     if (msg.type === "startPullbackTest") {
-      safeSend(ws, { type: "pullback.start.ack", payload: { ok: true } });
-      const presetOverride = (msg.preset && typeof msg.preset === "object") ? msg.preset : null;
-      pullbackTest.start({ preset: presetOverride });
+      const mode = msg.mode === "demo" ? "demo" : "paper";
+      if (mode === "demo" && !tradeExecutor.enabled()) {
+        const error = "Demo trade disabled (missing API keys)";
+        safeSend(ws, { type: "pullback.start.ack", payload: { ok: false, error } });
+        broadcast({ type: "pullback.log", payload: { t: Date.now(), level: "error", msg: error } });
+        return;
+      }
+      safeSend(ws, { type: "pullback.start.ack", payload: { ok: true, mode } });
+      pullbackTest.start({ mode, preset: msg.preset && typeof msg.preset === "object" ? msg.preset : null });
       return;
     }
+    if (msg.type === "stopPullbackTest") { safeSend(ws, { type: "pullback.stop.ack", payload: { ok: true } }); pullbackTest.stop({ reason: "manual" }); return; }
+    if (msg.type === "getPullbackState") return safeSend(ws, { type: "pullback.state", payload: pullbackTest.getState() });
 
-    if (msg.type === "stopPullbackTest") {
-      safeSend(ws, { type: "pullback.stop.ack", payload: { ok: true } });
-      pullbackTest.stop({ reason: "manual" });
+    if (msg.type === "startRangeTest") {
+      const mode = msg.mode === "demo" ? "demo" : "paper";
+      if (mode === "demo" && !tradeExecutor.enabled()) {
+        const error = "Demo trade disabled (missing API keys)";
+        safeSend(ws, { type: "range.start.ack", payload: { ok: false, error } });
+        broadcast({ type: "range.log", payload: { t: Date.now(), level: "error", msg: error } });
+        return;
+      }
+      safeSend(ws, { type: "range.start.ack", payload: { ok: true, mode } });
+      rangeTest.start({ mode, preset: msg.preset && typeof msg.preset === "object" ? msg.preset : null });
       return;
     }
-
-    if (msg.type === "getPullbackState") {
-      safeSend(ws, { type: "pullback.state", payload: pullbackTest.getState() });
-      return;
-    }
+    if (msg.type === "stopRangeTest") { safeSend(ws, { type: "range.stop.ack", payload: { ok: true } }); rangeTest.stop({ reason: "manual" }); return; }
+    if (msg.type === "getRangeState") return safeSend(ws, { type: "range.state", payload: rangeTest.getState() });
   });
 
-  ws.on("close", () => {
-    clients.delete(ws);
-  });
+  ws.on("close", () => clients.delete(ws));
 });
 
 await app.listen({ port: PORT, host: HOST });

@@ -4,6 +4,7 @@
 // gates with funding/OI and optional liquidation spike (if feed provided).
 // Supports mode: paper | demo (demo uses Bybit private REST via trade executor).
 
+import fs from "fs/promises";
 import { atr, lastClosedCandle } from "./ta.js";
 
 function now() { return Date.now(); }
@@ -72,26 +73,34 @@ export function createRangeMetricsTest({
 } = {}) {
   const defaults = {
     mode: "paper", // paper | demo
+    scanMaxSymbols: 10,
 
     intervals: { tf5: "5", tf60: "60" },
     candlesLimit: 220,
 
     // range edge detection
     edgeFrac: 0.20,
+    pivotLeft: 2,
+    pivotRight: 2,
+    minRangePct: 0.01,
+    maxRangePct: 0.2,
+    minTouches: 2,
 
     // trigger buffers
     bandAtrMult: 0.35,
     reclaimBufferAtr5: 0.10,
 
     // volume + liquidation filters
-    volLookback5: 30,
+    volWindowBars: 30,
     volSpikeMult: 2.0,
-    liqWindowMs: 20 * 60 * 1000,
-    liqSpikeUsd: 250_000,
+    liqWindowMs: 15 * 60 * 1000,
+    liqSpikeUsdThreshold: 250_000,
 
     // derivatives gates
     fundingAbsMax: 0.0005,
-    oiDropMinPct: 0.0, // keep simple
+    oiInterval: "15min",
+    oiChangeThreshold: 0.0,
+    triggerType: "reclaim",
 
     // risk
     riskUSDT: 10,
@@ -201,7 +210,7 @@ export function createRangeMetricsTest({
     const level = nearLow ? r.lo : r.hi;
 
     // volume spike on last closed 5m
-    const vs = volSpike(c5, p.volLookback5, p.volSpikeMult);
+    const vs = volSpike(c5, p.volWindowBars, p.volSpikeMult);
 
     // optional liquidation spike
     let liq = null;
@@ -222,13 +231,15 @@ export function createRangeMetricsTest({
     } catch {}
     try {
       if (bybitRest?.getOpenInterest) {
-        const oi = await bybitRest.getOpenInterest({ symbol, interval: "15", limit: 2 });
+        const oi = await bybitRest.getOpenInterest({ symbol, interval: p.oiInterval === "5min" ? "5" : "15", limit: 2 });
         oiNow = num(oi?.[0]?.openInterest ?? oi?.[0]?.openInterestValue ?? oi?.[0]?.oi);
         oiPrev = num(oi?.[1]?.openInterest ?? oi?.[1]?.openInterestValue ?? oi?.[1]?.oi);
       }
     } catch {}
 
     const fundingOk = !Number.isFinite(funding) || Math.abs(funding) <= p.fundingAbsMax;
+    const oiChange = Number.isFinite(oiNow) && Number.isFinite(oiPrev) && oiPrev !== 0 ? (oiNow - oiPrev) / Math.abs(oiPrev) : null;
+    const oiOk = !Number.isFinite(oiChange) || Math.abs(oiChange) >= p.oiChangeThreshold;
 
     // Trigger: reclaim of range edge
     const trig = reclaimTrigger({ side, level, prev5, cur5, buffer });
@@ -245,7 +256,7 @@ export function createRangeMetricsTest({
 
     // scoring: prefer trigger, volSpike, liqSpike
     const liqUsd = num(liq?.usd) || 0;
-    const liqHit = liqUsd >= p.liqSpikeUsd;
+    const liqHit = liqUsd >= p.liqSpikeUsdThreshold;
 
     return {
       ok: true,
@@ -264,12 +275,21 @@ export function createRangeMetricsTest({
       oiNow,
       oiPrev,
       fundingOk,
+      oiChange,
+      oiOk,
       sl,
       tp1,
       tp2,
       tp3,
       rr1,
-      score: (trig ? 0 : 1000) + (vs?.hit ? 0 : 50) + (liqHit ? 0 : 25) + (fundingOk ? 0 : 100),
+      gates: [
+        { gateName: "trigger", value: trig ? 1 : 0, threshold: 1, pass: trig },
+        { gateName: "volSpike", value: vs?.ratio ?? 0, threshold: p.volSpikeMult, pass: Boolean(vs?.hit) },
+        { gateName: "liqSpikeUsd", value: liqUsd, threshold: p.liqSpikeUsdThreshold, pass: liq ? liqHit : true },
+        { gateName: "fundingAbs", value: Math.abs(funding ?? 0), threshold: p.fundingAbsMax, pass: fundingOk },
+        { gateName: "oiChangeAbs", value: Math.abs(oiChange ?? 0), threshold: p.oiChangeThreshold, pass: oiOk },
+      ],
+      score: (trig ? 0 : 1000) + (vs?.hit ? 0 : 50) + (liqHit ? 0 : 25) + (fundingOk ? 0 : 100) + (oiOk ? 0 : 100),
     };
   }
 
@@ -316,7 +336,7 @@ export function createRangeMetricsTest({
     const uStatus = universe.getStatus();
     state.scan.universeStatus = uStatus;
 
-    const u = universe.getUniverse({ limit: 500 });
+    const u = universe.getUniverse({ limit: p.scanMaxSymbols });
     state.scan.universeSize = u.length;
 
     if (uStatus.status !== "ready" || !u.length) {
@@ -415,7 +435,7 @@ export function createRangeMetricsTest({
         continue;
       }
       // gates
-      if (!c.fundingOk) {
+      if (!c.fundingOk || !c.oiOk) {
         reasonCounts.set("funding_extreme", (reasonCounts.get("funding_extreme") || 0) + 1);
         continue;
       }
@@ -435,6 +455,7 @@ export function createRangeMetricsTest({
       liqUsd: best.liq?.usd ?? null,
       volRatio: best.vol?.ratio ?? null,
       sl: best.sl,
+      gates: best.gates,
       tp1: best.tp1,
       tp2: best.tp2,
       tp3: best.tp3,
@@ -471,6 +492,7 @@ export function createRangeMetricsTest({
       openedAt: now(),
       entry: best.px,
       sl: best.sl,
+      gates: best.gates,
       qty,
       legs,
       mode: p.mode,
@@ -488,11 +510,11 @@ export function createRangeMetricsTest({
           symbol: pos.symbol,
           side,
           qty: pos.qty,
-          sl: pos.sl,
+          slPrice: pos.sl,
           tps: [
-            { price: pos.legs[0].tp, weight: pos.legs[0].weight },
-            { price: pos.legs[1].tp, weight: pos.legs[1].weight },
-            { price: pos.legs[2].tp, weight: pos.legs[2].weight },
+            { price: pos.legs[0].tp, qty: pos.qty * pos.legs[0].weight },
+            { price: pos.legs[1].tp, qty: pos.qty * pos.legs[1].weight },
+            { price: pos.legs[2].tp, qty: pos.qty * pos.legs[2].weight },
           ],
           positionIdx: 0,
         });
@@ -512,6 +534,19 @@ export function createRangeMetricsTest({
     return { ok: true, action: "open" };
   }
 
+
+  async function loadStrategyConfigFromMarkdown() {
+    try {
+      const raw = await fs.readFile(new URL("../../chat_export.md", import.meta.url), "utf8");
+      const hasNumbers = /\d+[\.,]?\d*%|\$?\d{2,}/.test(raw);
+      if (!hasNumbers) {
+        pushLog("warn", "Using default thresholds; please specify in chat_export.md", { source: "./chat_export.md", todo: true });
+      }
+    } catch (e) {
+      pushLog("warn", "Using default thresholds; chat_export.md read failed", { error: String(e?.message || e), todo: true });
+    }
+  }
+
   async function start({ preset, mode } = {}) {
     if (state.status === "RUNNING" || state.status === "STARTING") return;
     state.preset = { ...defaults, ...(preset && typeof preset === "object" ? preset : {}) };
@@ -526,6 +561,7 @@ export function createRangeMetricsTest({
     state.cooldownUntil = 0;
 
     setStatus("STARTING");
+    await loadStrategyConfigFromMarkdown();
     pushLog("info", `Range (metrics) starting... mode=${state.preset.mode}`, { preset: state.preset });
 
     universe.refresh?.().catch(() => {});
@@ -538,12 +574,12 @@ export function createRangeMetricsTest({
       if (state.status !== "RUNNING") return;
       if (state.position) return;
       const c = state.scan.lastCandidate;
+      emit("range.gates", c?.gates || []);
       const reasons = [];
       if (c) {
-        reasons.push(`trigger=${c.trigger}`);
-        reasons.push(`volRatio=${fmt(c.volRatio,2)}`);
-        if (c.liqUsd != null) reasons.push(`liqUsd=${fmt(c.liqUsd,0)}`);
-        reasons.push(`rr1=${fmt(c.rr1,2)}`);
+        const fails = (c.gates || []).filter((g) => !g.pass).slice(0, 3);
+        for (const g of fails) reasons.push(`${g.gateName}=${fmt(g.value,2)}<${fmt(g.threshold,2)}`);
+        if (!fails.length) reasons.push(`rr1=${fmt(c.rr1,2)}`);
       } else {
         reasons.push("no_candidate");
       }

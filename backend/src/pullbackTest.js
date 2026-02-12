@@ -97,10 +97,13 @@ function conservativeExitWithinCandle({ side, candle, sl, tp }) {
 export function createPullbackTest({
   universe,
   klines,
+  trade,
   logger = console,
   onEvent = () => {},
 } = {}) {
   const defaults = {
+    mode: "paper",
+
     // data
     intervals: { tf5: "5", tf15: "15", tf60: "60" },
     candlesLimit: 220,
@@ -187,7 +190,7 @@ export function createPullbackTest({
   function getState() {
     return {
       ...state,
-      // keep logs latest-first, trades oldest-first (already)
+      mode: state.preset.mode,
     };
   }
 
@@ -360,7 +363,7 @@ export function createPullbackTest({
     const uStatus = universe.getStatus();
     state.scan.universeStatus = uStatus;
 
-    const u = universe.getUniverse({ limit: 500 }); // safe cap; engine scans in batches
+    const u = universe.getUniverse({ limit: 10 }); // shortlist max 10
     state.scan.universeSize = u.length;
 
     if (uStatus.status !== "ready" || !u.length) {
@@ -369,6 +372,42 @@ export function createPullbackTest({
 
     if (state.position) {
       // manage position using last closed 5m candle
+
+    if (state.position && state.preset.mode === "demo") {
+      try {
+        const synced = await trade.sync({ symbol: state.position.symbol });
+        const size = Number(synced?.position?.size || 0);
+        state.position.sync = synced;
+        emit("pullback.position", state.position);
+        if (size === 0) {
+          const closed = (synced?.closedPnL || [])[0] || null;
+          const pnl = Number(closed?.closedPnl || 0);
+          const tradeRec = {
+            tOpen: state.position.openedAt,
+            tClose: now(),
+            symbol: state.position.symbol,
+            side: state.position.side,
+            entry: state.position.entry,
+            exit: null,
+            reason: "EXCHANGE_CLOSE",
+            pnlUSDT: Number.isFinite(pnl) ? pnl : 0,
+            mode: "demo",
+          };
+          state.stats.trades++;
+          if (tradeRec.pnlUSDT >= 0) state.stats.wins++; else state.stats.losses++;
+          state.stats.pnlUSDT += tradeRec.pnlUSDT;
+          addTrade(tradeRec);
+          setPosition(null);
+          state.cooldownUntil = now() + p.cooldownMs;
+          return { ok: true, action: "demo_closed" };
+        }
+        return { ok: true, action: "demo_sync" };
+      } catch (e) {
+        pushLog("warn", `Demo sync failed: ${e?.message || e}`);
+        return { ok: false, reason: "demo_sync_failed" };
+      }
+    }
+
       const sym = state.position.symbol;
       const c5 = await klines.getCandles({ symbol: sym, interval: p.intervals.tf5, limit: p.candlesLimit });
       const cur5 = lastClosedCandle(c5);
@@ -584,17 +623,43 @@ export function createPullbackTest({
       trend: best.trend,
     };
 
-    setPosition(pos);
-    pushLog("info", `OPEN ${pos.side} ${pos.symbol} entry=${fmtNum(pos.entry)} sl=${fmtNum(pos.sl)} rr1=${fmtNum(pos.rr1, 2)}`, pos);
+    if (state.preset.mode === "demo") {
+      try {
+        if (!trade || !trade.enabled()) return { ok: false, reason: "trade_disabled" };
+        const entryQty = qty;
+        const tpQtys = [p.weights[0], p.weights[1], p.weights[2]].map((w) => entryQty * w);
+        const bybitSide = best.side === "LONG" ? "Buy" : "Sell";
+        const execRes = await trade.openPosition({
+          symbol: best.symbol,
+          side: bybitSide,
+          qty: entryQty,
+          slPrice: best.sl,
+          tps: [
+            { price: best.tp1, qty: tpQtys[0] },
+            { price: best.tp2, qty: tpQtys[1] },
+            { price: best.tp3, qty: tpQtys[2] },
+          ],
+        });
+        setPosition({ ...pos, mode: "demo", exec: execRes });
+        pushLog("info", `OPEN demo ${pos.side} ${pos.symbol} entry=${fmtNum(pos.entry)} sl=${fmtNum(pos.sl)}`, { execRes });
+      } catch (e) {
+        pushLog("error", `Demo entry failed: ${e?.message || e}`, { symbol: pos.symbol });
+        return { ok: false, reason: "demo_entry_failed" };
+      }
+    } else {
+      setPosition(pos);
+      pushLog("info", `OPEN ${pos.side} ${pos.symbol} entry=${fmtNum(pos.entry)} sl=${fmtNum(pos.sl)} rr1=${fmtNum(pos.rr1, 2)}`, pos);
+    }
     emit("pullback.status", getState());
 
     return { ok: true, action: "open", pos };
   }
 
-  async function start({ preset } = {}) {
+  async function start({ preset, mode } = {}) {
     if (state.status === "RUNNING" || state.status === "STARTING") return;
 
     state.preset = { ...defaults, ...(preset && typeof preset === "object" ? preset : {}) };
+    if (mode === "demo") state.preset.mode = "demo";
     state.startedAt = now();
     state.endedAt = null;
     state.cooldownUntil = 0;

@@ -2,9 +2,12 @@
 // Demo/real execution via Bybit V5 private REST.
 // Entry: market. TP: reduceOnly limit orders. SL: /v5/position/trading-stop (Full, Market).
 
-function num(x){const n=Number(x);return Number.isFinite(n)?n:null;}
+function num(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
 
-function roundToStep(v, step, mode="floor") {
+function roundToStep(v, step, mode = "floor") {
   const n = num(v);
   const s = num(step);
   if (!Number.isFinite(n) || !Number.isFinite(s) || s <= 0) return n;
@@ -26,36 +29,17 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     const f = instruments ? await instruments.get(symbol) : null;
     const qtyStep = f?.qtyStep;
     const tickSize = f?.tickSize;
-    const minQty = f?.minQty;
 
     let q = num(qty);
     let p = num(price);
 
     if (Number.isFinite(qtyStep) && qtyStep > 0) q = roundToStep(q, qtyStep, "floor");
-    if (Number.isFinite(minQty) && minQty > 0 && q < minQty) q = minQty;
     if (Number.isFinite(tickSize) && tickSize > 0 && Number.isFinite(p)) p = roundToStep(p, tickSize, "nearest");
 
     return { qty: q, price: p, filters: f };
   }
 
-  async function placeMarket({ symbol, side, qty, reduceOnly = false, positionIdx = 0 } = {}) {
-    if (!enabled()) throw new Error("trade_disabled");
-    const { qty: q } = await normalizeQtyPrice(symbol, qty, null);
-    if (!Number.isFinite(q) || q <= 0) throw new Error("bad_qty");
-
-    return privateRest.placeOrder({
-      category: "linear",
-      symbol,
-      side,
-      orderType: "Market",
-      qty: String(q),
-      timeInForce: "IOC",
-      reduceOnly: Boolean(reduceOnly),
-      positionIdx: Number(positionIdx) || 0,
-    });
-  }
-
-  async function placeReduceLimit({ symbol, side, qty, price, positionIdx = 0 } = {}) {
+  async function placeReduceLimit({ symbol, side, qty, price, timeInForce = "GTC", positionIdx = 0 } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const { qty: q, price: p } = await normalizeQtyPrice(symbol, qty, price);
     if (!Number.isFinite(q) || q <= 0) throw new Error("bad_qty");
@@ -68,91 +52,111 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       orderType: "Limit",
       qty: String(q),
       price: String(p),
-      timeInForce: "GTC",
+      timeInForce,
       reduceOnly: true,
-      positionIdx: Number(positionIdx) || 0,
+      positionIdx,
     });
   }
 
-  async function setTradingStop({ symbol, side, slPrice, positionIdx = 0, triggerBy = "LastPrice" } = {}) {
+  async function openPosition({ symbol, side, qty, slPrice, tps = [], leverage, timeInForce = "GTC", positionIdx = 0 } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
-    const { price: sl } = await normalizeQtyPrice(symbol, 1, slPrice);
-    if (!Number.isFinite(sl) || sl <= 0) throw new Error("bad_sl");
+    const { qty: q } = await normalizeQtyPrice(symbol, qty, null);
+    if (!Number.isFinite(q) || q <= 0) {
+      logger?.warn?.({ symbol, qty }, "entry qty is zero/invalid after rounding");
+      throw new Error("bad_qty");
+    }
 
-    return privateRest.setTradingStop({
+    if (Number.isFinite(num(leverage)) && privateRest.setLeverage) {
+      try {
+        await privateRest.setLeverage({
+          category: "linear",
+          symbol,
+          buyLeverage: String(leverage),
+          sellLeverage: String(leverage),
+        });
+      } catch (e) {
+        logger?.warn?.({ err: e, symbol, leverage }, "set leverage failed, continuing");
+      }
+    }
+
+    const entryRes = await privateRest.placeOrder({
       category: "linear",
       symbol,
-      tpslMode: "Full",
-      slTriggerBy: triggerBy,
-      slOrderType: "Market",
-      slSize: "0", // ignored in Full mode
-      slTriggerPrice: String(sl),
-      positionIdx: Number(positionIdx) || 0,
+      side,
+      orderType: "Market",
+      qty: String(q),
+      timeInForce: "IOC",
+      reduceOnly: false,
+      positionIdx,
     });
+
+    let slSet = false;
+    if (Number.isFinite(num(slPrice))) {
+      const { price: sl } = await normalizeQtyPrice(symbol, 1, slPrice);
+      if (Number.isFinite(sl) && sl > 0) {
+        await privateRest.setTradingStop({
+          category: "linear",
+          symbol,
+          tpslMode: "Full",
+          slOrderType: "Market",
+          slTriggerBy: "MarkPrice",
+          sl: String(sl),
+          positionIdx,
+        });
+        slSet = true;
+      }
+    }
+
+    const tpOrderIds = [];
+    const closeSide = side === "Buy" ? "Sell" : "Buy";
+    for (const tp of Array.isArray(tps) ? tps : []) {
+      const tpQtyRaw = num(tp?.qty);
+      const tpPriceRaw = num(tp?.price);
+      if (!Number.isFinite(tpQtyRaw) || tpQtyRaw <= 0 || !Number.isFinite(tpPriceRaw) || tpPriceRaw <= 0) continue;
+      const { qty: tpQty } = await normalizeQtyPrice(symbol, tpQtyRaw, null);
+      if (!Number.isFinite(tpQty) || tpQty <= 0) {
+        logger?.warn?.({ symbol, tp }, "tp qty is zero/invalid after rounding");
+        continue;
+      }
+      const res = await placeReduceLimit({ symbol, side: closeSide, qty: tpQty, price: tpPriceRaw, timeInForce, positionIdx });
+      const orderId = res?.result?.orderId || null;
+      if (orderId) tpOrderIds.push(orderId);
+    }
+
+    return {
+      entryOrderId: entryRes?.result?.orderId || null,
+      tpOrderIds,
+      slSet,
+    };
+  }
+
+  async function sync({ symbol, closedPnlLimit = 20 } = {}) {
+    if (!enabled()) throw new Error("trade_disabled");
+    const [positionRes, ordersRes, pnlRes] = await Promise.all([
+      privateRest.getPositions({ category: "linear", symbol }),
+      privateRest.getOrdersRealtime({ category: "linear", symbol }),
+      privateRest.getClosedPnl({ category: "linear", symbol, limit: String(closedPnlLimit) }),
+    ]);
+
+    return {
+      position: (positionRes?.result?.list || [])[0] || null,
+      openOrders: ordersRes?.result?.list || [],
+      closedPnL: pnlRes?.result?.list || [],
+    };
   }
 
   async function cancelAll({ symbol } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
-    return privateRest.cancelAll({ category: "linear", symbol });
-  }
-
-  async function getPosition({ symbol } = {}) {
-    if (!enabled()) throw new Error("trade_disabled");
-    const res = await privateRest.getPositions({ category: "linear", symbol });
-    const list = res?.result?.list || [];
-    return list[0] || null;
-  }
-
-  async function getOpenOrders({ symbol } = {}) {
-    if (!enabled()) throw new Error("trade_disabled");
-    const res = await privateRest.getOrdersRealtime({ category: "linear", symbol, openOnly: 0 });
-    return res?.result?.list || [];
-  }
-
-  async function getClosedPnl({ symbol, limit = 20 } = {}) {
-    if (!enabled()) throw new Error("trade_disabled");
-    const res = await privateRest.getClosedPnl({ category: "linear", symbol, limit: String(limit) });
-    return res?.result?.list || [];
-  }
-
-  async function openPosition({ symbol, side, qty, sl, tps, positionIdx = 0 } = {}) {
-    // side: Buy|Sell
-    // tps: array of { price, weight }
-    if (!enabled()) throw new Error("trade_disabled");
-    const entry = await placeMarket({ symbol, side, qty, reduceOnly: false, positionIdx });
-
-    // SL first (so we are protected quickly)
-    if (Number.isFinite(num(sl))) {
-      await setTradingStop({ symbol, side, slPrice: sl, positionIdx });
-    }
-
-    // TP reduce-only limit orders
-    if (Array.isArray(tps)) {
-      for (const tp of tps) {
-        const tpPrice = num(tp?.price);
-        const w = num(tp?.weight);
-        if (!Number.isFinite(tpPrice) || !Number.isFinite(w) || w <= 0) continue;
-        const legQty = qty * w;
-        // opposite side to close
-        const closeSide = side === "Buy" ? "Sell" : "Buy";
-        await placeReduceLimit({ symbol, side: closeSide, qty: legQty, price: tpPrice, positionIdx });
-      }
-    }
-
-    return entry;
+    const res = await privateRest.cancelAll({ category: "linear", symbol });
+    return { ok: true, result: res?.result || null };
   }
 
   return {
     enabled,
     getStatus,
     normalizeQtyPrice,
-    placeMarket,
-    placeReduceLimit,
-    setTradingStop,
-    cancelAll,
-    getPosition,
-    getOpenOrders,
-    getClosedPnl,
     openPosition,
+    sync,
+    cancelAll,
   };
 }

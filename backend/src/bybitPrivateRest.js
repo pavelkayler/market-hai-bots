@@ -1,7 +1,4 @@
 // backend/src/bybitPrivateRest.js
-// Bybit V5 private REST (SIGN-TYPE=2). Supports Demo (https://api-demo.bybit.com) and Real.
-// Signature: HMAC_SHA256(secret, timestamp + apiKey + recvWindow + (queryString|bodyString))
-
 import crypto from "crypto";
 
 const DEFAULT_BASE = "https://api.bybit.com";
@@ -26,6 +23,7 @@ async function fetchJson(url, { method = "GET", headers = {}, body = null, timeo
     if (!res.ok) {
       const err = new Error(`HTTP ${res.status}`);
       err.payload = data;
+      err.status = res.status;
       throw err;
     }
     return data;
@@ -39,12 +37,11 @@ export function createBybitPrivateRest({
   apiSecret,
   baseUrl = DEFAULT_BASE,
   recvWindow = DEFAULT_RECV_WINDOW,
-  logger = console,
 } = {}) {
   if (!apiKey || !apiSecret) {
     return {
       enabled: false,
-      getStatus: () => ({ enabled: false, baseUrl, reason: "missing_keys" }),
+      getStatus: () => ({ enabled: false, baseUrl, recvWindow, reason: "missing_keys" }),
     };
   }
 
@@ -71,10 +68,10 @@ export function createBybitPrivateRest({
     const headers = {
       "Content-Type": "application/json",
       "X-BAPI-API-KEY": apiKey,
-      "X-BAPI-TIMESTAMP": ts,
-      "X-BAPI-RECV-WINDOW": String(recvWindow),
       "X-BAPI-SIGN": sign,
       "X-BAPI-SIGN-TYPE": "2",
+      "X-BAPI-TIMESTAMP": ts,
+      "X-BAPI-RECV-WINDOW": String(recvWindow),
     };
 
     const res = await fetchJson(url.toString(), {
@@ -85,33 +82,26 @@ export function createBybitPrivateRest({
     });
 
     if (res?.retCode !== 0) {
-      const err = new Error(`Bybit retCode ${res?.retCode}`);
-      err.payload = res;
+      const err = new Error(`Bybit retCode=${res?.retCode} retMsg=${res?.retMsg || "unknown"} path=${path}`);
+      err.payload = { path, method, query, body, response: res };
       throw err;
     }
 
     return res;
   }
 
-  function getStatus() {
-    return { enabled: true, baseUrl, recvWindow };
-  }
-
-  // Convenience wrappers (V5)
   const api = {
     enabled: true,
-    getStatus,
+    getStatus: () => ({ enabled: true, baseUrl, recvWindow }),
     request,
-    get: (path, query) => request("GET", path, { query }),
-    post: (path, body) => request("POST", path, { body }),
-
     placeOrder: (body) => request("POST", "/v5/order/create", { body }),
     cancelAll: (body) => request("POST", "/v5/order/cancel-all", { body }),
     getOrdersRealtime: (query) => request("GET", "/v5/order/realtime", { query }),
     getPositions: (query) => request("GET", "/v5/position/list", { query }),
+    setTradingStop: (body) => request("POST", "/v5/position/trading-stop", { body }),
     getClosedPnl: (query) => request("GET", "/v5/position/closed-pnl", { query }),
     setLeverage: (body) => request("POST", "/v5/position/set-leverage", { body }),
-    setTradingStop: (body) => request("POST", "/v5/position/trading-stop", { body }),
+    getInstrumentsInfo: (query) => request("GET", "/v5/market/instruments-info", { query }),
   };
 
   return api;
