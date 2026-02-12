@@ -4,6 +4,7 @@ import { useWsClient } from '../../shared/api/ws.js';
 
 const fmtTs = (ts) => Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : '—';
 const fmtPct = (x) => Number.isFinite(Number(x)) ? `${(Number(x) * 100).toFixed(2)}%` : '—';
+const fmtUptime = (startedAt) => { const sec = Math.max(0, Math.floor((Date.now() - Number(startedAt || 0)) / 1000)); const h = String(Math.floor(sec / 3600)).padStart(2, '0'); const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0'); const s = String(sec % 60).padStart(2, '0'); return `${h}:${m}:${s}`; };
 const WINDOW_OPTIONS = [
   { value: 300, label: '5m' },
   { value: 900, label: '15m' },
@@ -81,7 +82,7 @@ export default function ImpulsePage() {
   return <Row className='g-3'>
     <Col md={4}><Card><Card.Body className='d-grid gap-2'>
       <div className='d-flex justify-content-between'><strong>Impulse (Price+OI)</strong><Badge bg={status === 'connected' ? 'success' : 'secondary'}>{status}</Badge></div>
-      <div className='d-flex justify-content-between'><span>Status</span><Badge bg={state?.status === 'RUNNING' ? 'success' : 'secondary'}>{state?.status || '—'}</Badge></div>
+      <div className='d-flex justify-content-between'><span>Status</span><Badge bg={state?.status === 'RUNNING' ? 'success' : 'secondary'}>{state?.status || '—'}</Badge></div>{state?.status === 'RUNNING' ? <div className='text-muted'>Uptime {fmtUptime(state?.startedAt)}</div> : null}
       <Form.Select value={mode} onChange={(e) => setMode(e.target.value)}><option value='paper'>PAPER</option><option value='demo'>DEMO</option><option value='real'>REAL</option></Form.Select>
       <Form.Select value={settings.directionMode} onChange={(e) => setSettings((p) => ({ ...p, directionMode: e.target.value }))}>
         <option value='AUTO'>AUTO</option><option value='MOMENTUM_ONLY'>MOMENTUM_ONLY</option><option value='COUNTERTREND_ONLY'>COUNTERTREND_ONLY</option>

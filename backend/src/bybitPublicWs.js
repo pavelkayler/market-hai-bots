@@ -238,7 +238,7 @@ export function createBybitPublicWs({
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       backoffMs = Math.min(backoffMs * 2, 15000);
-      connect();
+      if (desiredSymbols.length) connect();
     }, backoffMs);
   }
 
@@ -253,6 +253,12 @@ export function createBybitPublicWs({
     const next = uniqSymbols(nextSymbols);
     const prev = desiredSymbols;
     desiredSymbols = next;
+
+    if (!next.length) {
+      unsubscribeTopics(desiredTopicsForSymbols(prev));
+      onStatus({ status, url, desiredSymbols });
+      return;
+    }
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       const prevSet = new Set(prev);
@@ -292,7 +298,7 @@ export function createBybitPublicWs({
     return out;
   }
 
-  connect();
+  if (desiredSymbols.length) connect();
 
   return {
     setSymbols,
