@@ -260,6 +260,10 @@ export function createBybitPublicWs({
       return;
     }
 
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      connect();
+    }
+
     if (ws && ws.readyState === WebSocket.OPEN) {
       const prevSet = new Set(prev);
       const nextSet = new Set(next);

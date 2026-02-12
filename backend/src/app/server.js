@@ -432,7 +432,23 @@ setInterval(async () => {
   } catch {}
 }, 3000);
 
-app.get("/health", async () => ({ status: "ok" }));
+app.get("/health", async () => {
+  const bybitWs = getBybitHealth();
+  const cmc = await getCmcHealth();
+  const universeStatus = universe.getStatus();
+  const failedChecks = [cmc, bybitWs].filter((c) => String(c?.status || "").toLowerCase() === "error");
+
+  return {
+    status: failedChecks.length ? "degraded" : "ok",
+    now: Date.now(),
+    uptimeMs: Math.floor(process.uptime() * 1000),
+    checks: {
+      bybitWs,
+      cmc,
+      universe: universeStatus,
+    },
+  };
+});
 app.get("/api/heartbeat", async () => ({ status: "ok", now: Date.now(), uptime_ms: Math.floor(process.uptime() * 1000) }));
 
 app.get("/api/bybit/status", async () => bybit.getStatus());
@@ -536,6 +552,54 @@ function getBybitHealth() {
     lastBybitTs,
     ageMs,
   };
+}
+
+async function getCmcHealth() {
+  const apiKey = process.env.CMC_API_KEY || process.env.COINMARKETCAP_API_KEY || "";
+  if (!apiKey) {
+    return {
+      status: "disabled",
+      reason: "missing_api_key",
+    };
+  }
+
+  const startedAt = Date.now();
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), 8000);
+
+  try {
+    const res = await fetch("https://pro-api.coinmarketcap.com/v1/key/info", {
+      headers: { "X-CMC_PRO_API_KEY": apiKey },
+      signal: ac.signal,
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch {}
+
+    if (!res.ok) {
+      return {
+        status: "error",
+        httpStatus: res.status,
+        latencyMs: Date.now() - startedAt,
+        error: data?.status?.error_message || `HTTP ${res.status}`,
+      };
+    }
+
+    return {
+      status: "ok",
+      latencyMs: Date.now() - startedAt,
+      plan: data?.data?.plan?.name || null,
+      usageResetAt: data?.data?.plan?.credit_limit_reset_at || null,
+    };
+  } catch (err) {
+    return {
+      status: "error",
+      latencyMs: Date.now() - startedAt,
+      error: String(err?.message || err),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 function stopStatusWatcher(ws) {
   const st = statusWatchers.get(ws);
