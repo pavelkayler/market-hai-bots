@@ -32,6 +32,10 @@ async function fetchJson(url, { method = "GET", headers = {}, body = null, timeo
   }
 }
 
+function isRetryableBybitError(retCode) {
+  return [10000, 10002, 10006, 30034, 30084].includes(Number(retCode));
+}
+
 export function createBybitPrivateRest({
   apiKey,
   apiSecret,
@@ -50,8 +54,7 @@ export function createBybitPrivateRest({
     return hmacSHA256(apiSecret, preSign);
   }
 
-  async function request(method, path, { query = null, body = null, timeoutMs = 15000 } = {}) {
-    const ts = String(Date.now());
+  async function request(method, path, { query = null, body = null, timeoutMs = 15000, retries = 2 } = {}) {
     const url = new URL(`${baseUrl}${path}`);
 
     if (query && typeof query === "object") {
@@ -63,31 +66,47 @@ export function createBybitPrivateRest({
 
     const queryString = url.searchParams.toString();
     const bodyString = body ? JSON.stringify(body) : "";
-    const sign = signRequest({ ts, method, queryString, bodyString });
 
-    const headers = {
-      "Content-Type": "application/json",
-      "X-BAPI-API-KEY": apiKey,
-      "X-BAPI-SIGN": sign,
-      "X-BAPI-SIGN-TYPE": "2",
-      "X-BAPI-TIMESTAMP": ts,
-      "X-BAPI-RECV-WINDOW": String(recvWindow),
-    };
+    let lastErr = null;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const ts = String(Date.now());
+        const sign = signRequest({ ts, method, queryString, bodyString });
 
-    const res = await fetchJson(url.toString(), {
-      method,
-      headers,
-      body: method === "GET" ? null : bodyString,
-      timeoutMs,
-    });
+        const headers = {
+          "Content-Type": "application/json",
+          "X-BAPI-API-KEY": apiKey,
+          "X-BAPI-SIGN": sign,
+          "X-BAPI-SIGN-TYPE": "2",
+          "X-BAPI-TIMESTAMP": ts,
+          "X-BAPI-RECV-WINDOW": String(recvWindow),
+        };
 
-    if (res?.retCode !== 0) {
-      const err = new Error(`Bybit retCode=${res?.retCode} retMsg=${res?.retMsg || "unknown"} path=${path}`);
-      err.payload = { path, method, query, body, response: res };
-      throw err;
+        const res = await fetchJson(url.toString(), {
+          method,
+          headers,
+          body: method === "GET" ? null : bodyString,
+          timeoutMs,
+        });
+
+        if (res?.retCode !== 0) {
+          const err = new Error(`Bybit retCode=${res?.retCode} retMsg=${res?.retMsg || "unknown"} path=${path}`);
+          err.payload = { path, method, query, body, response: res };
+          if (attempt < retries && isRetryableBybitError(res?.retCode)) {
+            await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+            continue;
+          }
+          throw err;
+        }
+
+        return res;
+      } catch (err) {
+        lastErr = err;
+        if (attempt >= retries) break;
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      }
     }
-
-    return res;
+    throw lastErr;
   }
 
   const api = {
@@ -101,6 +120,7 @@ export function createBybitPrivateRest({
     setTradingStop: (body) => request("POST", "/v5/position/trading-stop", { body }),
     getClosedPnl: (query) => request("GET", "/v5/position/closed-pnl", { query }),
     setLeverage: (body) => request("POST", "/v5/position/set-leverage", { body }),
+    switchIsolated: (body) => request("POST", "/v5/position/switch-isolated", { body }),
     getInstrumentsInfo: (query) => request("GET", "/v5/market/instruments-info", { query }),
   };
 

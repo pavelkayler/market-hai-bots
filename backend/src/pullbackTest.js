@@ -119,6 +119,7 @@ export function createPullbackTest({
     // risk & sizing
     riskUSDT: 10,
     minRR1: 0.8,
+    minEdgeAfterFees: 0.0015,
 
     // exits
     tpR: [1.0, 2.0, 3.0],
@@ -337,6 +338,8 @@ export function createPullbackTest({
 
     // basic RR gate on TP1
     const rr1 = Math.abs(tp1 - best.px) / risk;
+    const setupDistance = Math.abs(best.px - best.level);
+    const edge = Math.abs(tp1 - best.px) - (best.px * p.minEdgeAfterFees);
 
     return {
       ok: true,
@@ -352,6 +355,10 @@ export function createPullbackTest({
       tp2,
       tp3,
       rr1,
+      setupDistance,
+      edge,
+      minEdge: best.px * p.minEdgeAfterFees,
+      triggerState: best.trigger ? "armed" : "none",
       candle5: { t: cur5.t, o: cur5.o, h: cur5.h, l: cur5.l, c: cur5.c },
     };
   }
@@ -575,6 +582,11 @@ export function createPullbackTest({
       zoneWidth: best.zoneWidth,
       trigger: best.trigger,
       rr1: best.rr1,
+      setupDistance: best.setupDistance,
+      threshold: best.zoneWidth,
+      triggerState: best.triggerState,
+      edge: best.edge,
+      minEdge: best.minEdge,
       sl: best.sl,
       tp1: best.tp1,
       tp2: best.tp2,
@@ -595,6 +607,9 @@ export function createPullbackTest({
 
     if (best.rr1 < p.minRR1) {
       return { ok: false, reason: "rr_too_low", candidate: state.scan.lastCandidate, rr1: best.rr1 };
+    }
+    if (best.edge < best.minEdge) {
+      return { ok: false, reason: "edge_too_low", candidate: state.scan.lastCandidate, edge: best.edge, minEdge: best.minEdge };
     }
 
     const qty = calcQtyForRisk({ riskUSDT: p.riskUSDT, entry: best.px, sl: best.sl });
@@ -691,14 +706,16 @@ export function createPullbackTest({
       const reasons = [];
       if (uStatus?.status !== "ready") reasons.push(`universe=${uStatus?.status}`);
       if (c) {
-        if (!c.trigger) reasons.push("waiting_trigger");
-        reasons.push(`rr1=${fmtNum(c.rr1, 2)} (min ${state.preset.minRR1})`);
-        reasons.push(`dist=${fmtNum(Math.abs(c.px - c.level), 6)} (zone ${fmtNum(c.zoneWidth, 6)})`);
+        reasons.push(`setupDistance=${fmtNum(c.setupDistance, 6)} threshold=${fmtNum(c.threshold ?? c.zoneWidth, 6)}`);
+        reasons.push(`triggerState=${c.triggerState || (c.trigger ? "armed" : "none")}`);
+        reasons.push(`edge=${fmtNum(c.edge, 6)} minEdge=${fmtNum(c.minEdge, 6)}`);
       } else {
         reasons.push("no_candidate");
       }
 
-      pushLog("info", `No entry: ${reasons.slice(0, 3).join(" | ")}`, { candidate: c, universe: uStatus });
+      const cooldownRemainingMs = Math.max(0, state.cooldownUntil - now());
+      reasons.push(`cooldownRemainingMs=${cooldownRemainingMs}`);
+      pushLog("info", `No entry: ${reasons.slice(0, 3).join(" | ")}`, { candidate: c, universe: uStatus, cooldownRemainingMs });
     }, state.preset.noTradeLogEveryMs);
 
     // Promote to RUNNING asynchronously
