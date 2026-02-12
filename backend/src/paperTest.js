@@ -48,6 +48,19 @@ export function createPaperTest({
     pending: null,
     executionMode: "paper",
     stats: { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0 },
+    quality: {
+      signalsCount: 0,
+      entriesCount: 0,
+      winsCount: 0,
+      lossesCount: 0,
+      pnlUSDT: 0,
+      avgPnL: 0,
+      maxDrawdownUSDT: 0,
+      lastSignalTs: null,
+      lastEntryTs: null,
+      signalsPerHour: 0,
+      entriesPerHour: 0,
+    },
   };
 
   let logs = [];
@@ -56,6 +69,15 @@ export function createPaperTest({
   let lastNoEntryAt = 0;
   let lastTradeAt = 0;
   let lastTuneAt = 0;
+  let peakEquity = 0;
+  let rollingPnl = [];
+
+  function updateQualityRates(now = Date.now()) {
+    const elapsedMs = Math.max(1, now - (state.startedAt || now));
+    const hours = elapsedMs / 3_600_000;
+    state.quality.signalsPerHour = state.quality.signalsCount / hours;
+    state.quality.entriesPerHour = state.quality.entriesCount / hours;
+  }
 
   function emit(type, payload) {
     try { onEvent({ type, payload }); } catch {}
@@ -142,6 +164,9 @@ export function createPaperTest({
     const rows = Array.isArray(state.lastLeadLagTop) ? state.lastLeadLagTop : [];
     const ready = rows.find((r) => r?.tradeReady);
     if (!ready) return;
+    state.quality.signalsCount += 1;
+    state.quality.lastSignalTs = now;
+    updateQualityRates(now);
 
     const follower = String(ready.follower || "").toUpperCase();
     if (!follower) return;
@@ -169,8 +194,12 @@ export function createPaperTest({
       tpsHit: 0,
       feeRate: 0.0002,
     };
+    state.quality.entriesCount += 1;
+    state.quality.lastEntryTs = now;
+    updateQualityRates(now);
 
     emitLeadLag("leadlag.position", state.position);
+    emitLeadLag("leadlag.trade", { ts: now, event: "OPEN", symbol: follower, side: direction, entry: px, sl: sl, tpPrices: [tp1, tp2, tp3], qty, mode: state.executionMode });
     pushLog("info", `OPEN ${direction} ${follower} @ ${px.toFixed(4)} (source=${t?.source || "BNB"})`);
   }
 
@@ -208,6 +237,7 @@ export function createPaperTest({
 
     const tradeRow = {
       ts: now,
+      event: "CLOSE",
       symbol: p.symbol,
       side: p.side,
       entryPrice: p.entryPrice,
@@ -222,6 +252,14 @@ export function createPaperTest({
     if (pnl >= 0) state.stats.wins += 1;
     else state.stats.losses += 1;
     state.stats.winRate = state.stats.trades ? (state.stats.wins / state.stats.trades) * 100 : 0;
+    state.quality.pnlUSDT = state.stats.pnlUSDT;
+    state.quality.winsCount = state.stats.wins;
+    state.quality.lossesCount = state.stats.losses;
+    rollingPnl.unshift(pnl);
+    rollingPnl = rollingPnl.slice(0, 30);
+    state.quality.avgPnL = rollingPnl.length ? rollingPnl.reduce((acc, x) => acc + x, 0) / rollingPnl.length : 0;
+    peakEquity = Math.max(peakEquity, state.quality.pnlUSDT);
+    state.quality.maxDrawdownUSDT = Math.max(state.quality.maxDrawdownUSDT, peakEquity - state.quality.pnlUSDT);
 
     trades.unshift(tradeRow);
     trades = trades.slice(0, 200);
@@ -250,6 +288,7 @@ export function createPaperTest({
     maybeCloseTrade(now);
     maybeEmitNoEntry(now);
     maybeAutoTune(now);
+    updateQualityRates(now);
     emitState();
   }
 
@@ -267,6 +306,21 @@ export function createPaperTest({
     state.position = null;
     state.lastLeadLagTop = [];
     state.lastNoEntryReasons = [];
+    state.quality = {
+      signalsCount: 0,
+      entriesCount: 0,
+      winsCount: 0,
+      lossesCount: 0,
+      pnlUSDT: 0,
+      avgPnL: 0,
+      maxDrawdownUSDT: 0,
+      lastSignalTs: null,
+      lastEntryTs: null,
+      signalsPerHour: 0,
+      entriesPerHour: 0,
+    };
+    peakEquity = 0;
+    rollingPnl = [];
     pushLog("info", "Starting...");
 
     const selectedId = presetId || presetsStore?.getState()?.activePresetId;

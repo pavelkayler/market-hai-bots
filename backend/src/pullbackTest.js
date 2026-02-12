@@ -189,9 +189,27 @@ export function createPullbackTest({
   }
 
   function getState() {
+    const elapsedHours = Math.max(1 / 3600, ((now() - (state.startedAt || now())) / 3_600_000));
+    const wins = Number(state.stats?.wins || 0);
+    const losses = Number(state.stats?.losses || 0);
+    const trades = Number(state.stats?.trades || 0);
+    const avgPnL = trades ? Number(state.stats?.pnlUSDT || 0) / trades : 0;
     return {
       ...state,
       mode: state.preset.mode,
+      quality: {
+        signalsCount: Number(state.scan?.scanIdx || 0),
+        entriesCount: trades,
+        winsCount: wins,
+        lossesCount: losses,
+        pnlUSDT: Number(state.stats?.pnlUSDT || 0),
+        avgPnL,
+        maxDrawdownUSDT: 0,
+        lastSignalTs: Number(state.scan?.lastScanAt || 0) || null,
+        lastEntryTs: Number(state.trades?.[state.trades.length - 1]?.tOpen || 0) || null,
+        signalsPerHour: Number(state.scan?.scanIdx || 0) / elapsedHours,
+        entriesPerHour: trades / elapsedHours,
+      },
     };
   }
 

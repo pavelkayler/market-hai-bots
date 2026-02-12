@@ -22,6 +22,7 @@ import { createBybitRest } from "../bybitRest.js";
 import { createMarketDataStore, toTickerSourceCode } from "../marketDataStore.js";
 import { createPresetsStore } from "../presetsStore.js";
 import { createImpulseBot } from "../impulseBot.js";
+import { createJournalStore } from "../journalStore.js";
 
 dotenv.config();
 
@@ -198,6 +199,49 @@ const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, private
 const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
 const bybitRest = createBybitRest({ logger: app.log });
 const presetsStore = createPresetsStore({ logger: app.log });
+const journalStore = createJournalStore({ logger: app.log });
+
+const openByBotSymbol = new Map();
+function rememberOpenTrade(botName, trade) {
+  if (!trade?.symbol) return;
+  openByBotSymbol.set(`${botName}:${String(trade.symbol).toUpperCase()}`, trade);
+}
+
+function emitJournalFromClose(botName, trade) {
+  if (!trade?.symbol) return;
+  const symbol = String(trade.symbol).toUpperCase();
+  const key = `${botName}:${symbol}`;
+  const opened = openByBotSymbol.get(key) || {};
+  openByBotSymbol.delete(key);
+  const entryPrice = Number(opened.entry || trade.entry || trade.entryPrice || 0);
+  const exitPrice = Number(trade.exit || trade.exitPrice || entryPrice);
+  const qty = Number(opened.qty || trade.qty || (entryPrice > 0 ? 100 / entryPrice : 0));
+  const pnlUsdt = Number(trade.pnlUSDT || trade.pnlUsdt || 0);
+  const roiPct = Number(trade.roiPct || (entryPrice > 0 ? (pnlUsdt / Math.max(1, qty * entryPrice)) * 100 : 0));
+  journalStore.append({
+    botName,
+    symbol,
+    side: trade.side || opened.side || "",
+    mode: trade.mode || opened.mode || "paper",
+    openedAt: Number(opened.ts || opened.openedAt || trade.ts || Date.now()),
+    closedAt: Number(trade.ts || Date.now()),
+    entryPrice,
+    exitPrice,
+    tpLevels: opened.tp ? [opened.tp] : opened.tpPrices || [],
+    slLevel: Number(opened.sl || opened.slPrice || 0),
+    qty,
+    notionalUsd: Number(opened.notionalUsd || qty * entryPrice || 0),
+    leverage: Number(opened.leverage || 1),
+    pnlUsdt,
+    roiPct,
+    reasonOpen: opened.reasonOpen || "signal",
+    reasonClose: trade.reason || trade.exitReason || "close",
+    snapshot: {
+      priceDelta: trade.priceDeltaPct,
+      oiDelta: trade.oiDeltaPct,
+    },
+  });
+}
 
 const paperTest = createPaperTest({
   getLeadLagTop: () => lastLeadLagTop,
@@ -205,7 +249,13 @@ const paperTest = createPaperTest({
   getUniverseSymbols: () => universe.getUniverse({ limit: 500 }).symbols,
   presetsStore,
   logger: app.log,
-  onEvent: ({ type, payload }) => broadcast({ type, payload }),
+  onEvent: ({ type, payload }) => {
+    broadcast({ type, payload });
+    if (type === "leadlag.trade") {
+      if (String(payload?.event || "").toUpperCase() === "OPEN") rememberOpenTrade("LeadLag", payload);
+      else emitJournalFromClose("LeadLag", payload);
+    }
+  },
 });
 const universe = createCmcBybitUniverse({
   logger: app.log,
@@ -238,15 +288,33 @@ function pickMostVolatileSymbols(limit = 100) {
 }
 
 const klines = createBybitKlinesCache({ logger: app.log });
-const pullbackTest = createPullbackTest({ universe, klines, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
-const rangeTest = createRangeMetricsTest({ universe, klines, bybitRest, liqFeed, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
+const pullbackTest = createPullbackTest({ universe, klines, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => {
+  broadcast({ type, payload });
+  if (type === "pullback.trade") {
+    if (String(payload?.event || "").toUpperCase() === "OPEN") rememberOpenTrade("Pullback", payload);
+    else emitJournalFromClose("Pullback", payload);
+  }
+} });
+const rangeTest = createRangeMetricsTest({ universe, klines, bybitRest, liqFeed, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => {
+  broadcast({ type, payload });
+  if (type === "range.trade") {
+    if (String(payload?.event || "").toUpperCase() === "OPEN") rememberOpenTrade("RangeMetrics", payload);
+    else emitJournalFromClose("RangeMetrics", payload);
+  }
+} });
 const impulseBot = createImpulseBot({
   getSymbols: () => bybit.getSymbols(),
   getCapsUniverse: () => universe.getUniverse({ limit: 500 }).symbols,
   getCandles: ({ symbol, interval, limit }) => klines.getCandles({ symbol, interval, limit }),
   getOi: ({ symbol, interval, limit }) => bybitRest.getOpenInterest({ symbol, interval: String(interval || '5'), limit }),
   logger: app.log,
-  onEvent: ({ type, payload }) => broadcast({ type, payload }),
+  onEvent: ({ type, payload }) => {
+    broadcast({ type, payload });
+    if (type === "impulse.trade") {
+      if (String(payload?.event || "").toUpperCase() === "OPEN") rememberOpenTrade("Impulse", payload);
+      else emitJournalFromClose("Impulse", payload);
+    }
+  },
 });
 
 async function getTradeSnapshot(symbol) {
@@ -312,14 +380,15 @@ function getBotsOverview() {
   const rangeState = rangeTest.getState?.() || {};
   const impulseState = impulseBot.getState?.() || {};
   const paperBalance = Number(process.env.PAPER_WALLET_BALANCE || 10000);
+  const agg = journalStore.getAggregates();
   return {
     ts: Date.now(),
     paperBalance,
     bots: [
-      { name: "LeadLag", status: leadlagState.status || "STOPPED", pnl: toBotPnl(leadlagState) },
-      { name: "Pullback", status: pullbackState.status || "STOPPED", pnl: toBotPnl(pullbackState) },
-      { name: "RangeMetrics", status: rangeState.status || "STOPPED", pnl: toBotPnl(rangeState) },
-      { name: "Impulse", status: impulseState.status || "STOPPED", pnl: toBotPnl(impulseState) },
+      { name: "LeadLag", status: leadlagState.status || "STOPPED", pnl: Number(agg?.LeadLag?.pnlUsdt ?? toBotPnl(leadlagState)) },
+      { name: "Pullback", status: pullbackState.status || "STOPPED", pnl: Number(agg?.Pullback?.pnlUsdt ?? toBotPnl(pullbackState)) },
+      { name: "RangeMetrics", status: rangeState.status || "STOPPED", pnl: Number(agg?.RangeMetrics?.pnlUsdt ?? toBotPnl(rangeState)) },
+      { name: "Impulse", status: impulseState.status || "STOPPED", pnl: Number(agg?.Impulse?.pnlUsdt ?? toBotPnl(impulseState)) },
     ],
   };
 }
@@ -432,6 +501,10 @@ app.get("/api/trade/history", async (req) => {
     return { history: [] };
   }
 });
+app.get("/api/journal", async (req) => ({
+  rows: journalStore.list({ botName: req.query?.botName ? String(req.query.botName) : null, mode: req.query?.mode ? String(req.query.mode) : null, limit: Number(req.query?.limit || 200) }),
+  aggregates: journalStore.getAggregates(),
+}));
 app.post("/api/trade/killswitch", async (req) => {
   const enabled = tradeExecutor.setKillSwitch(Boolean(req.body?.enabled));
   broadcastEvent("trade.killswitch", { enabled });
