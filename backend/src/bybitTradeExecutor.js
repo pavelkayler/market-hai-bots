@@ -20,13 +20,68 @@ function sumNums(arr) {
   return arr.reduce((acc, x) => acc + (num(x) || 0), 0);
 }
 
+function normalizePosition(row) {
+  return {
+    symbol: row?.symbol || "",
+    side: row?.side || "",
+    size: row?.size || "0",
+    avgPrice: row?.avgPrice || null,
+    liqPrice: row?.liqPrice || null,
+    unrealisedPnl: row?.unrealisedPnl || row?.unrealisedPnlValue || null,
+    marginMode: row?.tradeMode === 1 ? "isolated" : "cross",
+    positionIdx: Number(row?.positionIdx ?? 0),
+  };
+}
+
+function normalizeOrder(row) {
+  return {
+    orderId: row?.orderId || "",
+    symbol: row?.symbol || "",
+    side: row?.side || "",
+    price: row?.price || null,
+    qty: row?.qty || null,
+    leavesQty: row?.leavesQty || null,
+    status: row?.orderStatus || row?.status || "",
+    reduceOnly: Boolean(row?.reduceOnly),
+    createdTime: row?.createdTime || null,
+  };
+}
+
 export function createBybitTradeExecutor({ privateRest, instruments, logger = console } = {}) {
+  const state = {
+    executionMode: "paper",
+    killSwitch: false,
+    activeSymbol: null,
+    maxNotional: Number(process.env.TRADE_MAX_NOTIONAL || 1000),
+  };
+
   function enabled() {
     return Boolean(privateRest && privateRest.enabled);
   }
 
   function getStatus() {
     return privateRest?.getStatus ? privateRest.getStatus() : { enabled: false };
+  }
+
+  function setExecutionMode(mode) {
+    state.executionMode = mode === "real" ? "real" : mode === "demo" ? "demo" : "paper";
+  }
+
+  function getExecutionMode() {
+    return state.executionMode;
+  }
+
+  function setKillSwitch(enabledFlag) {
+    state.killSwitch = Boolean(enabledFlag);
+    return state.killSwitch;
+  }
+
+  function getKillSwitch() {
+    return state.killSwitch;
+  }
+
+  function setActiveSymbol(symbol) {
+    state.activeSymbol = symbol ? String(symbol).toUpperCase() : null;
   }
 
   async function normalizeQtyPrice(symbol, qty, price, { qtyMode = "floor", priceMode = "nearest" } = {}) {
@@ -43,11 +98,45 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     return { qty: q, price: p, filters: f };
   }
 
-  async function placeReduceLimit({ symbol, side, qty, price, timeInForce = "GTC", positionIdx = 0, priceMode = "nearest" } = {}) {
+  async function detectPositionMode(symbol) {
+    const rows = await getPositions({ symbol });
+    const idxSet = new Set(rows.map((r) => Number(r.positionIdx ?? 0)).filter(Number.isFinite));
+    const hedge = idxSet.has(1) || idxSet.has(2);
+    return hedge ? "HEDGE" : "ONE_WAY";
+  }
+
+  async function resolvePositionIdx({ symbol, side, explicitPositionIdx } = {}) {
+    if (Number.isFinite(Number(explicitPositionIdx))) return Number(explicitPositionIdx);
+    const mode = await detectPositionMode(symbol);
+    if (mode === "ONE_WAY") return 0;
+    if (side === "Buy") return 1;
+    if (side === "Sell") return 2;
+    return 0;
+  }
+
+  async function runPreTradeChecks({ symbol, side, qty, priceHint, reduceOnly = false } = {}) {
+    const reasons = [];
+    if (state.executionMode === "paper") return { ok: true, reasons };
+    if (state.killSwitch && !reduceOnly) reasons.push("KILL_SWITCH_ENABLED");
+    if (state.executionMode === "real") {
+      const rows = await getPositions({});
+      const active = rows.filter((r) => Number(r?.size || 0) > 0);
+      if (active.length > 1 || (active.length === 1 && active[0].symbol !== symbol)) reasons.push("MAX_ONE_POSITION_GLOBAL");
+      const notional = Math.abs(Number(qty || 0) * Number(priceHint || 0));
+      if (Number.isFinite(notional) && notional > state.maxNotional) reasons.push(`NOTIONAL_LIMIT_EXCEEDED:${notional.toFixed(2)}>${state.maxNotional}`);
+      if (active.some((r) => Number(r?.tradeMode) !== 1)) reasons.push("ISOLATED_MARGIN_REQUIRED");
+    }
+    const ok = reasons.length === 0;
+    logger?.info?.({ symbol, side, mode: state.executionMode, reasons, ok }, ok ? "PRE-TRADE CHECK PASSED" : "PRE-TRADE CHECK FAILED");
+    return { ok, reasons };
+  }
+
+  async function placeReduceLimit({ symbol, side, qty, price, timeInForce = "GTC", positionIdx, priceMode = "nearest" } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const { qty: q, price: p } = await normalizeQtyPrice(symbol, qty, price, { qtyMode: "floor", priceMode });
     if (!Number.isFinite(q) || q <= 0) throw new Error("bad_qty");
     if (!Number.isFinite(p) || p <= 0) throw new Error("bad_price");
+    const resolvedPositionIdx = await resolvePositionIdx({ symbol, side, explicitPositionIdx: positionIdx });
 
     return privateRest.placeOrder({
       category: "linear",
@@ -58,17 +147,21 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       price: String(p),
       timeInForce,
       reduceOnly: true,
-      positionIdx,
+      positionIdx: resolvedPositionIdx,
     });
   }
 
-  async function openPosition({ symbol, side, qty, slPrice, tps = [], leverage, timeInForce = "GTC", positionIdx = 0 } = {}) {
+  async function openPosition({ symbol, side, qty, slPrice, tps = [], leverage, timeInForce = "GTC", positionIdx } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const { qty: q, filters } = await normalizeQtyPrice(symbol, qty, null);
     if (!Number.isFinite(q) || q <= 0) {
       logger?.warn?.({ symbol, qty }, "entry qty is zero/invalid after rounding");
       throw new Error("bad_qty");
     }
+    const pre = await runPreTradeChecks({ symbol, side, qty: q, reduceOnly: false });
+    if (!pre.ok) throw new Error(pre.reasons.join(";"));
+
+    const resolvedPositionIdx = await resolvePositionIdx({ symbol, side, explicitPositionIdx: positionIdx });
 
     if (privateRest.switchIsolated) {
       try {
@@ -99,7 +192,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       qty: String(q),
       timeInForce: "IOC",
       reduceOnly: false,
-      positionIdx,
+      positionIdx: resolvedPositionIdx,
     });
 
     let slSet = false;
@@ -117,7 +210,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
           slOrderType: "Market",
           slTriggerBy: "MarkPrice",
           sl: String(sl),
-          positionIdx,
+          positionIdx: resolvedPositionIdx,
         });
         slSet = true;
       }
@@ -139,7 +232,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       if (!Number.isFinite(tpQtyRaw) || tpQtyRaw <= 0 || !Number.isFinite(tpPriceRaw) || tpPriceRaw <= 0) continue;
       const tpPriceMode = side === "Buy" ? "ceil" : "floor";
       logger?.info?.({ symbol, tpQtyRaw, tpPriceRaw }, "TP raw");
-      const res = await placeReduceLimit({ symbol, side: closeSide, qty: tpQtyRaw, price: tpPriceRaw, timeInForce, positionIdx, priceMode: tpPriceMode });
+      const res = await placeReduceLimit({ symbol, side: closeSide, qty: tpQtyRaw, price: tpPriceRaw, timeInForce, positionIdx: resolvedPositionIdx, priceMode: tpPriceMode });
       const orderId = res?.result?.orderId || null;
       if (orderId) tpOrderIds.push(orderId);
     }
@@ -149,6 +242,8 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       tpOrderIds,
       slSet,
       slRounded,
+      positionIdx: resolvedPositionIdx,
+      positionMode: await detectPositionMode(symbol),
     };
   }
 
@@ -175,13 +270,13 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   async function getPositions({ symbol } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const res = await privateRest.getPositions({ category: "linear", symbol });
-    return res?.result?.list || [];
+    return (res?.result?.list || []).map(normalizePosition);
   }
 
   async function getOpenOrders({ symbol } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const res = await privateRest.getOrdersRealtime({ category: "linear", symbol });
-    return res?.result?.list || [];
+    return (res?.result?.list || []).map(normalizeOrder);
   }
 
   async function getClosedPnl({ symbol, limit = 20 } = {}) {
@@ -196,9 +291,26 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     return { ok: true, result: res?.result || null };
   }
 
+  async function createHedgeOrders({ symbol, qty, longPrice, shortPrice } = {}) {
+    const ack = { ok: true, queued: true };
+    Promise.resolve().then(async () => {
+      const mode = await detectPositionMode(symbol);
+      const tasks = [];
+      if (Number(longPrice) > 0) tasks.push(placeReduceLimit({ symbol, side: "Buy", qty, price: longPrice, positionIdx: mode === "HEDGE" ? 1 : 0 }));
+      if (Number(shortPrice) > 0) tasks.push(placeReduceLimit({ symbol, side: "Sell", qty, price: shortPrice, positionIdx: mode === "HEDGE" ? 2 : 0 }));
+      await Promise.all(tasks);
+    }).catch((e) => logger?.warn?.({ err: e }, "createHedgeOrders async failed"));
+    return ack;
+  }
+
   return {
     enabled,
     getStatus,
+    setExecutionMode,
+    getExecutionMode,
+    setKillSwitch,
+    getKillSwitch,
+    setActiveSymbol,
     normalizeQtyPrice,
     openPosition,
     sync,
@@ -207,5 +319,8 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     getOpenOrders,
     getClosedPnl,
     cancelAll,
+    detectPositionMode,
+    resolvePositionIdx,
+    createHedgeOrders,
   };
 }

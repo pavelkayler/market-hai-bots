@@ -35,7 +35,7 @@ export default function PaperTestPage() {
   const wsRef = useRef(null);
   const ackTimerRef = useRef(null);
 
-  const [wsStatus, setWsStatus] = useState("disconnected");
+  const [wsStatus, setWsStatus] = useState("connecting");
 
   const [paper, setPaper] = useState(null);
   const [presetText, setPresetText] = useState("");
@@ -48,6 +48,7 @@ export default function PaperTestPage() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [ack, setAck] = useState(null);
   const [showPreset, setShowPreset] = useState(false);
+  const [executionMode, setExecutionMode] = useState("paper");
   const [tuneChanges, setTuneChanges] = useState([]);
 
   const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
@@ -61,7 +62,6 @@ export default function PaperTestPage() {
   useEffect(() => {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-    setWsStatus("connecting");
 
     ws.onopen = () => setWsStatus("connected");
     ws.onclose = () => setWsStatus("disconnected");
@@ -201,7 +201,7 @@ export default function PaperTestPage() {
         <Card>
           <Card.Body className="d-grid gap-2">
             <div className="d-flex align-items-center justify-content-between">
-              <div className="fw-semibold">Paper Test</div>
+              <div className="fw-semibold">Paper Test ({executionMode.toUpperCase()})</div>
               <Badge bg={wsStatus === "connected" ? "success" : wsStatus === "connecting" ? "warning" : wsStatus === "error" ? "danger" : "secondary"}>
                 WS: {wsStatus}
               </Badge>
@@ -220,6 +220,7 @@ export default function PaperTestPage() {
               WS URL: {wsUrl}
             </div>
 
+            <Form.Select size="sm" value={executionMode} onChange={(e) => setExecutionMode(e.target.value)}><option value="paper">PAPER</option><option value="demo">DEMO</option><option value="real">REAL</option></Form.Select>
             <div className="d-flex gap-2">
               <Button variant="primary" onClick={startPaper} disabled={startDisabled}>
                 Start
