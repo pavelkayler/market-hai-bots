@@ -13,7 +13,6 @@ import { evaluateTradeReady } from "../leadLagReadiness.js";
 import { createPaperTest } from "../paperTest.js";
 import { createCmcBybitUniverse } from "../cmcBybitUniverse.js";
 import { createBybitKlinesCache } from "../bybitKlinesCache.js";
-import { createPullbackTest } from "../pullbackTest.js";
 import { createRangeMetricsTest } from "../rangeMetricsTest.js";
 import { createBybitPrivateRest } from "../bybitPrivateRest.js";
 import { createBybitInstrumentsCache } from "../bybitInstrumentsCache.js";
@@ -23,6 +22,7 @@ import { createMarketDataStore, toTickerSourceCode } from "../marketDataStore.js
 import { createPresetsStore } from "../presetsStore.js";
 import { createImpulseBot } from "../impulseBot.js";
 import { createJournalStore } from "../journalStore.js";
+import { createSubscriptionManager } from "../subscriptionManager.js";
 
 dotenv.config();
 
@@ -158,9 +158,10 @@ const marketBars = createMicroBarAggregator({
 });
 const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 5000, minSamples: 200, impulseZ: 2.0, minImpulses: 5 });
 let lastLeadLagTop = [];
+let leadLagSearchActive = false;
 
 const bybit = createBybitPublicWs({
-  symbols: DEFAULT_SYMBOLS.slice(0, DEFAULT_SYMBOL_LIMIT),
+  symbols: [],
   logger: app.log,
   enableLiquidations: true,
   onStatus: (s) => broadcast({ type: "bybit.status", payload: s }),
@@ -175,7 +176,7 @@ const bybit = createBybitPublicWs({
   onLiquidation: (ev) => pushLiq(ev),
 });
 const binance = createBinanceSpotWs({
-  symbols: bybit.getSymbols(),
+  symbols: [],
   logger: app.log,
   onStatus: (s) => broadcast({ type: "binance.status", payload: s }),
   onTicker: (t) => {
@@ -187,6 +188,8 @@ const binance = createBinanceSpotWs({
     broadcastEvent("market.ticker", normalized);
   },
 });
+
+const subscriptions = createSubscriptionManager({ bybit, binance, logger: app.log });
 
 const tradeBaseUrl = process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com";
 const privateRest = createBybitPrivateRest({
@@ -265,15 +268,13 @@ const universe = createCmcBybitUniverse({
   getBinanceFeedSymbols: () => binance.getSymbols(),
   onUniverseUpdated: (payload) => {
     broadcastEvent("universe.updated", payload);
-    const universeSymbols = normalizeSymbols(payload?.symbols || [], DEFAULT_SYMBOL_LIMIT);
-    if (universeSymbols.length) {
-      bybit.setSymbols(universeSymbols);
-      binance.setSymbols(universeSymbols);
-      broadcastEvent("market.symbols", { symbols: universeSymbols, ts: Date.now() });
-    }
   },
 });
 universe.start();
+
+function universeGet() {
+  return universe.getUniverse({ limit: 80 }).symbols || [];
+}
 
 function pickMostVolatileSymbols(limit = 100) {
   const rows = marketData.getTickersArray().filter((t) => t?.source === "BT" && t?.symbol && !String(t.symbol).includes("-"));
@@ -288,13 +289,6 @@ function pickMostVolatileSymbols(limit = 100) {
 }
 
 const klines = createBybitKlinesCache({ logger: app.log });
-const pullbackTest = createPullbackTest({ universe, klines, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => {
-  broadcast({ type, payload });
-  if (type === "pullback.trade") {
-    if (String(payload?.event || "").toUpperCase() === "OPEN") rememberOpenTrade("Pullback", payload);
-    else emitJournalFromClose("Pullback", payload);
-  }
-} });
 const rangeTest = createRangeMetricsTest({ universe, klines, bybitRest, liqFeed, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => {
   broadcast({ type, payload });
   if (type === "range.trade") {
@@ -346,13 +340,11 @@ function getSnapshotPayload() {
     paperState: paperTest.getState(),
     leadlagState: paperTest.getState(),
     universeStatus: universe.getStatus(),
-    pullbackState: pullbackTest.getState(),
     rangeState: rangeTest.getState(),
     impulseState: impulseBot.getState(),
     botsOverview: getBotsOverview(),
     watchlists: {
       leadlag: bybit.getSymbols().slice(0, 100),
-      pullback: pickMostVolatileSymbols(100),
       range: pickMostVolatileSymbols(500),
       impulse: universe.getUniverse({ limit: 500 }).symbols,
     },
@@ -376,7 +368,6 @@ function toBotPnl(state) {
 
 function getBotsOverview() {
   const leadlagState = paperTest.getState?.({ includeHistory: false }) || paperTest.getState?.() || {};
-  const pullbackState = pullbackTest.getState?.() || {};
   const rangeState = rangeTest.getState?.() || {};
   const impulseState = impulseBot.getState?.() || {};
   const paperBalance = Number(process.env.PAPER_WALLET_BALANCE || 10000);
@@ -385,10 +376,9 @@ function getBotsOverview() {
     ts: Date.now(),
     paperBalance,
     bots: [
-      { name: "LeadLag", status: leadlagState.status || "STOPPED", pnl: Number(agg?.LeadLag?.pnlUsdt ?? toBotPnl(leadlagState)) },
-      { name: "Pullback", status: pullbackState.status || "STOPPED", pnl: Number(agg?.Pullback?.pnlUsdt ?? toBotPnl(pullbackState)) },
-      { name: "RangeMetrics", status: rangeState.status || "STOPPED", pnl: Number(agg?.RangeMetrics?.pnlUsdt ?? toBotPnl(rangeState)) },
-      { name: "Impulse", status: impulseState.status || "STOPPED", pnl: Number(agg?.Impulse?.pnlUsdt ?? toBotPnl(impulseState)) },
+      { name: "LeadLag", status: leadlagState.status || "STOPPED", pnl: Number(agg?.LeadLag?.pnlUsdt ?? toBotPnl(leadlagState)), startedAt: leadlagState.startedAt || null },
+      { name: "RangeMetrics", status: rangeState.status || "STOPPED", pnl: Number(agg?.RangeMetrics?.pnlUsdt ?? toBotPnl(rangeState)), startedAt: rangeState.startedAt || null },
+      { name: "Impulse", status: impulseState.status || "STOPPED", pnl: Number(agg?.Impulse?.pnlUsdt ?? toBotPnl(impulseState)), startedAt: impulseState.startedAt || null },
     ],
   };
 }
@@ -440,7 +430,7 @@ setInterval(async () => {
   try {
     const ts = tradeStatus(tradeExecutor);
     if (!["demo", "real"].includes(ts.executionMode) || !ts.enabled) return;
-    const symbol = (pullbackTest.getState?.().position?.symbol || rangeTest.getState?.().position?.symbol || "BTCUSDT").toUpperCase();
+    const symbol = (rangeTest.getState?.().position?.symbol || "BTCUSDT").toUpperCase();
     const snap = await getTradeSnapshot(symbol);
     broadcastEvent("trade.positions", { ts: Date.now(), symbol, positions: snap.positions || [] });
     broadcastEvent("trade.orders", { ts: Date.now(), symbol, orders: snap.orders || [] });
@@ -458,11 +448,11 @@ app.get("/api/binance/symbols", async () => ({ symbols: binance.getSymbols() }))
 app.get("/api/binance/tickers", async () => binance.getTickers());
 app.get("/api/market/tickers", async () => ({ ts: Date.now(), tickers: marketData.getTickersArray() }));
 app.get("/api/market/snapshot", async () => ({ ts: Date.now(), tickers: marketData.getTickersArray() }));
+app.get("/api/subscriptions", async () => subscriptions.getState());
 app.get("/api/leadlag/top", async () => ({ bucketMs: 250, top: lastLeadLagTop }));
 
 app.get("/api/paper/state", async () => paperTest.getState());
 app.get("/api/leadlag/state", async () => paperTest.getState());
-app.get("/api/pullback/state", async () => pullbackTest.getState());
 app.get("/api/range/state", async () => rangeTest.getState());
 app.get("/api/impulse/state", async () => impulseBot.getState());
 app.get("/api/universe/status", async () => universe.getStatus());
@@ -561,9 +551,8 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "setSymbols") {
       const maxSymbols = Number(msg.maxSymbols || 100);
       const next = normalizeSymbols(msg.symbols, Math.max(1, Math.min(100, maxSymbols)));
-      bybit.setSymbols(next);
-      binance.setSymbols(next);
-      safeSend(ws, { type: "setSymbols.ack", payload: { symbols: bybit.getSymbols() } });
+      subscriptions.requestFeed("manual-watchlist", { bybitSymbols: next, binanceSymbols: next, streams: ["ticker"] });
+      safeSend(ws, { type: "setSymbols.ack", payload: { symbols: next } });
       Promise.resolve(getTradeSnapshot()).then((tradeSnap) => safeSend(ws, { type: "snapshot", payload: { ...getSnapshotPayload(), tradePositions: tradeSnap.positions, tradeOrders: tradeSnap.orders } }));
       safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
       sendEvent(ws, "market.snapshot", { tickers: marketData.getTickersArray(), ts: Date.now() });
@@ -594,6 +583,9 @@ app.get("/ws", { websocket: true }, (conn) => {
       applyPresetGuardrails(presetsStore.getPresetById?.(presetId) || presetsStore.getActivePreset?.());
       safeSend(ws, { type: "leadlag.start.ack", payload: { ok: true } });
       safeSend(ws, { type: "paper.start.ack", payload: { ok: true } });
+      const leader = String(msg?.settings?.leaderSymbol || "BTCUSDT").toUpperCase();
+      const follower = String(msg?.settings?.followerSymbol || "ETHUSDT").toUpperCase();
+      subscriptions.requestFeed("leadlag-trading", { bybitSymbols: [leader, follower], binanceSymbols: [leader, follower], streams: ["ticker"] });
       paperTest.start({ presetId, mode: msg.mode || "paper" });
       return;
     }
@@ -602,6 +594,22 @@ app.get("/ws", { websocket: true }, (conn) => {
       safeSend(ws, { type: "leadlag.stop.ack", payload: { ok: true } });
       safeSend(ws, { type: "paper.stop.ack", payload: { ok: true } });
       paperTest.stop({ reason: "manual" });
+      subscriptions.releaseFeed("leadlag-trading");
+      return;
+    }
+
+
+    if (msg.type === "startLeadLagSearch") {
+      const universe = normalizeSymbols(msg.symbols || universeGet(), 80);
+      subscriptions.requestFeed("leadlag-search", { bybitSymbols: universe, binanceSymbols: universe, streams: ["ticker"] });
+      leadLagSearchActive = true;
+      safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: true } });
+      return;
+    }
+    if (msg.type === "stopLeadLagSearch") {
+      subscriptions.releaseFeed("leadlag-search");
+      leadLagSearchActive = false;
+      safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: false } });
       return;
     }
 
@@ -631,27 +639,6 @@ app.get("/ws", { websocket: true }, (conn) => {
       return;
     }
 
-    if (msg.type === "startPullbackTest") {
-      const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
-      tradeExecutor.setExecutionMode(mode);
-      if (mode !== "paper" && !tradeExecutor.enabled()) {
-        const error = "Demo trade disabled (missing API keys)";
-        safeSend(ws, { type: "pullback.start.ack", payload: { ok: false, error } });
-        broadcast({ type: "pullback.log", payload: { t: Date.now(), level: "error", msg: error } });
-        return;
-      }
-      if (mode === "real" && !TRADE_REAL_ENABLED) {
-        const error = "REAL_DISABLED: set TRADE_REAL_ENABLED=1";
-        safeSend(ws, { type: "pullback.start.ack", payload: { ok: false, error } });
-        return;
-      }
-      applyPresetGuardrails(presetsStore.getActivePreset?.());
-      safeSend(ws, { type: "pullback.start.ack", payload: { ok: true, mode } });
-      pullbackTest.start({ mode, preset: msg.preset && typeof msg.preset === "object" ? msg.preset : null });
-      return;
-    }
-    if (msg.type === "stopPullbackTest") { safeSend(ws, { type: "pullback.stop.ack", payload: { ok: true } }); pullbackTest.stop({ reason: "manual" }); return; }
-    if (msg.type === "getPullbackState") return safeSend(ws, { type: "pullback.state", payload: pullbackTest.getState() });
 
     if (msg.type === "startRangeTest") {
       const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
@@ -669,19 +656,23 @@ app.get("/ws", { websocket: true }, (conn) => {
       }
       applyPresetGuardrails(presetsStore.getActivePreset?.());
       safeSend(ws, { type: "range.start.ack", payload: { ok: true, mode } });
+      const symbols = universe.getUniverse({ limit: 120 }).symbols || [];
+      subscriptions.requestFeed("range", { bybitSymbols: symbols, binanceSymbols: symbols, streams: ["ticker"], needsOi: true });
       rangeTest.start({ mode, preset: msg.preset && typeof msg.preset === "object" ? msg.preset : null });
       return;
     }
-    if (msg.type === "stopRangeTest") { safeSend(ws, { type: "range.stop.ack", payload: { ok: true } }); rangeTest.stop({ reason: "manual" }); return; }
+    if (msg.type === "stopRangeTest") { safeSend(ws, { type: "range.stop.ack", payload: { ok: true } }); rangeTest.stop({ reason: "manual" }); subscriptions.releaseFeed("range"); return; }
     if (msg.type === "getRangeState") return safeSend(ws, { type: "range.state", payload: rangeTest.getState() });
 
     if (msg.type === "startImpulseBot") {
       const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
       safeSend(ws, { type: "impulse.start.ack", payload: { ok: true, mode } });
+      const symbols = universe.getUniverse({ limit: 80 }).symbols || [];
+      subscriptions.requestFeed("impulse", { bybitSymbols: symbols, binanceSymbols: [], streams: ["ticker"], needsOi: true });
       impulseBot.start({ mode, settings: msg.settings && typeof msg.settings === "object" ? msg.settings : {} });
       return;
     }
-    if (msg.type === "stopImpulseBot") { safeSend(ws, { type: "impulse.stop.ack", payload: { ok: true } }); impulseBot.stop({ reason: "manual" }); return; }
+    if (msg.type === "stopImpulseBot") { safeSend(ws, { type: "impulse.stop.ack", payload: { ok: true } }); impulseBot.stop({ reason: "manual" }); subscriptions.releaseFeed("impulse"); return; }
     if (msg.type === "impulse.setConfig") {
       const payload = impulseBot.setConfig(msg.settings && typeof msg.settings === 'object' ? msg.settings : {});
       safeSend(ws, { type: "impulse.config.ack", payload: { ok: true } });

@@ -8,6 +8,16 @@ function fmtPnl(x) {
   return n.toFixed(2);
 }
 
+function fmtUptime(startedAt) {
+  const ms = Date.now() - Number(startedAt || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return '00:00:00';
+  const total = Math.floor(ms / 1000);
+  const h = String(Math.floor(total / 3600)).padStart(2, '0');
+  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const s = String(total % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
 export default function BotsOverviewBar() {
   const [overview, setOverview] = useState({ paperBalance: 10000, bots: [] });
 
@@ -28,7 +38,7 @@ export default function BotsOverviewBar() {
       <Badge bg={status === 'connected' ? 'success' : 'secondary'}>WS {status}</Badge>
       {(overview?.bots || []).map((bot) => (
         <span key={bot.name}>
-          <strong>{bot.name}</strong>: <Badge bg={bot.status === 'RUNNING' ? 'success' : 'secondary'}>{bot.status || 'STOPPED'}</Badge> ({fmtPnl(bot.pnl)})
+          <strong>{bot.name}</strong>: <Badge bg={bot.status === 'RUNNING' ? 'success' : 'secondary'}>{bot.status || 'STOPPED'}</Badge> ({fmtPnl(bot.pnl)}){bot.status === 'RUNNING' ? ` uptime ${fmtUptime(bot.startedAt)}` : ''}
         </span>
       ))}
     </div>

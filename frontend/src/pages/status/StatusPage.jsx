@@ -1,7 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Card, Alert, Button, Spinner, Badge, Form } from 'react-bootstrap'
-import { formatPriceWithSource, sourceTag } from '../../priceFormat.js'
-import { useWsClient } from '../../shared/api/ws.js'
+import { useEffect, useState } from 'react'
+import { Alert, Button, Card, Spinner } from 'react-bootstrap'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
@@ -16,18 +14,8 @@ export default function StatusPage() {
   const [health, setHealth] = useState(null)
   const [heartbeat, setHeartbeat] = useState(null)
   const [error, setError] = useState('')
-  const [wsLastMsg, setWsLastMsg] = useState(null)
-  const [symbols, setSymbols] = useState(['BTCUSDT', 'ETHUSDT', 'SOLUSDT'])
-  const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT')
-  const [marketTickers, setMarketTickers] = useState({})
-  const [bybitStatus, setBybitStatus] = useState('unknown')
-  const [binanceStatus, setBinanceStatus] = useState('unknown')
-
-  const pendingTickersRef = useRef(new Map())
-  const pendingLastMsgRef = useRef(null)
 
   async function loadHttp() {
-    setLoading(true)
     setError('')
     try {
       const [h, hb] = await Promise.all([fetchJson('/health'), fetchJson('/api/heartbeat')])
@@ -40,91 +28,37 @@ export default function StatusPage() {
     }
   }
 
-  const onMessage = useMemo(() => (evt) => {
-    let msg
-    try { msg = JSON.parse(evt.data) } catch { msg = { type: 'raw', payload: String(evt.data) } }
-    pendingLastMsgRef.current = msg
-
-    if (msg.type === 'snapshot') {
-      const p = msg.payload || {}
-      if (Array.isArray(p.symbols)) {
-        setSymbols(p.symbols)
-        if (!p.symbols.includes(selectedSymbol)) setSelectedSymbol(p.symbols[0] || 'BTCUSDT')
-      }
-      if (Array.isArray(p.marketTickers)) {
-        const next = {}
-        for (const t of p.marketTickers) next[`${sourceTag(t?.source)}:${t?.symbol}`] = t
-        setMarketTickers(next)
-      }
-      if (p.bybit?.status) setBybitStatus(p.bybit.status)
-      if (p.binance?.status) setBinanceStatus(p.binance.status)
-      return
-    }
-
-    if (msg.type === 'bybit.status') return setBybitStatus(msg.payload?.status || 'unknown')
-    if (msg.type === 'binance.status') return setBinanceStatus(msg.payload?.status || 'unknown')
-
-    if (msg.type === 'market.snapshot' && Array.isArray(msg.payload?.tickers)) {
-      const next = {}
-      for (const t of msg.payload.tickers) next[`${sourceTag(t?.source)}:${t?.symbol}`] = t
-      setMarketTickers((prev) => ({ ...prev, ...next }))
-      return
-    }
-
-    if (msg.type === 'market.ticker' && msg.payload?.symbol) {
-      pendingTickersRef.current.set(`${sourceTag(msg.payload.source)}:${msg.payload.symbol}`, msg.payload)
-    }
-  }, [selectedSymbol])
-
-  const { wsUrl, status: wsStatus, sendJson, reconnect } = useWsClient({ onOpen: () => { sendJson({ type: 'getSnapshot' }) },
-    onMessage,
-  })
-
-  function sendPing() {
-    sendJson({ type: 'ping' })
-  }
-
   useEffect(() => {
     loadHttp()
-    const flushTimer = setInterval(() => {
-      if (pendingTickersRef.current.size) {
-        const updates = {}
-        for (const [k, t] of pendingTickersRef.current.entries()) updates[k] = t
-        pendingTickersRef.current.clear()
-        setMarketTickers((prev) => ({ ...prev, ...updates }))
-      }
-      if (pendingLastMsgRef.current) {
-        setWsLastMsg(pendingLastMsgRef.current)
-        pendingLastMsgRef.current = null
-      }
-    }, 250)
-
-    return () => clearInterval(flushTimer)
+    const timer = setInterval(loadHttp, 5000)
+    return () => clearInterval(timer)
   }, [])
 
-  const wsBadge = wsStatus === 'connected' ? 'success' : wsStatus === 'connecting' ? 'warning' : wsStatus === 'error' ? 'danger' : 'secondary'
-  const bybitBadge = bybitStatus === 'connected' ? 'success' : bybitStatus === 'disconnected' ? 'secondary' : 'warning'
-  const binanceBadge = binanceStatus === 'connected' ? 'success' : binanceStatus === 'disconnected' ? 'secondary' : 'warning'
-
-  const current = {
-    bybit: marketTickers[`BT:${selectedSymbol}`] || null,
-    binance: marketTickers[`BNB:${selectedSymbol}`] || null,
-  }
-
   return (
-    <div className="d-grid gap-3">
-      <h3 className="m-0">Backend status</h3>
-      {error && <Alert variant="danger">{error}</Alert>}
-      <Card><Card.Body className="d-flex align-items-center justify-content-between"><div><div className="fw-semibold">API Base</div><div className="text-muted">{API_BASE}</div></div><Button onClick={loadHttp} variant="primary" disabled={loading}>{loading ? 'Loading...' : 'Refresh'}</Button></Card.Body></Card>
-      <Card><Card.Body><div className="fw-semibold mb-2">/health</div>{loading ? <div className="d-flex align-items-center gap-2"><Spinner size="sm" /> <span>Loading...</span></div> : <pre className="m-0">{JSON.stringify(health, null, 2)}</pre>}</Card.Body></Card>
-      <Card><Card.Body><div className="fw-semibold mb-2">/api/heartbeat</div>{loading ? <div className="d-flex align-items-center gap-2"><Spinner size="sm" /> <span>Loading...</span></div> : <pre className="m-0">{JSON.stringify(heartbeat, null, 2)}</pre>}</Card.Body></Card>
-      <Card><Card.Body className="d-grid gap-2">
-        <div className="d-flex align-items-center justify-content-between"><div className="fw-semibold">WebSocket <Badge bg={wsBadge} className="ms-2">{wsStatus}</Badge><span className="ms-3">Bybit <Badge bg={bybitBadge} className="ms-2">{bybitStatus}</Badge></span><span className="ms-3">Binance <Badge bg={binanceBadge} className="ms-2">{binanceStatus}</Badge></span></div><div className="d-flex gap-2"><Button variant="outline-primary" onClick={reconnect}>Reconnect</Button><Button variant="outline-secondary" onClick={sendPing} disabled={wsStatus !== 'connected'}>Send ping</Button></div></div>
-        <div className="text-muted">WS URL: {wsUrl}</div>
-        <Form.Group><Form.Label className="fw-semibold">Symbol</Form.Label><Form.Select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)}>{symbols.map((s) => <option key={s} value={s}>{s}</option>)}</Form.Select></Form.Group>
-        <div className="d-grid gap-2"><div>Bybit: <b>{formatPriceWithSource(current.bybit)}</b></div><div>Binance: <b>{formatPriceWithSource(current.binance)}</b></div></div>
-        <div className="fw-semibold">Last WS message</div><pre className="m-0">{JSON.stringify(wsLastMsg, null, 2)}</pre>
-      </Card.Body></Card>
+    <div className='d-grid gap-3'>
+      <h3 className='m-0'>Backend status</h3>
+      {error && <Alert variant='danger'>{error}</Alert>}
+      <Card>
+        <Card.Body className='d-flex align-items-center justify-content-between'>
+          <div>
+            <div className='fw-semibold'>API Base</div>
+            <div className='text-muted'>{API_BASE}</div>
+          </div>
+          <Button onClick={loadHttp} variant='primary' disabled={loading}>{loading ? 'Loading...' : 'Refresh'}</Button>
+        </Card.Body>
+      </Card>
+      <Card>
+        <Card.Body>
+          <div className='fw-semibold mb-2'>/health</div>
+          {loading && !health ? <div className='d-flex align-items-center gap-2'><Spinner size='sm' />Loading...</div> : <pre className='m-0'>{JSON.stringify(health, null, 2)}</pre>}
+        </Card.Body>
+      </Card>
+      <Card>
+        <Card.Body>
+          <div className='fw-semibold mb-2'>/api/heartbeat</div>
+          {loading && !heartbeat ? <div className='d-flex align-items-center gap-2'><Spinner size='sm' />Loading...</div> : <pre className='m-0'>{JSON.stringify(heartbeat, null, 2)}</pre>}
+        </Card.Body>
+      </Card>
     </div>
   )
 }

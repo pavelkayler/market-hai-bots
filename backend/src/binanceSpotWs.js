@@ -24,6 +24,8 @@ export function createBinanceSpotWs({
   let pingTimer = null;
   let backoffMs = 1000;
   let reqId = 1;
+  let desiredUpdateTimer = null;
+  let pendingOpenCommands = [];
 
   function setStatus(next) {
     if (status === next) return;
@@ -52,6 +54,14 @@ export function createBinanceSpotWs({
     }
   }
 
+  function sendOrQueue(obj) {
+    if (!safeSend(obj)) {
+      pendingOpenCommands.push(obj);
+      return false;
+    }
+    return true;
+  }
+
   function scheduleReconnect() {
     clearTimers();
     if (reconnectTimer) return;
@@ -77,6 +87,11 @@ export function createBinanceSpotWs({
 
       // subscribe current desired
       subscribeSymbols(desiredSymbols);
+      if (pendingOpenCommands.length) {
+        const queue = pendingOpenCommands;
+        pendingOpenCommands = [];
+        for (const cmd of queue) safeSend(cmd);
+      }
 
       // keepalive: send WS ping frames (30s)
       pingTimer = setInterval(() => {
@@ -122,7 +137,9 @@ export function createBinanceSpotWs({
       onTicker(normalized);
     });
 
-    ws.on("close", () => {
+    ws.on("close", (code, reasonBuf) => {
+      const reason = Buffer.isBuffer(reasonBuf) ? reasonBuf.toString("utf8") : String(reasonBuf || "");
+      logger?.info?.({ code, reason, trigger: "socket_close" }, "[binance ws] close");
       setStatus("disconnected");
       scheduleReconnect();
     });
@@ -142,7 +159,7 @@ export function createBinanceSpotWs({
     const newOnes = params.filter((p) => !subscribed.has(p));
     if (!newOnes.length) return;
 
-    safeSend({ method: "SUBSCRIBE", params: newOnes, id: reqId++ });
+    sendOrQueue({ method: "SUBSCRIBE", params: newOnes, id: reqId++ });
     newOnes.forEach((p) => subscribed.add(p));
   }
 
@@ -151,26 +168,34 @@ export function createBinanceSpotWs({
     const oldOnes = params.filter((p) => subscribed.has(p));
     if (!oldOnes.length) return;
 
-    safeSend({ method: "UNSUBSCRIBE", params: oldOnes, id: reqId++ });
+    sendOrQueue({ method: "UNSUBSCRIBE", params: oldOnes, id: reqId++ });
     oldOnes.forEach((p) => subscribed.delete(p));
   }
 
-  function setSymbols(nextSymbols) {
-    const next = uniqSymbols(nextSymbols);
-    const prev = desiredSymbols;
-    desiredSymbols = next;
-
+  function flushSymbolUpdate() {
+    const prev = subscribedSymCache;
+    const next = desiredSymbols;
     const toUnsub = prev.filter((s) => !next.includes(s));
     const toSub = next.filter((s) => !prev.includes(s));
-
     if (ws && ws.readyState === WebSocket.OPEN) {
       unsubscribeSymbols(toUnsub);
       subscribeSymbols(toSub);
-    } else {
+    } else if (next.length) {
       connect();
     }
-
+    subscribedSymCache = [...next];
     onStatus({ status, url, desiredSymbols });
+  }
+
+  let subscribedSymCache = [...desiredSymbols];
+
+  function setSymbols(nextSymbols) {
+    desiredSymbols = uniqSymbols(nextSymbols);
+    if (desiredUpdateTimer) clearTimeout(desiredUpdateTimer);
+    desiredUpdateTimer = setTimeout(() => {
+      desiredUpdateTimer = null;
+      flushSymbolUpdate();
+    }, 700);
   }
 
   function getStatus() {
@@ -196,8 +221,8 @@ export function createBinanceSpotWs({
     setStatus("disconnected");
   }
 
-  // start immediately
-  connect();
+  // lazy start: connect when symbols are requested
+  if (desiredSymbols.length) connect();
 
   return {
     connect,

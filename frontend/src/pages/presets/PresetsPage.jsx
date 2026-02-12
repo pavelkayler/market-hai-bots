@@ -60,7 +60,7 @@ export default function PresetsPage() {
     setData(x);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { const t = setTimeout(() => { load(); }, 0); return () => clearTimeout(t); }, []);
 
   const save = async () => {
     if (editingId) await api(`/api/presets/${editingId}`, { method: "PUT", body: JSON.stringify(edit) });

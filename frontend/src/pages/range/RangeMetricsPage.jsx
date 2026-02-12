@@ -13,6 +13,7 @@ const cleanHistory = (rows = []) => rows
 
 const fmt = (x, d = 6) => (Number.isFinite(Number(x)) ? Number(x).toFixed(d) : "—");
 const fmtTs = (ts) => (Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : "—");
+const fmtUptime = (startedAt) => { const sec = Math.max(0, Math.floor((Date.now() - Number(startedAt || 0)) / 1000)); const h = String(Math.floor(sec / 3600)).padStart(2, "0"); const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0"); const s = String(sec % 60).padStart(2, "0"); return `${h}:${m}:${s}`; };
 const applyArrayPatch = (prev, next, { allowEmptyReplace = false } = {}) => {
   if (!Array.isArray(next)) return prev;
   if (!next.length && Array.isArray(prev) && prev.length && !allowEmptyReplace) return prev;
@@ -157,7 +158,7 @@ export default function RangeMetricsPage() {
           <Nav.Item><Nav.Link eventKey="process">Process / Scanner ({processLogs.length})</Nav.Link></Nav.Item>
         </Nav><Tab.Content>
           <Tab.Pane eventKey="summary"><Table size="sm"><tbody>
-            <tr><td>Status</td><td>{range?.status || "—"}</td></tr><tr><td>Started</td><td>{fmtTs(range?.startedAt)}</td></tr>
+            <tr><td>Status</td><td>{range?.status || "—"}</td></tr><tr><td>Started</td><td>{fmtTs(range?.startedAt)}</td></tr><tr><td>Uptime</td><td>{range?.status === "RUNNING" ? fmtUptime(range?.startedAt) : "—"}</td></tr>
             <tr><td>Candidate</td><td>{candidate?.symbol || "—"} ({candidate?.side || "—"})</td></tr>
             <tr><td>Range hi/lo/mid</td><td>{fmt(candidate?.rangeHigh)} / {fmt(candidate?.rangeLow)} / {fmt(candidate?.mid)}</td></tr>
             <tr><td>Near boundary</td><td>{candidate?.nearBoundary ? "yes" : "no"}</td></tr>
