@@ -1,17 +1,8 @@
-// backend/src/cmcBybitUniverse.js
-// Build a tradable universe: Bybit USDT linear perps whose underlying market cap > $10M (CoinMarketCap).
-// Requires env: CMC_API_KEY (preferred) or COINMARKETCAP_API_KEY.
-
 import { createBybitRest } from "./bybitRest.js";
 
 const CMC_BASE = "https://pro-api.coinmarketcap.com";
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 function normBaseCoin(baseCoin) {
-  // Bybit sometimes uses scaled tokens like 1000PEPE.
   const s = String(baseCoin || "").trim().toUpperCase();
   return s.replace(/^\d+/, "");
 }
@@ -22,17 +13,8 @@ async function fetchJsonWithTimeout(url, { headers = {}, timeoutMs = 15000 } = {
   try {
     const res = await fetch(url, { headers, signal: ac.signal });
     const text = await res.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { _raw: text };
-    }
-    if (!res.ok) {
-      const err = new Error(`HTTP ${res.status}`);
-      err.payload = data;
-      throw err;
-    }
+    const data = JSON.parse(text);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return data;
   } finally {
     clearTimeout(t);
@@ -40,27 +22,21 @@ async function fetchJsonWithTimeout(url, { headers = {}, timeoutMs = 15000 } = {
 }
 
 async function fetchCmcListings({ apiKey, minMarketCapUsd, limit = 5000 }) {
-  // Returns a Map(symbol->rank) of coins with market cap >= minMarketCapUsd
   const url = new URL(`${CMC_BASE}/v1/cryptocurrency/listings/latest`);
   url.searchParams.set("start", "1");
   url.searchParams.set("limit", String(limit));
   url.searchParams.set("convert", "USD");
+  const j = await fetchJsonWithTimeout(url.toString(), { headers: { "X-CMC_PRO_API_KEY": apiKey }, timeoutMs: 20000 });
 
-  const j = await fetchJsonWithTimeout(url.toString(), {
-    headers: { "X-CMC_PRO_API_KEY": apiKey },
-    timeoutMs: 20000,
-  });
-
-  const m = new Map();
+  const out = new Set();
   const rows = Array.isArray(j?.data) ? j.data : [];
   for (const r of rows) {
-    const sym = String(r?.symbol || "").trim().toUpperCase();
-    const rank = Number(r?.cmc_rank);
+    const symbol = String(r?.symbol || "").trim().toUpperCase();
     const mc = Number(r?.quote?.USD?.market_cap);
-    if (!sym || !Number.isFinite(mc) || mc < minMarketCapUsd) continue;
-    m.set(sym, Number.isFinite(rank) ? rank : 999999);
+    if (!symbol || !Number.isFinite(mc) || mc < minMarketCapUsd) continue;
+    out.add(`${symbol}USDT`);
   }
-  return m;
+  return out;
 }
 
 export function createCmcBybitUniverse({
@@ -69,22 +45,24 @@ export function createCmcBybitUniverse({
   refreshMs = 6 * 60 * 60 * 1000,
   maxUniverse = 300,
   bybitBaseUrl,
+  getBybitFeedSymbols = () => [],
+  getBinanceFeedSymbols = () => [],
+  onUniverseUpdated = () => {},
 } = {}) {
   const bybit = createBybitRest({ baseUrl: bybitBaseUrl, logger });
 
   const state = {
-    status: "idle", // idle|loading|ready|error
+    status: "idle",
     lastRefreshAt: null,
     nextRefreshAt: null,
     error: null,
-
-    cmcMinMarketCapUsd: minMarketCapUsd,
+    warnings: [],
+    universeUpdatedAt: null,
     cmcEligibleCount: 0,
-
     bybitLinearCount: 0,
     universeCount: 0,
-
-    universeSymbols: [], // Bybit symbols (e.g., BTCUSDT)
+    universeSymbols: [],
+    universeRows: [],
   };
 
   let timer = null;
@@ -95,58 +73,70 @@ export function createCmcBybitUniverse({
     inflight = (async () => {
       state.status = "loading";
       state.error = null;
+      state.warnings = [];
 
       const apiKey = process.env.CMC_API_KEY || process.env.COINMARKETCAP_API_KEY || "";
       if (!apiKey) {
-        state.status = "error";
-        state.error = "CMC_API_KEY is missing";
+        state.status = "ready";
+        state.warnings = ["CMC_DISABLED"];
         state.lastRefreshAt = Date.now();
         state.nextRefreshAt = Date.now() + refreshMs;
+        state.universeUpdatedAt = state.lastRefreshAt;
         state.universeSymbols = [];
+        state.universeRows = [];
         state.universeCount = 0;
+        onUniverseUpdated({ updatedAt: state.universeUpdatedAt, symbols: [] });
+        inflight = null;
         return state;
       }
 
       try {
-        // 1) CoinMarketCap: eligible base symbols
-        const cmcRank = await fetchCmcListings({ apiKey, minMarketCapUsd });
-        state.cmcEligibleCount = cmcRank.size;
+        const cmcCandidates = await fetchCmcListings({ apiKey, minMarketCapUsd });
+        state.cmcEligibleCount = cmcCandidates.size;
 
-        // 2) Bybit: list linear instruments
         const instruments = await bybit.getInstrumentsLinearAll();
-        state.bybitLinearCount = instruments.length;
-
-        const candidates = [];
+        const bybitPerps = new Set();
         for (const it of instruments) {
           const symbol = String(it?.symbol || "").toUpperCase();
-          const status = String(it?.status || "");
           const quote = String(it?.quoteCoin || "").toUpperCase();
-
-          // We trade USDT-margined perpetuals only.
-          // Bybit's "linear" category includes delivery futures like DOGEUSDT-13FEB26.
-          // Filter them out by contractType (preferred) and a symbol guard.
+          const status = String(it?.status || "");
           const contractType = String(it?.contractType || "").toLowerCase();
-          if (contractType && !contractType.includes("perpetual")) continue;
-          if (symbol.includes("-")) continue;
-
-          if (!symbol || quote !== "USDT") continue;
+          if (!symbol || symbol.includes("-")) continue;
+          if (quote !== "USDT") continue;
           if (status && status !== "Trading") continue;
-
-          const base = normBaseCoin(it?.baseCoin);
-          const rank = cmcRank.get(base);
-          if (!rank) continue;
-
-          candidates.push({ symbol, rank });
+          if (contractType && !contractType.includes("perpetual")) continue;
+          bybitPerps.add(symbol);
         }
 
-        candidates.sort((a, b) => a.rank - b.rank);
-        const universe = candidates.slice(0, maxUniverse).map((x) => x.symbol);
+        state.bybitLinearCount = bybitPerps.size;
 
-        state.universeSymbols = universe;
-        state.universeCount = universe.length;
+        const raw = [];
+        for (const candidate of cmcCandidates) {
+          if (!bybitPerps.has(candidate)) continue;
+          raw.push(candidate);
+        }
+
+        const symbols = raw.slice(0, maxUniverse);
+        const bybitFeed = new Set((getBybitFeedSymbols() || []).map((s) => String(s || "").toUpperCase()));
+        const binanceFeed = new Set((getBinanceFeedSymbols() || []).map((s) => String(s || "").toUpperCase()));
+        const rows = symbols.map((tradeSymbol) => ({
+          tradeSymbol,
+          baseSymbol: normBaseCoin(tradeSymbol.replace(/USDT$/, "")),
+          dataSourcesAvailable: {
+            BT: bybitFeed.has(tradeSymbol),
+            BNB: binanceFeed.has(tradeSymbol),
+          },
+          preferredDataSourceForAnalytics: "BNB",
+        }));
+
+        state.universeSymbols = symbols;
+        state.universeRows = rows;
+        state.universeCount = symbols.length;
         state.status = "ready";
-        state.lastRefreshAt = Date.now();
-        state.nextRefreshAt = Date.now() + refreshMs;
+        state.universeUpdatedAt = Date.now();
+        state.lastRefreshAt = state.universeUpdatedAt;
+        state.nextRefreshAt = state.universeUpdatedAt + refreshMs;
+        onUniverseUpdated({ updatedAt: state.universeUpdatedAt, symbols });
       } catch (e) {
         state.status = "error";
         state.error = String(e?.message || e);
@@ -159,13 +149,11 @@ export function createCmcBybitUniverse({
 
       return state;
     })();
-
     return inflight;
   }
 
   function start() {
     if (timer) return;
-    // First refresh quickly, then interval.
     refreshOnce().catch(() => {});
     timer = setInterval(() => {
       refreshOnce().catch(() => {});
@@ -178,18 +166,26 @@ export function createCmcBybitUniverse({
   }
 
   function getStatus() {
-    return { ...state, universeSymbols: undefined };
+    return {
+      status: state.status,
+      lastRefreshAt: state.lastRefreshAt,
+      nextRefreshAt: state.nextRefreshAt,
+      error: state.error,
+      warnings: state.warnings.slice(),
+      universe: { updatedAt: state.universeUpdatedAt, size: state.universeCount },
+      cmcEligibleCount: state.cmcEligibleCount,
+      bybitLinearCount: state.bybitLinearCount,
+    };
   }
 
-  function getUniverse({ limit = 200 } = {}) {
-    const n = Math.min(2000, Math.max(1, Number(limit) || 200));
-    return state.universeSymbols.slice(0, n);
+  function getUniverse({ limit = 300 } = {}) {
+    const n = Math.max(1, Math.min(2000, Number(limit) || 300));
+    return {
+      updatedAt: state.universeUpdatedAt,
+      symbols: state.universeSymbols.slice(0, n),
+      rows: state.universeRows.slice(0, n),
+    };
   }
 
-  // manual trigger used by UI/ops
-  async function refresh() {
-    return refreshOnce();
-  }
-
-  return { start, stop, refresh, getStatus, getUniverse };
+  return { start, stop, refresh: refreshOnce, getStatus, getUniverse };
 }

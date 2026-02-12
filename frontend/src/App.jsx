@@ -5,6 +5,7 @@ import BybitPage from './pages/BybitPage.jsx'
 import PaperTestPage from './pages/PaperTestPage.jsx'
 import PullbackTestPage from './pages/PullbackTestPage.jsx'
 import RangeMetricsPage from './pages/RangeMetricsPage.jsx'
+import PresetsPage from './pages/PresetsPage.jsx'
 
 export default function App() {
     return (
@@ -18,6 +19,7 @@ export default function App() {
                         <Nav.Link as={Link} to="/paper">Paper Test</Nav.Link>
                         <Nav.Link as={Link} to="/pullback">Pullback (MTF)</Nav.Link>
                         <Nav.Link as={Link} to="/range">Range (Metrics)</Nav.Link>
+                        <Nav.Link as={Link} to="/presets">Пресеты</Nav.Link>
                     </Nav>
                 </Container>
             </Navbar>
@@ -29,6 +31,7 @@ export default function App() {
                     <Route path="/paper" element={<PaperTestPage />} />
                     <Route path="/pullback" element={<PullbackTestPage />} />
                     <Route path="/range" element={<RangeMetricsPage />} />
+                    <Route path="/presets" element={<PresetsPage />} />
                     <Route path="*" element={<StatusPage />} />
                 </Routes>
             </Container>

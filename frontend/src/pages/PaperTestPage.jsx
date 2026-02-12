@@ -48,6 +48,7 @@ export default function PaperTestPage() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [ack, setAck] = useState(null);
   const [showPreset, setShowPreset] = useState(false);
+  const [tuneChanges, setTuneChanges] = useState([]);
 
   const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
 
@@ -82,14 +83,16 @@ export default function PaperTestPage() {
           setLogs(Array.isArray(p.paperState.logs) ? [...p.paperState.logs].reverse() : []);
           setPosition(p.paperState.position || null);
           setPending(p.paperState.pending || null);
-          setPresetText(p.paperState.preset ? JSON.stringify(p.paperState.preset, null, 2) : "");
+          setPresetText(p.paperState.sessionPreset ? JSON.stringify(p.paperState.sessionPreset, null, 2) : "");
+          setTuneChanges(Array.isArray(p.paperState.tuneChanges) ? p.paperState.tuneChanges : []);
         }
         return;
       }
 
       if (msg.type === "paper.status") {
         setPaper(msg.payload || null);
-        if (msg.payload?.preset) setPresetText(JSON.stringify(msg.payload.preset, null, 2));
+        if (msg.payload?.sessionPreset) setPresetText(JSON.stringify(msg.payload.sessionPreset, null, 2));
+        setTuneChanges(Array.isArray(msg.payload?.tuneChanges) ? msg.payload.tuneChanges : []);
         setPosition(msg.payload?.position || null);
         setPending(msg.payload?.pending || null);
         return;
@@ -117,6 +120,13 @@ export default function PaperTestPage() {
         return;
       }
 
+
+      if (msg.type === "paper.tune") {
+        if (!msg.payload) return;
+        setTuneChanges((prev) => [msg.payload, ...prev].slice(0, 10));
+        return;
+      }
+
       if (msg.type === "paper.trade") {
         const t = msg.payload;
         if (!t) return;
@@ -137,7 +147,8 @@ export default function PaperTestPage() {
         setLogs(Array.isArray(msg.payload?.logs) ? [...msg.payload.logs].reverse() : []);
         setPosition(msg.payload?.position || null);
         setPending(msg.payload?.pending || null);
-        if (msg.payload?.preset) setPresetText(JSON.stringify(msg.payload.preset, null, 2));
+        if (msg.payload?.sessionPreset) setPresetText(JSON.stringify(msg.payload.sessionPreset, null, 2));
+        setTuneChanges(Array.isArray(msg.payload?.tuneChanges) ? msg.payload.tuneChanges : []);
       }
     };
 
@@ -145,7 +156,7 @@ export default function PaperTestPage() {
       if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
       try {
         ws.close();
-      } catch {}
+      } catch { /* ignore */ }
     };
   }, [wsUrl]);
 
@@ -163,19 +174,19 @@ export default function PaperTestPage() {
   const startPaper = () => {
     try {
       wsRef.current?.send(JSON.stringify({ type: "startPaperTest" }));
-    } catch {}
+    } catch { /* ignore */ }
   };
 
   const stopPaper = () => {
     try {
       wsRef.current?.send(JSON.stringify({ type: "stopPaperTest" }));
-    } catch {}
+    } catch { /* ignore */ }
   };
 
   const refreshState = () => {
     try {
       wsRef.current?.send(JSON.stringify({ type: "getPaperState" }));
-    } catch {}
+    } catch { /* ignore */ }
   };
 
   const status = paper?.status || "STOPPED";
@@ -250,6 +261,7 @@ export default function PaperTestPage() {
           <Card.Body>
             <Tabs defaultActiveKey="summary" id="paper-tabs" className="mb-3">
               <Tab eventKey="summary" title="Кратко">
+                <div className="mb-2">Active preset: <b>{paper?.activePreset?.name || "—"}</b> | Session preset: <b>{paper?.sessionPreset?.name || "—"}</b></div>
                 <div className="d-grid gap-2">
                   <div className="d-flex align-items-center justify-content-between">
                     <div className="fw-semibold">Started</div>
@@ -257,7 +269,7 @@ export default function PaperTestPage() {
                   </div>
                   <div className="d-flex align-items-center justify-content-between">
                     <div className="fw-semibold">Elapsed</div>
-                    <div style={monoStyle}>{running ? `${(elapsedMs / 1000).toFixed(1)}s` : "—"}</div>
+                    <div style={monoStyle}>{running ? `${(elapsedMs / 1000).toFixed(1)}s` : paper?.endedAt && paper?.startedAt ? `${((paper.endedAt-paper.startedAt)/1000).toFixed(1)}s` : "—"}</div>
                   </div>
 
                   <div className="fw-semibold mt-2">Summary</div>
@@ -324,6 +336,17 @@ export default function PaperTestPage() {
                     ) : null}
                   </tbody>
                 </Table>
+
+
+
+                <Card className="mt-3">
+                  <Card.Body>
+                    <div className="fw-semibold mb-2">Auto-tune changes (latest 10)</div>
+                    <div style={monoStyle}>
+                      {tuneChanges.length ? tuneChanges.map((c, i) => <div key={i}>[{fmtTs(c.ts)}] {c.param}: {c.from} -&gt; {c.to} ({c.reason})</div>) : <span className="text-muted">—</span>}
+                    </div>
+                  </Card.Body>
+                </Card>
 
                 <Card className="mt-3">
                   <Card.Body>
