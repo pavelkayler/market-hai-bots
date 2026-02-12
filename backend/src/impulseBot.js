@@ -1,5 +1,21 @@
 function now() { return Date.now(); }
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+function clampWindowSec(v) {
+  const n = Number(v);
+  if (n === 300 || n === 900 || n === 1800) return n;
+  return 900;
+}
+
+function pickClosestAtOrBefore(rows, targetTs) {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  let best = null;
+  for (const row of rows) {
+    const ts = num(row?.t);
+    if (!Number.isFinite(ts) || ts > targetTs) continue;
+    if (!best || ts > best.t) best = row;
+  }
+  return best;
+}
 
 function makeLog(level, msg, meta) {
   return { t: now(), level, msg, meta };
@@ -23,6 +39,7 @@ export function createImpulseBot({
       confirmA: true,
       confirmB: true,
       triggerPct15m: 0.05,
+      windowSec: 15 * 60,
       confirmWindowMs: 4 * 60 * 1000,
       cooldownMs: 60 * 60 * 1000,
       maxUiSymbols: 30,
@@ -79,25 +96,48 @@ export function createImpulseBot({
     if (state.openPositionsBySymbol[symbol]) return;
 
     try {
-      const candles = await getCandles({ symbol, interval: '15', limit: 2 });
-      if (!Array.isArray(candles) || candles.length < 2) return;
-      const a = candles[candles.length - 2];
-      const b = candles[candles.length - 1];
-      const from = num(a?.c);
-      const to = num(b?.c);
-      if (!Number.isFinite(from) || !Number.isFinite(to) || from === 0) return;
-      const priceDelta15m = (to - from) / Math.abs(from);
-      if (Math.abs(priceDelta15m) < state.settings.triggerPct15m) return;
+      const windowSec = clampWindowSec(state.settings.windowSec);
+      const lookbackMs = windowSec * 1000;
+      const targetTs = now() - lookbackMs;
+      const candleLimit = Math.max(35, Math.ceil(windowSec / 60) + 10);
+      const candles = await getCandles({ symbol, interval: '1', limit: candleLimit });
+      if (!Array.isArray(candles) || !candles.length) return;
+      const currentCandle = candles[candles.length - 1];
+      const fromCandle = pickClosestAtOrBefore(candles, targetTs);
+      const from = num(fromCandle?.c);
+      const to = num(currentCandle?.c);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from === 0) {
+        pushLog('info', 'NO_SIGNAL: insufficient history', { symbol, kind: 'price', windowSec });
+        return;
+      }
+      const priceDeltaPct = (to - from) / Math.abs(from);
+      if (Math.abs(priceDeltaPct) < state.settings.triggerPct15m) return;
 
-      const oiRows = await getOi({ symbol, interval: '15', limit: 2 });
-      const oiA = num(oiRows?.[0]?.oi);
-      const oiB = num(oiRows?.[1]?.oi);
-      const oiDelta15m = Number.isFinite(oiA) && Number.isFinite(oiB) && oiA !== 0 ? (oiB - oiA) / Math.abs(oiA) : 0;
+      const oiLimit = Math.max(40, Math.ceil(windowSec / (5 * 60)) + 12);
+      const oiRows = await getOi({ symbol, interval: '5', limit: oiLimit });
+      const oiCurrent = oiRows?.[oiRows.length - 1] || null;
+      const oiFrom = pickClosestAtOrBefore(oiRows, targetTs);
+      const oiA = num(oiFrom?.oi);
+      const oiB = num(oiCurrent?.oi);
+      if (!Number.isFinite(oiA) || !Number.isFinite(oiB) || oiA === 0) {
+        pushLog('info', 'NO_SIGNAL: insufficient history', { symbol, kind: 'oi', windowSec });
+        return;
+      }
+      const oiDeltaPct = (oiB - oiA) / Math.abs(oiA);
 
-      let side = priceDelta15m > 0 ? 'LONG' : 'SHORT';
+      let side = priceDeltaPct > 0 ? 'LONG' : 'SHORT';
       if (state.settings.directionMode === 'COUNTERTREND_ONLY') side = side === 'LONG' ? 'SHORT' : 'LONG';
 
-      const signal = { ts: now(), symbol, side, priceDelta15m, oiDelta15m, mode: state.settings.directionMode };
+      const signal = {
+        ts: now(),
+        symbol,
+        side,
+        mode: state.settings.directionMode,
+        windowSec,
+        priceDeltaPct,
+        oiDeltaPct,
+        confirmation: { confirmA: !!state.settings.confirmA, confirmB: !!state.settings.confirmB },
+      };
       pushSignal(signal);
 
       const useA = state.settings.confirmA;
@@ -110,7 +150,7 @@ export function createImpulseBot({
       // Simplified confirmation: reuse trigger candle close direction
       const confirmed = (useA || useB) && ((side === 'LONG' && to >= from) || (side === 'SHORT' && to <= from));
       if (!confirmed) {
-        pushLog('info', 'NO_TRADE: confirmation failed', { symbol, priceDelta15m, oiDelta15m });
+        pushLog('info', 'NO_TRADE: confirmation failed', { symbol, windowSec, priceDeltaPct, oiDeltaPct });
         return;
       }
 
@@ -139,7 +179,7 @@ export function createImpulseBot({
   function start({ mode = 'paper', settings = {} } = {}) {
     if (timer) return;
     state.mode = mode;
-    state.settings = { ...state.settings, ...(settings || {}) };
+    state.settings = { ...state.settings, ...(settings || {}), windowSec: clampWindowSec(settings?.windowSec ?? state.settings.windowSec) };
     state.status = 'RUNNING';
     state.startedAt = now();
     state.endedAt = null;
@@ -157,5 +197,12 @@ export function createImpulseBot({
     pushLog('info', `Impulse stopped (${reason})`);
   }
 
-  return { start, stop, getState };
+  function setConfig(next = {}) {
+    state.settings = { ...state.settings, ...(next || {}), windowSec: clampWindowSec(next?.windowSec ?? state.settings.windowSec) };
+    emit('impulse.status', getState());
+    pushLog('info', 'Impulse config updated', { windowSec: state.settings.windowSec, directionMode: state.settings.directionMode, confirmA: state.settings.confirmA, confirmB: state.settings.confirmB });
+    return getState();
+  }
+
+  return { start, stop, setConfig, getState };
 }
