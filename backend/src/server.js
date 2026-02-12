@@ -19,6 +19,7 @@ import { createBybitInstrumentsCache } from "./bybitInstrumentsCache.js";
 import { createBybitTradeExecutor } from "./bybitTradeExecutor.js";
 import { createBybitRest } from "./bybitRest.js";
 import { createMarketDataStore, toTickerSourceCode } from "./marketDataStore.js";
+import { createPresetsStore } from "./presetsStore.js";
 
 dotenv.config();
 
@@ -80,7 +81,7 @@ function tradeWarnings(tradeExecutor) {
   const ts = tradeStatus(tradeExecutor);
   if (!ts.enabled) warnings.push({ code: "TRADE_DISABLED", severity: "error", message: "Missing BYBIT_API_KEY/BYBIT_API_SECRET" });
   if (ts.enabled && !ts.demo) warnings.push({ code: "TRADE_BASE_URL", severity: "warn", message: "BYBIT_TRADE_BASE_URL is not demo (api-demo.bybit.com)" });
-  if (!process.env.CMC_API_KEY) warnings.push({ code: "CMC_DISABLED", severity: "warn", message: "Missing CMC_API_KEY (universe disabled)" });
+  if (!(process.env.CMC_API_KEY || process.env.COINMARKETCAP_API_KEY)) warnings.push({ code: "CMC_DISABLED", severity: "warn", message: "Missing CMC_API_KEY (universe disabled)" });
   return warnings;
 }
 
@@ -157,15 +158,25 @@ const privateRest = createBybitPrivateRest({
 const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, privateRest, logger: app.log });
 const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
 const bybitRest = createBybitRest({ logger: app.log });
+const presetsStore = createPresetsStore({ logger: app.log });
 
 const paperTest = createPaperTest({
   getLeadLagTop: () => lastLeadLagTop,
   getTicker: (sym) => marketData.getTicker(sym, "BT") || null,
   getBars: (sym, n, source) => marketBars.getBars(sym, n, toTickerSourceCode(source) || "BT"),
+  getUniverseSymbols: () => universe.getUniverse({ limit: 500 }).symbols,
+  presetsStore,
   logger: app.log,
   onEvent: ({ type, payload }) => broadcast({ type, payload }),
 });
-const universe = createCmcBybitUniverse({ logger: app.log, minMarketCapUsd: 10_000_000, maxUniverse: 300 });
+const universe = createCmcBybitUniverse({
+  logger: app.log,
+  minMarketCapUsd: 10_000_000,
+  maxUniverse: 300,
+  getBybitFeedSymbols: () => bybit.getSymbols(),
+  getBinanceFeedSymbols: () => binance.getSymbols(),
+  onUniverseUpdated: (payload) => broadcastEvent("universe.updated", payload),
+});
 universe.start();
 const klines = createBybitKlinesCache({ logger: app.log });
 const pullbackTest = createPullbackTest({ universe, klines, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
@@ -189,6 +200,8 @@ function getSnapshotPayload() {
     rangeState: rangeTest.getState(),
     tradeStatus: tradeStatus(tradeExecutor),
     warnings: tradeWarnings(tradeExecutor),
+    universe: universe.getStatus().universe,
+    presets: presetsStore.getState(),
   };
 }
 
@@ -228,9 +241,37 @@ app.get("/api/paper/state", async () => paperTest.getState());
 app.get("/api/pullback/state", async () => pullbackTest.getState());
 app.get("/api/range/state", async () => rangeTest.getState());
 app.get("/api/universe/status", async () => universe.getStatus());
-app.get("/api/universe/list", async () => ({ symbols: universe.getUniverse({ limit: 200 }) }));
+app.get("/api/universe/list", async () => ({ symbols: universe.getUniverse({ limit: 200 }).symbols }));
+app.get("/api/universe", async () => universe.getUniverse({ limit: 300 }));
 app.post("/api/universe/refresh", async () => { await universe.refresh(); return universe.getStatus(); });
 app.get("/api/trade/status", async () => ({ tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
+app.get("/api/presets", async () => presetsStore.getState());
+app.post("/api/presets", async (req) => {
+  const preset = presetsStore.createPreset(req.body || {});
+  const payload = presetsStore.getState();
+  broadcastEvent("presets.updated", payload);
+  return { ok: true, preset, ...payload };
+});
+app.put("/api/presets/:id", async (req) => {
+  const updated = presetsStore.updatePreset(req.params.id, req.body || {});
+  if (!updated) return { ok: false, error: "NOT_FOUND" };
+  const payload = presetsStore.getState();
+  broadcastEvent("presets.updated", payload);
+  return { ok: true, preset: updated, ...payload };
+});
+app.delete("/api/presets/:id", async (req) => {
+  const ok = presetsStore.deletePreset(req.params.id);
+  const payload = presetsStore.getState();
+  broadcastEvent("presets.updated", payload);
+  return { ok, ...payload };
+});
+app.post("/api/presets/:id/select", async (req) => {
+  const ok = presetsStore.selectPreset(req.params.id);
+  const payload = { activePresetId: presetsStore.getState().activePresetId };
+  broadcastEvent("preset.selected", payload);
+  broadcastEvent("presets.updated", presetsStore.getState());
+  return { ok, ...payload };
+});
 
 app.get("/ws", { websocket: true }, (conn) => {
   const ws = conn.socket;
@@ -282,7 +323,7 @@ app.get("/ws", { websocket: true }, (conn) => {
 
     if (msg.type === "startPaperTest") {
       safeSend(ws, { type: "paper.start.ack", payload: { ok: true } });
-      paperTest.start({ preset: msg.preset && typeof msg.preset === "object" ? msg.preset : null });
+      paperTest.start({ presetId: msg.presetId || presetsStore.getState().activePresetId });
       return;
     }
 
@@ -300,6 +341,19 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "refreshUniverse") {
       safeSend(ws, { type: "universe.refresh.ack", payload: { ok: true } });
       universe.refresh().then(() => broadcast({ type: "universe.status", payload: universe.getStatus() }));
+      return;
+    }
+
+    if (msg.type === "getPresets") {
+      safeSend(ws, { type: "presets.updated", payload: presetsStore.getState() });
+      return;
+    }
+
+    if (msg.type === "selectPreset") {
+      const ok = presetsStore.selectPreset(msg.presetId);
+      broadcastEvent("preset.selected", { activePresetId: presetsStore.getState().activePresetId });
+      broadcastEvent("presets.updated", presetsStore.getState());
+      safeSend(ws, { type: "preset.select.ack", payload: { ok, activePresetId: presetsStore.getState().activePresetId } });
       return;
     }
 
