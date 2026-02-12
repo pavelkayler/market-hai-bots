@@ -157,6 +157,8 @@ const marketBars = createMicroBarAggregator({
 const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 5000, minSamples: 200, impulseZ: 2.0, minImpulses: 5 });
 let lastLeadLagTop = [];
 let leadLagSearchActive = false;
+let leadLagSearchState = { searchActive: false, phase: 'idle', totalPairs: 0, processedPairs: 0, pct: 0, candidatesCount: 0, topRows: [] };
+let leadLagSearchRunner = null;
 
 const bybit = createBybitPublicWs({
   symbols: [],
@@ -364,7 +366,7 @@ function getBotsOverview() {
   };
 }
 
-function computeLeadLagTop() {
+function computeLeadLagTopSimple() {
   const symbols = bybit.getSymbols();
   const leaders = ["BTCUSDT", "ETHUSDT", "SOLUSDT"].filter((sym) => symbols.includes(sym));
   const followers = symbols.filter((sym) => marketBars.getBars(sym, 200, "BT").length >= 30);
@@ -372,51 +374,112 @@ function computeLeadLagTop() {
   const activePreset = presetsStore.getActivePreset();
   const params = activePreset?.params || {};
   const excludedCoins = Array.isArray(activePreset?.excludedCoins) ? activePreset.excludedCoins : [];
-
-  const top = leadLag.computeTop({
-    leaders,
-    symbols: eligible,
-    getBars: (sym, n) => marketBars.getBars(sym, n, "BT"),
-    topN: 10,
-    windowBars: 480,
-    params,
-  });
+  const top = leadLag.computeTop({ leaders, symbols: eligible, getBars: (sym, n) => marketBars.getBars(sym, n, "BT"), topN: 10, windowBars: 480, params });
 
   lastLeadLagTop = top.map((r) => {
-    const readiness = evaluateTradeReady({
-      row: r,
-      preset: activePreset,
-      excludedCoins,
-      lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0,
-      getBars: (sym, n, source) => marketBars.getBars(sym, n, source),
-      bucketMs: 250,
-    });
-    return {
-      ...r,
-      leaderSrc: "bybit",
-      followerSrc: "bybit",
-      source: "BT",
-      tradeReady: readiness.tradeReady,
-      blockers: readiness.blockers,
-    };
+    const readiness = evaluateTradeReady({ row: r, preset: activePreset, excludedCoins, lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0, getBars: (sym, n, source) => marketBars.getBars(sym, n, source), bucketMs: 250 });
+    return { ...r, leaderSrc: "bybit", followerSrc: "bybit", source: "BT", tradeReady: readiness.tradeReady, blockers: readiness.blockers };
   });
-
   paperTest.setSearchRows?.(lastLeadLagTop);
-  broadcast({ type: "leadlag.top", payload: lastLeadLagTop });
-  broadcastEvent("leadlag.top", { ts: Date.now(), source: "BT", rows: lastLeadLagTop });
+  leadLagSearchState = { ...leadLagSearchState, topRows: lastLeadLagTop.slice(0, 10) };
+  broadcast({ type: "leadlag.top", payload: leadLagSearchState });
 }
-function shouldComputeLeadLagTop() {
-  if (leadLagSearchActive) return true;
-  const llState = paperTest.getState?.({ includeHistory: false }) || {};
-  const running = llState?.status === "RUNNING";
-  const manualTrading = Boolean(llState?.manual?.enabled);
-  const autoTopTrading = running && !manualTrading;
-  return autoTopTrading;
+
+function startLeadLagSearch() {
+  if (leadLagSearchRunner?.active) return;
+  const universe = bybit.getSymbols().filter((s) => String(s).endsWith('USDT'));
+  const activePreset = presetsStore.getActivePreset();
+  const excludedCoins = Array.isArray(activePreset?.excludedCoins) ? activePreset.excludedCoins : [];
+  const totalPairs = universe.length * Math.max(0, universe.length - 1);
+  const candidates = [];
+  const chunkSize = 800;
+  let i = 0;
+  let j = 0;
+  let processedPairs = 0;
+  let lastBroadcastAt = 0;
+  const runner = { active: true };
+  leadLagSearchRunner = runner;
+  leadLagSearchState = { searchActive: true, phase: 'screening', totalPairs, processedPairs: 0, pct: 0, candidatesCount: 0, topRows: [] };
+
+  function fastPass(leader, follower) {
+    if (leader === follower) return false;
+    if (!String(leader).endsWith('USDT') || !String(follower).endsWith('USDT')) return false;
+    const lt = marketData.getTicker(leader, 'BT');
+    const ft = marketData.getTicker(follower, 'BT');
+    if (!lt || !ft) return false;
+    const ageLeader = Date.now() - Number(lt.ts || 0);
+    const ageFollower = Date.now() - Number(ft.ts || 0);
+    if (ageLeader > 15000 || ageFollower > 15000) return false;
+    const lSpread = Number(lt.bid) > 0 && Number(lt.ask) > 0 ? ((Number(lt.ask) - Number(lt.bid)) / ((Number(lt.ask) + Number(lt.bid)) / 2)) * 100 : 0;
+    const fSpread = Number(ft.bid) > 0 && Number(ft.ask) > 0 ? ((Number(ft.ask) - Number(ft.bid)) / ((Number(ft.ask) + Number(ft.bid)) / 2)) * 100 : 0;
+    if (lSpread > 0.12 || fSpread > 0.12) return false;
+    if ((marketBars.getBars(leader, 200, 'BT') || []).length < 60) return false;
+    if ((marketBars.getBars(follower, 200, 'BT') || []).length < 60) return false;
+    return true;
+  }
+
+  function maybeBroadcast(force = false) {
+    const nowTs = Date.now();
+    if (!force && nowTs - lastBroadcastAt < 300) return;
+    lastBroadcastAt = nowTs;
+    leadLagSearchState = { ...leadLagSearchState, processedPairs, pct: totalPairs > 0 ? Math.min(100, (processedPairs / totalPairs) * 100) : 0, candidatesCount: candidates.length };
+    broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
+  }
+
+  function phase2() {
+    if (!runner.active) return;
+    leadLagSearchState = { ...leadLagSearchState, phase: 'confirmations', candidatesCount: candidates.length };
+    const rows = [];
+    for (const { leader, follower } of candidates) {
+      const pairRows = leadLag.computeTop({ leaders: [leader], symbols: [leader, follower], getBars: (sym, n) => marketBars.getBars(sym, n, 'BT'), topN: 1, windowBars: 480, params: activePreset?.params || {} });
+      const row = pairRows[0];
+      if (!row || Number(row.lagMs) < 0) continue;
+      const readiness = evaluateTradeReady({ row, preset: activePreset, excludedCoins, lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0, getBars: (sym, n, source) => marketBars.getBars(sym, n, source), bucketMs: 250 });
+      rows.push({ ...row, leaderSrc: 'bybit', followerSrc: 'bybit', source: 'BT', tradeReady: readiness.tradeReady, blockers: readiness.blockers });
+    }
+    rows.sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0) || Math.abs(Number(b.corr || 0)) - Math.abs(Number(a.corr || 0)));
+    lastLeadLagTop = rows.slice(0, 10);
+    leadLagSearchState = { ...leadLagSearchState, topRows: lastLeadLagTop, pct: 100 };
+    paperTest.setSearchRows?.(lastLeadLagTop);
+    maybeBroadcast(true);
+  }
+
+  function tickScreening() {
+    if (!runner.active) return;
+    let done = 0;
+    while (done < chunkSize && i < universe.length) {
+      const leader = universe[i];
+      const follower = universe[j];
+      j += 1;
+      if (j >= universe.length) { i += 1; j = 0; }
+      if (!leader || !follower || leader === follower) { processedPairs += 1; done += 1; continue; }
+      processedPairs += 1;
+      done += 1;
+      if (fastPass(leader, follower)) candidates.push({ leader, follower });
+    }
+    maybeBroadcast();
+    if (i >= universe.length) {
+      phase2();
+      return;
+    }
+    setImmediate(tickScreening);
+  }
+
+  setImmediate(tickScreening);
 }
+
+function stopLeadLagSearch() {
+  if (leadLagSearchRunner) leadLagSearchRunner.active = false;
+  leadLagSearchRunner = null;
+  leadLagSearchState = { ...leadLagSearchState, searchActive: false, phase: 'idle' };
+}
+
 setInterval(() => {
   try {
-    if (!shouldComputeLeadLagTop()) return;
-    computeLeadLagTop();
+    if (leadLagSearchActive) return;
+    const llState = paperTest.getState?.({ includeHistory: false }) || {};
+    if (llState?.status !== 'RUNNING') return;
+    computeLeadLagTopSimple();
   } catch {}
 }, 1000);
 setInterval(() => broadcast({ type: "universe.status", payload: universe.getStatus() }), 30000);
@@ -613,11 +676,22 @@ function startStatusWatcher(ws) {
   if (existing) return;
   const id = Math.random().toString(36).slice(2);
   subscriptions.requestFeed(`status-page:${id}`, { bybitSymbols: ['BTCUSDT'], streams: ['ticker'] });
-  const st = { id, lastSeenAt: Date.now(), rttMs: null, lastPongAt: null, timer: null };
-  st.timer = setInterval(() => {
+  const st = { id, lastSeenAt: Date.now(), rttMs: null, lastPongAt: null, timer: null, cmcCache: { status: 'waiting', lastCheckAt: null, ageMs: null, latencyMs: null } };
+  st.timer = setInterval(async () => {
+    const cmc = await getCmcHealth();
+    const lastCheckAt = Date.now();
+    st.cmcCache = {
+      status: cmc?.status || 'error',
+      lastCheckAt,
+      ageMs: 0,
+      latencyMs: Number(cmc?.latencyMs || 0) || null,
+      error: cmc?.error ? String(cmc.error).slice(0, 200) : undefined,
+    };
     sendEvent(ws, 'status.health', {
-      backendWs: { connected: true, lastSeenAt: st.lastSeenAt, rttMs: st.rttMs, lastPongAt: st.lastPongAt },
+      now: Date.now(),
+      ws: { connected: true, lastSeenAt: st.lastSeenAt, rttMs: st.rttMs },
       bybitWs: getBybitHealth(),
+      cmcApi: { ...st.cmcCache, ageMs: Math.max(0, Date.now() - Number(st.cmcCache.lastCheckAt || Date.now())) },
     });
   }, 5000);
   statusWatchers.set(ws, st);
@@ -637,7 +711,8 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (!msg?.type) return;
     if (msg.type === "ping") return safeSend(ws, { type: "pong", payload: { now: Date.now() } });
     if (msg.type === "status.watch") {
-      if (msg?.active || msg?.payload?.active) startStatusWatcher(ws);
+      const active = Boolean(msg?.active ?? msg?.payload?.active);
+      if (active) startStatusWatcher(ws);
       else stopStatusWatcher(ws);
       safeSend(ws, { type: "status.watch.ack", payload: { active: Boolean(statusWatchers.get(ws)) } });
       return;
@@ -682,7 +757,7 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "getLeadLagTop") {
       const requestedN = Number(msg.n);
       const n = Number.isFinite(requestedN) ? Math.max(1, Math.min(50, Math.trunc(requestedN))) : 10;
-      safeSend(ws, { type: "leadlag.top", payload: lastLeadLagTop.slice(0, n) });
+      safeSend(ws, { type: "leadlag.top", payload: { ...leadLagSearchState, topRows: lastLeadLagTop.slice(0, n) } });
       return;
     }
 
@@ -710,15 +785,17 @@ app.get("/ws", { websocket: true }, (conn) => {
 
 
     if (msg.type === "startLeadLagSearch") {
-      const universe = normalizeSymbols(msg.symbols || universeGet(), 80);
+      const universe = normalizeSymbols(msg.symbols || universeGet(), 300);
       subscriptions.requestFeed("leadlag-search", { bybitSymbols: universe, streams: ["ticker"] });
       leadLagSearchActive = true;
+      startLeadLagSearch();
       safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: true } });
       return;
     }
     if (msg.type === "stopLeadLagSearch") {
       subscriptions.releaseFeed("leadlag-search");
       leadLagSearchActive = false;
+      stopLeadLagSearch();
       safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: false } });
       return;
     }
@@ -726,6 +803,9 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "resetLeadLag") {
       paperTest.stop({ reason: "reset" });
       subscriptions.releaseFeed("leadlag-trading");
+      subscriptions.releaseFeed("leadlag-search");
+      leadLagSearchActive = false;
+      stopLeadLagSearch();
       const payload = paperTest.reset();
       safeSend(ws, { type: "leadlag.reset.ack", payload });
       return;
@@ -820,7 +900,7 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "getImpulseState") return safeSend(ws, { type: "impulse.state", payload: impulseBot.getState() });
   });
 
-  ws.on("close", () => { stopStatusWatcher(ws); clients.delete(ws); });
+  ws.on("close", () => { stopStatusWatcher(ws); stopLeadLagSearch(); clients.delete(ws); });
 });
 
 await app.listen({ port: PORT, host: HOST });

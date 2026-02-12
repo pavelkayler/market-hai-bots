@@ -12,6 +12,7 @@ export default function LeadLagPage() {
   const [searchActive, setSearchActive] = useState(false);
   const [sort, setSort] = useState({ key: 'corr', dir: 'desc' });
   const [universe, setUniverse] = useState([]);
+  const [universeReady, setUniverseReady] = useState(false);
 
   const [settings, setSettings] = useState({ leaderSymbol: 'BTCUSDT', followerSymbol: 'ETHUSDT', leaderMovePct: 1, followerTpPct: 1, followerSlPct: 1, allowShort: true, lagMs: 250 });
   const [autoTuneConfig, setAutoTuneConfig] = useState({ enabled: true, evalWindowTrades: 20, minTradesToStart: 10, minProfitFactor: 1, minExpectancy: 0, tpStepPct: 0.05, tpMinPct: 0.05, tpMaxPct: 0.5 });
@@ -36,7 +37,11 @@ export default function LeadLagPage() {
       setSettings((prev) => ({ ...prev, ...nextSettings }));
       setState((prev) => ({ ...(prev || {}), settings: { ...(prev?.settings || {}), ...nextSettings } }));
     }
-    if (type === 'leadlag.top' && searchActive) setRows(Array.isArray(payload?.rows) ? payload.rows : (Array.isArray(payload) ? payload : []));
+    if (type === 'leadlag.top' && searchActive) {
+      const topRows = Array.isArray(payload?.topRows) ? payload.topRows : (Array.isArray(payload?.rows) ? payload.rows : (Array.isArray(payload) ? payload : []));
+      setRows(topRows);
+      setState((prev) => ({ ...(prev || {}), search: payload || {} }));
+    }
     if (type === 'leadlag.search.ack') setSearchActive(Boolean(payload?.active));
     if (type === 'universe.updated') setUniverse(Array.isArray(payload?.symbols) ? payload.symbols : []);
     if (type === 'leadlag.learningLog') setState((prev) => ({ ...(prev || {}), learningLog: Array.isArray(payload) ? payload : [] }));
@@ -45,7 +50,11 @@ export default function LeadLagPage() {
   const { status, sendJson } = useWsClient({ onOpen: () => { sendJson({ type: 'getLeadLagState' }); sendJson({ type: 'getSnapshot' }); sendJson({ type: 'leadlag.getLearningLog' }); }, onMessage });
 
   useEffect(() => {
-    fetch('/api/universe/list').then((r) => r.json()).then((j) => setUniverse(Array.isArray(j?.symbols) ? j.symbols : [])).catch(() => {});
+    fetch('/api/universe/list').then((r) => r.json()).then((j) => {
+      const symbols = Array.isArray(j?.symbols) ? j.symbols : (Array.isArray(j) ? j.map((x) => x?.symbol || x).filter(Boolean) : []);
+      setUniverse(symbols.map((x) => String(x).trim().toUpperCase()));
+      setUniverseReady(true);
+    }).catch(() => { setUniverse([]); setUniverseReady(true); });
   }, []);
 
   const sortedRows = useMemo(() => {
@@ -65,15 +74,17 @@ export default function LeadLagPage() {
   const lastEvaluation = state?.lastEvaluation || state?.perConfigLearningState?.lastEvaluation || null;
   const decision = state?.perConfigLearningState?.lastDecision || '—';
 
-  function validSymbol(sym) { return universe.includes(String(sym || '').toUpperCase()); }
-  const canStart = validSymbol(settings.leaderSymbol) && validSymbol(settings.followerSymbol);
+  const universeSet = useMemo(() => new Set((universe || []).map((x) => String(x).trim().toUpperCase())), [universe]);
+  function validSymbol(sym) { return universeSet.has(String(sym || '').trim().toUpperCase()); }
+  const canValidate = universeReady && universeSet.size > 0;
+  const canStart = !canValidate || (validSymbol(settings.leaderSymbol) && validSymbol(settings.followerSymbol));
 
   return <div className='d-grid gap-3'>
     <Row className='g-3'>
       <Col md={4}><Card><Card.Body className='d-grid gap-2'>
         <div className='d-flex justify-content-between'><strong>LeadLag</strong><Badge bg={status === 'connected' ? 'success' : 'secondary'}>{status}</Badge></div>
-        <Form.Group><Form.Label>Leader symbol</Form.Label><Form.Control list='universe-list' value={settings.leaderSymbol} onChange={(e) => setSettings((p) => ({ ...p, leaderSymbol: e.target.value.toUpperCase() }))} /></Form.Group>
-        <Form.Group><Form.Label>Follower symbol</Form.Label><Form.Control list='universe-list' value={settings.followerSymbol} onChange={(e) => setSettings((p) => ({ ...p, followerSymbol: e.target.value.toUpperCase() }))} /></Form.Group>
+        <Form.Group><Form.Label>Leader symbol</Form.Label><Form.Control list='universe-list' value={settings.leaderSymbol} onChange={(e) => setSettings((p) => ({ ...p, leaderSymbol: String(e.target.value || '').trim().toUpperCase() }))} /></Form.Group>
+        <Form.Group><Form.Label>Follower symbol</Form.Label><Form.Control list='universe-list' value={settings.followerSymbol} onChange={(e) => setSettings((p) => ({ ...p, followerSymbol: String(e.target.value || '').trim().toUpperCase() }))} /></Form.Group>
         <datalist id='universe-list'>{universe.map((s) => <option key={s} value={s} />)}</datalist>
         <Form.Group><Form.Label>Leader move trigger (%)</Form.Label><Form.Control type='number' min={0} value={settings.leaderMovePct} onChange={(e) => setSettings((p) => ({ ...p, leaderMovePct: Number(e.target.value) }))} /></Form.Group>
         <Form.Group><Form.Label>Follower TP (%)</Form.Label><Form.Control type='number' min={0} value={settings.followerTpPct} onChange={(e) => setSettings((p) => ({ ...p, followerTpPct: Number(e.target.value), tpSource: 'manual' }))} /></Form.Group>
@@ -87,7 +98,7 @@ export default function LeadLagPage() {
           <Button variant='outline-danger' onClick={() => sendJson({ type: 'stopLeadLag' })}>Stop</Button>
           <Button variant='outline-secondary' onClick={() => sendJson({ type: 'resetLeadLag' })}>Reset</Button>
         </div>
-        {!canStart ? <div className='small text-danger'>Выберите символы только из universe.</div> : null}
+        {canValidate && !canStart ? <div className='small text-danger'>Выберите символы только из universe.</div> : null}
       </Card.Body></Card></Col>
 
       <Col md={8}><Card><Card.Body>
@@ -108,9 +119,17 @@ export default function LeadLagPage() {
     <Card><Card.Body>
       <div className='d-flex gap-2 mb-2'><Button onClick={() => { setSearchActive(true); sendJson({ type: 'startLeadLagSearch' }); }}>Start search</Button><Button variant='outline-danger' onClick={() => sendJson({ type: 'stopLeadLagSearch' })}>Stop search</Button><Badge bg={searchActive ? 'success' : 'secondary'}>{searchActive ? 'ACTIVE' : 'STOPPED'}</Badge></div>
       <div className='fw-semibold mb-2'>Search (top 10, sortable)</div>
-      <Table size='sm'><thead><tr><th role='button' onClick={() => setSort((p) => ({ key: 'leader', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Leader</th><th role='button' onClick={() => setSort((p) => ({ key: 'follower', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Follower</th><th role='button' onClick={() => setSort((p) => ({ key: 'corr', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Corr</th><th role='button' onClick={() => setSort((p) => ({ key: 'lagMs', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Lag(ms)</th><th>Подтверждения</th></tr></thead><tbody>
+      <Table size='sm' style={{ tableLayout: 'fixed', width: '100%' }}><colgroup><col style={{ width: '20%' }} /><col style={{ width: '20%' }} /><col style={{ width: '15%' }} /><col style={{ width: '15%' }} /><col style={{ width: '30%' }} /></colgroup><thead><tr><th role='button' onClick={() => setSort((p) => ({ key: 'leader', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Leader</th><th role='button' onClick={() => setSort((p) => ({ key: 'follower', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Follower</th><th role='button' onClick={() => setSort((p) => ({ key: 'corr', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Corr</th><th role='button' onClick={() => setSort((p) => ({ key: 'lagMs', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Lag(ms)</th><th>Подтверждения</th></tr></thead><tbody>
         {sortedRows.slice(0, 10).map((r, i) => <tr key={`${r.leader}-${r.follower}-${i}`}><td>{r.leader}</td><td>{r.follower}</td><td>{fmt(r.corr)}</td><td>{fmt(r.lagMs, 0)}</td><td>{Number(r.confirmations || 0)}</td></tr>)}
       </tbody></Table>
+    </Card.Body></Card>
+
+
+    <Card><Card.Body>
+      <div className='fw-semibold mb-2'>Search progress</div>
+      <div className='small text-muted mb-1'>{state?.search?.phase === 'confirmations' ? `Phase 2: Scanning candidates for confirmations… ${Number(state?.search?.candidatesCount || 0)} candidates` : `Phase 1: Screening all universe pairs… ${Number(state?.search?.processedPairs || 0)}/${Number(state?.search?.totalPairs || 0)}`}</div>
+      <div className='small'>Processed: {Number(state?.search?.processedPairs || 0)} / {Number(state?.search?.totalPairs || 0)} ({fmt(state?.search?.pct || 0, 1)}%)</div>
+      <div style={{ height: 8, background: '#eee', borderRadius: 4, overflow: 'hidden' }}><div style={{ width: `${Math.max(0, Math.min(100, Number(state?.search?.pct || 0)))}%`, height: '100%', background: '#0d6efd' }} /></div>
     </Card.Body></Card>
 
     <Card><Card.Body>
