@@ -2,7 +2,7 @@
 // Sideways range strategy (metrics-driven) inspired by chat_export.md.
 // Trades range edges (1h range), confirmation on 5m reclaim + volume spike,
 // gates with funding/OI and optional liquidation spike (if feed provided).
-// Supports mode: paper | demo (demo uses Bybit private REST via trade executor).
+// Supports mode: paper | demo | real (live modes use Bybit private REST via trade executor).
 
 import fs from "fs/promises";
 import { atr, lastClosedCandle } from "./ta.js";
@@ -75,7 +75,7 @@ export function createRangeMetricsTest({
   onEvent = () => {},
 } = {}) {
   const defaults = {
-    mode: "paper", // paper | demo
+    mode: "paper", // paper | demo | real
     scanMaxSymbols: 10,
 
     intervals: { tf5: "5", tf60: "60" },
@@ -323,7 +323,7 @@ export function createRangeMetricsTest({
         exit: null,
         reason: "EXCHANGE_CLOSE",
         pnlUSDT: pnl,
-        mode: "demo",
+        mode: state.preset.mode,
       };
 
       state.stats.trades += 1;
@@ -352,7 +352,7 @@ export function createRangeMetricsTest({
     }
 
     if (state.position) {
-      if (p.mode === "demo") {
+      if (["demo", "real"].includes(p.mode)) {
         await manageDemoPosition(state.position);
         return { ok: true, action: "manage_demo" };
       }
@@ -517,7 +517,7 @@ export function createRangeMetricsTest({
 
     setPosition(pos);
 
-    if (p.mode === "demo") {
+    if (["demo", "real"].includes(p.mode)) {
       // place orders on exchange
       try {
         if (!trade || !trade.enabled()) throw new Error("trade_disabled");
@@ -532,15 +532,15 @@ export function createRangeMetricsTest({
             { price: pos.legs[1].tp, qty: pos.qty * pos.legs[1].weight },
             { price: pos.legs[2].tp, qty: pos.qty * pos.legs[2].weight },
           ],
-          positionIdx: 0,
+          
         });
-        pushLog("info", `OPEN (demo) ${pos.side} ${pos.symbol} entry≈${fmt(pos.entry)} sl=${fmt(pos.sl)} qty=${fmt(pos.qty,4)}`, pos);
+        pushLog("info", `OPEN (live) ${pos.side} ${pos.symbol} entry≈${fmt(pos.entry)} sl=${fmt(pos.sl)} qty=${fmt(pos.qty,4)}`, pos);
       } catch (e) {
-        pushLog("error", `Demo entry failed: ${e?.message || e}`, { symbol: pos.symbol });
+        pushLog("error", `Live entry failed: ${e?.message || e}`, { symbol: pos.symbol });
         setPosition(null);
         state.cooldownUntil = now() + p.cooldownMs;
         emit("range.status", getState());
-        return { ok: false, reason: "demo_entry_failed" };
+        return { ok: false, reason: "live_entry_failed" };
       }
     } else {
       pushLog("info", `OPEN (paper) ${pos.side} ${pos.symbol} entry=${fmt(pos.entry)} sl=${fmt(pos.sl)} rr1=${fmt(best.rr1,2)}`, pos);
@@ -566,7 +566,7 @@ export function createRangeMetricsTest({
   async function start({ preset, mode } = {}) {
     if (state.status === "RUNNING" || state.status === "STARTING") return;
     state.preset = { ...defaults, ...(preset && typeof preset === "object" ? preset : {}) };
-    if (mode === "demo") state.preset.mode = "demo";
+    if (["demo", "real"].includes(mode)) state.preset.mode = mode;
 
     state.startedAt = now();
     state.endedAt = null;

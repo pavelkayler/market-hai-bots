@@ -398,7 +398,7 @@ export function createPullbackTest({
             exit: null,
             reason: "EXCHANGE_CLOSE",
             pnlUSDT: Number.isFinite(pnl) ? pnl : 0,
-            mode: "demo",
+            mode: state.preset.mode,
           };
           state.stats.trades++;
           if (tradeRec.pnlUSDT >= 0) state.stats.wins++; else state.stats.losses++;
@@ -638,7 +638,7 @@ export function createPullbackTest({
       trend: best.trend,
     };
 
-    if (state.preset.mode === "demo") {
+    if (["demo", "real"].includes(state.preset.mode)) {
       try {
         if (!trade || !trade.enabled()) return { ok: false, reason: "trade_disabled" };
         const entryQty = qty;
@@ -655,11 +655,11 @@ export function createPullbackTest({
             { price: best.tp3, qty: tpQtys[2] },
           ],
         });
-        setPosition({ ...pos, mode: "demo", exec: execRes });
-        pushLog("info", `OPEN demo ${pos.side} ${pos.symbol} entry=${fmtNum(pos.entry)} sl=${fmtNum(pos.sl)}`, { execRes });
+        setPosition({ ...pos, mode: state.preset.mode, exec: execRes });
+        pushLog("info", `OPEN live ${pos.side} ${pos.symbol} entry=${fmtNum(pos.entry)} sl=${fmtNum(pos.sl)}`, { execRes });
       } catch (e) {
-        pushLog("error", `Demo entry failed: ${e?.message || e}`, { symbol: pos.symbol });
-        return { ok: false, reason: "demo_entry_failed" };
+        pushLog("error", `Live entry failed: ${e?.message || e}`, { symbol: pos.symbol });
+        return { ok: false, reason: "live_entry_failed" };
       }
     } else {
       setPosition(pos);
@@ -674,7 +674,7 @@ export function createPullbackTest({
     if (state.status === "RUNNING" || state.status === "STARTING") return;
 
     state.preset = { ...defaults, ...(preset && typeof preset === "object" ? preset : {}) };
-    if (mode === "demo") state.preset.mode = "demo";
+    if (["demo", "real"].includes(mode)) state.preset.mode = mode;
     state.startedAt = now();
     state.endedAt = null;
     state.cooldownUntil = 0;

@@ -65,24 +65,35 @@ function normalizeSymbols(symbols) {
   return [...uniq];
 }
 
+const TRADE_REAL_ENABLED = process.env.TRADE_REAL_ENABLED === "1";
+
 function tradeStatus(tradeExecutor) {
   const baseUrl = process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com";
   const recvWindow = Number(process.env.BYBIT_RECV_WINDOW || 5000);
   const enabled = Boolean(tradeExecutor?.enabled?.());
+  const executionMode = tradeExecutor?.getExecutionMode?.() || "paper";
+  const realAllowed = TRADE_REAL_ENABLED;
+  const tradeEnabledByMode = executionMode === "paper" ? true : enabled && (executionMode !== "real" || realAllowed);
   return {
-    enabled,
-    status: enabled ? "TRADE_ENABLED" : "TRADE_DISABLED",
+    enabled: tradeEnabledByMode,
+    status: tradeEnabledByMode ? "TRADE_ENABLED" : "TRADE_DISABLED",
     demo: /api-demo\.bybit\.com/i.test(baseUrl),
+    real: /api\.bybit\.com/i.test(baseUrl),
     baseUrl,
     recvWindow,
+    executionMode,
+    killSwitch: Boolean(tradeExecutor?.getKillSwitch?.()),
+    realAllowed,
   };
 }
 
 function tradeWarnings(tradeExecutor) {
   const warnings = [];
   const ts = tradeStatus(tradeExecutor);
-  if (!ts.enabled) warnings.push({ code: "TRADE_DISABLED", severity: "error", message: "Missing BYBIT_API_KEY/BYBIT_API_SECRET" });
-  if (ts.enabled && !ts.demo) warnings.push({ code: "TRADE_BASE_URL", severity: "warn", message: "BYBIT_TRADE_BASE_URL is not demo (api-demo.bybit.com)" });
+  if (ts.executionMode !== "paper" && !Boolean(tradeExecutor?.enabled?.())) warnings.push({ code: "TRADE_DISABLED", severity: "error", message: "Missing BYBIT_API_KEY/BYBIT_API_SECRET" });
+  if (ts.executionMode === "real" && !ts.realAllowed) warnings.push({ code: "REAL_DISABLED", severity: "error", message: "REAL trading requires TRADE_REAL_ENABLED=1" });
+  if (ts.executionMode === "demo" && !ts.demo) warnings.push({ code: "TRADE_BASE_URL", severity: "warn", message: "Demo mode requires BYBIT_TRADE_BASE_URL=api-demo.bybit.com" });
+  if (ts.executionMode === "real" && !ts.real) warnings.push({ code: "TRADE_BASE_URL", severity: "warn", message: "Real mode requires BYBIT_TRADE_BASE_URL=api.bybit.com" });
   if (!(process.env.CMC_API_KEY || process.env.COINMARKETCAP_API_KEY)) warnings.push({ code: "CMC_DISABLED", severity: "warn", message: "Missing CMC_API_KEY (universe disabled)" });
   return warnings;
 }
@@ -240,6 +251,16 @@ function computeLeadLagTop() {
 }
 setInterval(() => { try { computeLeadLagTop(); } catch {} }, 1000);
 setInterval(() => broadcast({ type: "universe.status", payload: universe.getStatus() }), 30000);
+setInterval(async () => {
+  try {
+    const ts = tradeStatus(tradeExecutor);
+    if (!["demo", "real"].includes(ts.executionMode) || !ts.enabled) return;
+    const symbol = (pullbackTest.getState?.().position?.symbol || rangeTest.getState?.().position?.symbol || "BTCUSDT").toUpperCase();
+    const snap = await getTradeSnapshot(symbol);
+    broadcastEvent("trade.positions", { ts: Date.now(), symbol, positions: snap.positions || [] });
+    broadcastEvent("trade.orders", { ts: Date.now(), symbol, orders: snap.orders || [] });
+  } catch {}
+}, 3000);
 
 app.get("/health", async () => ({ status: "ok" }));
 app.get("/api/heartbeat", async () => ({ status: "ok", now: Date.now(), uptime_ms: Math.floor(process.uptime() * 1000) }));
@@ -262,8 +283,42 @@ app.get("/api/universe/list", async () => ({ symbols: universe.getUniverse({ lim
 app.get("/api/universe", async () => universe.getUniverse({ limit: 300 }));
 app.post("/api/universe/refresh", async () => { await universe.refresh(); return universe.getStatus(); });
 app.get("/api/trade/status", async () => ({ tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
-app.get("/api/trade/positions", async (req) => ({ ...(await getTradeSnapshot(String(req.query?.symbol || "").toUpperCase() || undefined)), tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
-app.get("/api/trade/orders", async (req) => ({ ...(await getTradeSnapshot(String(req.query?.symbol || "").toUpperCase() || undefined)), tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
+app.get("/api/trade/state", async () => ({
+  executionMode: tradeExecutor.getExecutionMode(),
+  tradeStatus: tradeStatus(tradeExecutor),
+  warnings: tradeWarnings(tradeExecutor),
+  killSwitch: tradeExecutor.getKillSwitch(),
+  activeSymbol: null,
+  lastError: null,
+}));
+app.get("/api/trade/positions", async (req) => {
+  const symbol = String(req.query?.symbol || "").toUpperCase() || undefined;
+  const snap = await getTradeSnapshot(symbol);
+  return { positions: snap.positions, tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) };
+});
+app.get("/api/trade/openOrders", async (req) => {
+  const symbol = String(req.query?.symbol || "").toUpperCase() || undefined;
+  const snap = await getTradeSnapshot(symbol);
+  return { orders: snap.orders, tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) };
+});
+app.get("/api/trade/orders", async (req) => {
+  const symbol = String(req.query?.symbol || "").toUpperCase() || undefined;
+  const snap = await getTradeSnapshot(symbol);
+  return { orders: snap.orders, positions: snap.positions, tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) };
+});
+app.get("/api/trade/history", async (req) => {
+  if (!tradeExecutor.enabled()) return { history: [] };
+  try {
+    return { history: await tradeExecutor.getClosedPnl({ limit: Number(req.query?.limit || 200) }) };
+  } catch {
+    return { history: [] };
+  }
+});
+app.post("/api/trade/killswitch", async (req) => {
+  const enabled = tradeExecutor.setKillSwitch(Boolean(req.body?.enabled));
+  broadcastEvent("trade.killswitch", { enabled });
+  return { ok: true, enabled };
+});
 app.get("/api/presets", async () => presetsStore.getState());
 app.post("/api/presets", async (req) => {
   const preset = presetsStore.createPreset(req.body || {});
@@ -379,11 +434,17 @@ app.get("/ws", { websocket: true }, (conn) => {
     }
 
     if (msg.type === "startPullbackTest") {
-      const mode = msg.mode === "demo" ? "demo" : "paper";
-      if (mode === "demo" && !tradeExecutor.enabled()) {
+      const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
+      tradeExecutor.setExecutionMode(mode);
+      if (mode !== "paper" && !tradeExecutor.enabled()) {
         const error = "Demo trade disabled (missing API keys)";
         safeSend(ws, { type: "pullback.start.ack", payload: { ok: false, error } });
         broadcast({ type: "pullback.log", payload: { t: Date.now(), level: "error", msg: error } });
+        return;
+      }
+      if (mode === "real" && !TRADE_REAL_ENABLED) {
+        const error = "REAL_DISABLED: set TRADE_REAL_ENABLED=1";
+        safeSend(ws, { type: "pullback.start.ack", payload: { ok: false, error } });
         return;
       }
       safeSend(ws, { type: "pullback.start.ack", payload: { ok: true, mode } });
@@ -394,11 +455,17 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "getPullbackState") return safeSend(ws, { type: "pullback.state", payload: pullbackTest.getState() });
 
     if (msg.type === "startRangeTest") {
-      const mode = msg.mode === "demo" ? "demo" : "paper";
-      if (mode === "demo" && !tradeExecutor.enabled()) {
+      const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
+      tradeExecutor.setExecutionMode(mode);
+      if (mode !== "paper" && !tradeExecutor.enabled()) {
         const error = "Demo trade disabled (missing API keys)";
         safeSend(ws, { type: "range.start.ack", payload: { ok: false, error } });
         broadcast({ type: "range.log", payload: { t: Date.now(), level: "error", msg: error } });
+        return;
+      }
+      if (mode === "real" && !TRADE_REAL_ENABLED) {
+        const error = "REAL_DISABLED: set TRADE_REAL_ENABLED=1";
+        safeSend(ws, { type: "range.start.ack", payload: { ok: false, error } });
         return;
       }
       safeSend(ws, { type: "range.start.ack", payload: { ok: true, mode } });
