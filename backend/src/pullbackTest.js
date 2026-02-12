@@ -370,7 +370,7 @@ export function createPullbackTest({
     const uStatus = universe.getStatus();
     state.scan.universeStatus = uStatus;
 
-    const u = universe.getUniverse({ limit: 10 }); // shortlist max 10
+    const u = universe.getUniverse({ limit: 100 }); // shortlist max 100
     state.scan.universeSize = u.length;
 
     if (uStatus.status !== "ready" || !u.length) {

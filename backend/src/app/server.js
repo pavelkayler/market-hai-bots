@@ -21,6 +21,7 @@ import { createBybitTradeExecutor } from "../bybitTradeExecutor.js";
 import { createBybitRest } from "../bybitRest.js";
 import { createMarketDataStore, toTickerSourceCode } from "../marketDataStore.js";
 import { createPresetsStore } from "../presetsStore.js";
+import { createImpulseBot } from "../impulseBot.js";
 
 dotenv.config();
 
@@ -51,7 +52,7 @@ function broadcastEvent(topic, payload) {
   broadcast({ type: "event", topic, payload });
 }
 
-const DEFAULT_SYMBOL_LIMIT = Number(process.env.DEFAULT_SYMBOL_LIMIT || 50);
+const DEFAULT_SYMBOL_LIMIT = Number(process.env.DEFAULT_SYMBOL_LIMIT || 500);
 
 const DEFAULT_SYMBOLS = [
   "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
@@ -209,7 +210,7 @@ const paperTest = createPaperTest({
 const universe = createCmcBybitUniverse({
   logger: app.log,
   minMarketCapUsd: 10_000_000,
-  maxUniverse: 300,
+  maxUniverse: 500,
   getBybitFeedSymbols: () => bybit.getSymbols(),
   getBinanceFeedSymbols: () => binance.getSymbols(),
   onUniverseUpdated: (payload) => {
@@ -223,9 +224,30 @@ const universe = createCmcBybitUniverse({
   },
 });
 universe.start();
+
+function pickMostVolatileSymbols(limit = 100) {
+  const rows = marketData.getTickersArray().filter((t) => t?.source === "BT" && t?.symbol && !String(t.symbol).includes("-"));
+  const scored = rows.map((t) => {
+    const bars = marketBars.getBars(t.symbol, 60, "BT");
+    const first = Number(bars?.[0]?.c || bars?.[0]?.close);
+    const last = Number(bars?.[bars.length - 1]?.c || bars?.[bars.length - 1]?.close);
+    const score = Number.isFinite(first) && Number.isFinite(last) && first !== 0 ? Math.abs((last - first) / Math.abs(first)) : 0;
+    return { symbol: t.symbol, score };
+  }).sort((a,b)=>b.score-a.score);
+  return scored.slice(0, limit).map((x) => x.symbol);
+}
+
 const klines = createBybitKlinesCache({ logger: app.log });
 const pullbackTest = createPullbackTest({ universe, klines, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
 const rangeTest = createRangeMetricsTest({ universe, klines, bybitRest, liqFeed, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
+const impulseBot = createImpulseBot({
+  getSymbols: () => bybit.getSymbols(),
+  getCapsUniverse: () => universe.getUniverse({ limit: 500 }).symbols,
+  getCandles: ({ symbol, interval, limit }) => klines.getCandles({ symbol, interval, limit }),
+  getOi: ({ symbol, interval, limit }) => bybitRest.getOpenInterest({ symbol, interval: interval === "15" ? "15" : "5", limit }),
+  logger: app.log,
+  onEvent: ({ type, payload }) => broadcast({ type, payload }),
+});
 
 async function getTradeSnapshot(symbol) {
   if (!tradeExecutor?.enabled?.()) return { positions: [], orders: [] };
@@ -258,6 +280,13 @@ function getSnapshotPayload() {
     universeStatus: universe.getStatus(),
     pullbackState: pullbackTest.getState(),
     rangeState: rangeTest.getState(),
+    impulseState: impulseBot.getState(),
+    watchlists: {
+      leadlag: bybit.getSymbols().slice(0, 100),
+      pullback: pickMostVolatileSymbols(100),
+      range: pickMostVolatileSymbols(500),
+      impulse: universe.getUniverse({ limit: 500 }).symbols,
+    },
     tradeStatus: tradeStatus(tradeExecutor),
     warnings: tradeWarnings(tradeExecutor),
     universe: universe.getStatus().universe,
@@ -337,6 +366,7 @@ app.get("/api/paper/state", async () => paperTest.getState());
 app.get("/api/leadlag/state", async () => paperTest.getState());
 app.get("/api/pullback/state", async () => pullbackTest.getState());
 app.get("/api/range/state", async () => rangeTest.getState());
+app.get("/api/impulse/state", async () => impulseBot.getState());
 app.get("/api/universe/status", async () => universe.getStatus());
 app.get("/api/universe/list", async () => ({ symbols: universe.getUniverse({ limit: 200 }).symbols }));
 app.get("/api/universe", async () => universe.getUniverse({ limit: 300 }));
@@ -542,6 +572,15 @@ app.get("/ws", { websocket: true }, (conn) => {
     }
     if (msg.type === "stopRangeTest") { safeSend(ws, { type: "range.stop.ack", payload: { ok: true } }); rangeTest.stop({ reason: "manual" }); return; }
     if (msg.type === "getRangeState") return safeSend(ws, { type: "range.state", payload: rangeTest.getState() });
+
+    if (msg.type === "startImpulseBot") {
+      const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
+      safeSend(ws, { type: "impulse.start.ack", payload: { ok: true, mode } });
+      impulseBot.start({ mode, settings: msg.settings && typeof msg.settings === "object" ? msg.settings : {} });
+      return;
+    }
+    if (msg.type === "stopImpulseBot") { safeSend(ws, { type: "impulse.stop.ack", payload: { ok: true } }); impulseBot.stop({ reason: "manual" }); return; }
+    if (msg.type === "getImpulseState") return safeSend(ws, { type: "impulse.state", payload: impulseBot.getState() });
   });
 
   ws.on("close", () => clients.delete(ws));

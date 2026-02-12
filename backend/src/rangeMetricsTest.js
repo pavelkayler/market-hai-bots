@@ -76,7 +76,7 @@ export function createRangeMetricsTest({
 } = {}) {
   const defaults = {
     mode: "paper", // paper | demo | real
-    scanMaxSymbols: 50,
+    scanMaxSymbols: 500,
 
     intervals: { tf5: "5", tf60: "60" },
     candlesLimit: 220,

@@ -5,6 +5,7 @@ import LeadLagPage from '../../pages/leadlag/LeadLagPage.jsx';
 import PullbackPage from '../../pages/pullback/PullbackPage.jsx';
 import RangeMetricsPage from '../../pages/range/RangeMetricsPage.jsx';
 import PresetsPage from '../../pages/presets/PresetsPage.jsx';
+import ImpulsePage from '../../pages/impulse/ImpulsePage.jsx';
 
 export default function AppRoutes() {
   return (
@@ -16,6 +17,7 @@ export default function AppRoutes() {
       <Route path="/pullback" element={<PullbackPage />} />
       <Route path="/range" element={<RangeMetricsPage />} />
       <Route path="/presets" element={<PresetsPage />} />
+      <Route path="/impulse" element={<ImpulsePage />} />
       <Route path="*" element={<StatusPage />} />
     </Routes>
   );
