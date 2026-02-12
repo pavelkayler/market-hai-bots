@@ -76,9 +76,7 @@ export default function StatusPage() {
     }
   }, [selectedSymbol])
 
-  const { wsUrl, status: wsStatus, sendJson, reconnect } = useWsClient({
-    apiBase: API_BASE,
-    onOpen: () => { sendJson({ type: 'getSnapshot' }) },
+  const { wsUrl, status: wsStatus, sendJson, reconnect } = useWsClient({ onOpen: () => { sendJson({ type: 'getSnapshot' }) },
     onMessage,
   })
 

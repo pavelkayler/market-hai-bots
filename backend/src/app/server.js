@@ -200,6 +200,7 @@ const presetsStore = createPresetsStore({ logger: app.log });
 
 const paperTest = createPaperTest({
   getLeadLagTop: () => lastLeadLagTop,
+  getMarketTicker: (symbol, source) => marketData.getTicker(symbol, source),
   getUniverseSymbols: () => universe.getUniverse({ limit: 500 }).symbols,
   presetsStore,
   logger: app.log,
@@ -253,6 +254,7 @@ function getSnapshotPayload() {
     marketTickers: marketData.getTickersArray(),
     leadLagTop: lastLeadLagTop,
     paperState: paperTest.getState(),
+    leadlagState: paperTest.getState(),
     universeStatus: universe.getStatus(),
     pullbackState: pullbackTest.getState(),
     rangeState: rangeTest.getState(),
@@ -288,7 +290,7 @@ function computeLeadLagTop() {
       row: r,
       preset: activePreset,
       excludedCoins,
-      lastTradeAt: paperTest.getState({ includeHistory: false })?.startedAt || 0,
+      lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0,
       getBars: (sym, n, source) => marketBars.getBars(sym, n, source),
       bucketMs: 250,
     });
@@ -455,22 +457,26 @@ app.get("/ws", { websocket: true }, (conn) => {
       return;
     }
 
-    if (msg.type === "startPaperTest") {
+    if (msg.type === "startPaperTest" || msg.type === "startLeadLag") {
       const presetId = msg.presetId || presetsStore.getState().activePresetId;
       applyPresetGuardrails(presetsStore.getPresetById?.(presetId) || presetsStore.getActivePreset?.());
+      safeSend(ws, { type: "leadlag.start.ack", payload: { ok: true } });
       safeSend(ws, { type: "paper.start.ack", payload: { ok: true } });
-      paperTest.start({ presetId });
+      paperTest.start({ presetId, mode: msg.mode || "paper" });
       return;
     }
 
-    if (msg.type === "stopPaperTest") {
+    if (msg.type === "stopPaperTest" || msg.type === "stopLeadLag") {
+      safeSend(ws, { type: "leadlag.stop.ack", payload: { ok: true } });
       safeSend(ws, { type: "paper.stop.ack", payload: { ok: true } });
       paperTest.stop({ reason: "manual" });
       return;
     }
 
-    if (msg.type === "getPaperState") {
-      safeSend(ws, { type: "paper.state", payload: paperTest.getState() });
+    if (msg.type === "getPaperState" || msg.type === "getLeadLagState") {
+      const state = paperTest.getState();
+      safeSend(ws, { type: "leadlag.state", payload: state });
+      safeSend(ws, { type: "paper.state", payload: state });
       return;
     }
 
