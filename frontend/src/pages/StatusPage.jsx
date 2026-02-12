@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Card, Alert, Button, Spinner, Badge, Form } from 'react-bootstrap'
+import { formatPriceWithSource, sourceTag } from '../priceFormat.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
@@ -28,15 +29,13 @@ export default function StatusPage() {
   const [symbols, setSymbols] = useState(['BTCUSDT', 'ETHUSDT', 'SOLUSDT'])
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT')
 
-  const [bybitTickers, setBybitTickers] = useState({})
-  const [binanceTickers, setBinanceTickers] = useState({})
+  const [marketTickers, setMarketTickers] = useState({})
 
   const [bybitStatus, setBybitStatus] = useState('unknown')
   const [binanceStatus, setBinanceStatus] = useState('unknown')
 
   // Throttle buffers
-  const pendingBybitRef = useRef({})
-  const pendingBinanceRef = useRef({})
+  const pendingTickersRef = useRef(new Map())
   const pendingLastMsgRef = useRef(null)
 
   async function loadHttp() {
@@ -57,7 +56,7 @@ export default function StatusPage() {
     const wsUrl = toWsUrl(API_BASE)
 
     if (wsRef.current) {
-      try { wsRef.current.close() } catch {}
+      try { wsRef.current.close() } catch { /* ignore */ }
     }
 
     setWsStatus('connecting')
@@ -86,11 +85,11 @@ export default function StatusPage() {
           if (!p.symbols.includes(selectedSymbol)) setSelectedSymbol(p.symbols[0] || 'BTCUSDT')
         }
 
-        // backward-compat (older snapshot had tickers only)
-        if (p.bybitTickers && typeof p.bybitTickers === 'object') setBybitTickers(p.bybitTickers)
-        else if (p.tickers && typeof p.tickers === 'object') setBybitTickers(p.tickers)
-
-        if (p.binanceTickers && typeof p.binanceTickers === 'object') setBinanceTickers(p.binanceTickers)
+        if (Array.isArray(p.marketTickers)) {
+          const next = {}
+          for (const t of p.marketTickers) next[`${sourceTag(t?.source)}:${t?.symbol}`] = t
+          setMarketTickers(next)
+        }
 
         if (p.bybit?.status) setBybitStatus(p.bybit.status)
         if (p.binance?.status) setBinanceStatus(p.binance.status)
@@ -108,13 +107,15 @@ export default function StatusPage() {
         return
       }
 
-      if (msg.type === 'bybit.ticker' && msg.payload?.symbol) {
-        pendingBybitRef.current[msg.payload.symbol] = msg.payload
+      if (msg.type === 'market.snapshot' && Array.isArray(msg.payload?.tickers)) {
+        const next = {}
+        for (const t of msg.payload.tickers) next[`${sourceTag(t?.source)}:${t?.symbol}`] = t
+        setMarketTickers((prev) => ({ ...prev, ...next }))
         return
       }
 
-      if (msg.type === 'binance.ticker' && msg.payload?.symbol) {
-        pendingBinanceRef.current[msg.payload.symbol] = msg.payload
+      if (msg.type === 'market.ticker' && msg.payload?.symbol) {
+        pendingTickersRef.current.set(`${sourceTag(msg.payload.source)}:${msg.payload.symbol}`, msg.payload)
         return
       }
     }
@@ -131,16 +132,11 @@ export default function StatusPage() {
     connectWs()
 
     const flushTimer = setInterval(() => {
-      const pb = pendingBybitRef.current
-      if (pb && Object.keys(pb).length) {
-        setBybitTickers((prev) => ({ ...prev, ...pb }))
-        pendingBybitRef.current = {}
-      }
-
-      const pn = pendingBinanceRef.current
-      if (pn && Object.keys(pn).length) {
-        setBinanceTickers((prev) => ({ ...prev, ...pn }))
-        pendingBinanceRef.current = {}
+      if (pendingTickersRef.current.size) {
+        const updates = {}
+        for (const [k, t] of pendingTickersRef.current.entries()) updates[k] = t
+        pendingTickersRef.current.clear()
+        setMarketTickers((prev) => ({ ...prev, ...updates }))
       }
 
       if (pendingLastMsgRef.current) {
@@ -152,7 +148,7 @@ export default function StatusPage() {
     return () => {
       clearInterval(flushTimer)
       if (wsRef.current) {
-        try { wsRef.current.close() } catch {}
+        try { wsRef.current.close() } catch { /* ignore */ }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -171,8 +167,8 @@ export default function StatusPage() {
   const binanceBadge = binanceStatus === 'connected' ? 'success' : binanceStatus === 'disconnected' ? 'secondary' : 'warning'
 
   const current = {
-    bybit: bybitTickers?.[selectedSymbol] || null,
-    binance: binanceTickers?.[selectedSymbol] || null,
+    bybit: marketTickers[`BT:${selectedSymbol}`] || null,
+    binance: marketTickers[`BNB:${selectedSymbol}`] || null,
   }
 
   return (
@@ -252,7 +248,9 @@ export default function StatusPage() {
 
           <div>
             <div className="fw-semibold mb-2">Selected ticker (BT / BNB)</div>
-            <pre className="m-0">{JSON.stringify(current, null, 2)}</pre>
+            <div>BT: {formatPriceWithSource(current.bybit)}</div>
+            <div>BNB: {formatPriceWithSource(current.binance)}</div>
+            <pre className="m-0 mt-2">{JSON.stringify(current, null, 2)}</pre>
           </div>
 
           <div>
