@@ -11,6 +11,19 @@ function roundPct(value) {
   return Math.round(value * 1000000) / 1000000;
 }
 
+const ALLOWED_LAG_MS = [250, 500, 750, 1000];
+
+function normalizeLagMs(value, fallback = 250) {
+  const n = Math.trunc(safeNum(value, fallback));
+  return ALLOWED_LAG_MS.includes(n) ? n : fallback;
+}
+
+function nextLagMs(current) {
+  const normalized = normalizeLagMs(current);
+  const idx = ALLOWED_LAG_MS.indexOf(normalized);
+  return ALLOWED_LAG_MS[(idx + 1) % ALLOWED_LAG_MS.length];
+}
+
 function buildConfigKey(settings = {}) {
   return [
     String(settings.leaderSymbol || '').toUpperCase(),
@@ -18,7 +31,7 @@ function buildConfigKey(settings = {}) {
     roundPct(safeNum(settings.leaderMovePct, 0)),
     roundPct(safeNum(settings.followerTpPct, 0)),
     roundPct(safeNum(settings.followerSlPct, 0)),
-    Math.max(0, Math.trunc(safeNum(settings.lagMs, 0))),
+    normalizeLagMs(settings.lagMs, 250),
     settings.allowShort !== false ? 1 : 0,
     100,
     10,
@@ -26,7 +39,7 @@ function buildConfigKey(settings = {}) {
 }
 
 function summarizeConfig(settings = {}) {
-  return `${String(settings.leaderSymbol || '').toUpperCase()}/${String(settings.followerSymbol || '').toUpperCase()} trg:${safeNum(settings.leaderMovePct, 0)} tp:${safeNum(settings.followerTpPct, 0)} sl:${safeNum(settings.followerSlPct, 0)} lag:${Math.max(0, Math.trunc(safeNum(settings.lagMs, 0)))} short:${settings.allowShort !== false ? 'y' : 'n'} size:$100x10`;
+  return `${String(settings.leaderSymbol || '').toUpperCase()}/${String(settings.followerSymbol || '').toUpperCase()} trg:${safeNum(settings.leaderMovePct, 0)} tp:${safeNum(settings.followerTpPct, 0)} sl:${safeNum(settings.followerSlPct, 0)} lag:${normalizeLagMs(settings.lagMs, 250)} short:${settings.allowShort !== false ? 'y' : 'n'} size:$100x10`;
 }
 
 function computeWindowMetrics(trades = []) {
@@ -74,7 +87,7 @@ function computeWindowMetrics(trades = []) {
 
 export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
   const defaults = {
-    allowedParams: ['tpPct'],
+    allowedParams: ['tpPct', 'lagMs'],
     enabled: true,
     minTradesToStart: 10,
     evalWindowTrades: 20,
@@ -101,7 +114,7 @@ export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
 
   function normalizeConfig(next = {}, prev = defaults) {
     return {
-      allowedParams: ['tpPct'],
+      allowedParams: ['tpPct', 'lagMs'],
       enabled: next.enabled === undefined ? prev.enabled : Boolean(next.enabled),
       minTradesToStart: Math.max(1, Math.trunc(safeNum(next.minTradesToStart, prev.minTradesToStart))),
       evalWindowTrades: Math.max(2, Math.trunc(safeNum(next.evalWindowTrades, prev.evalWindowTrades))),
@@ -123,10 +136,15 @@ export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
 
   function ensureConfig(configKey, settings = {}) {
     if (!perConfig.has(configKey)) {
+      const initialTp = safeNum(settings?.followerTpPct, 0.1) || 0.1;
+      const initialLag = normalizeLagMs(settings?.lagMs, 250);
       perConfig.set(configKey, {
         trades: [],
-        currentTpPct: safeNum(settings?.followerTpPct, 1) || 1,
-        lastTpPct: safeNum(settings?.followerTpPct, 1) || 1,
+        currentTpPct: initialTp,
+        lastTpPct: initialTp,
+        currentLagMs: initialLag,
+        lastLagMs: initialLag,
+        lastTunedParam: null,
         lastEvaluation: null,
         lastDecision: 'KEEP',
         windowsEvaluatedCount: 0,
@@ -148,13 +166,8 @@ export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
 
     const { minTradesToStart, evalWindowTrades, minProfitFactor, minExpectancy, tpStepPct, tpMinPct, tpMaxPct } = autoTuneConfig;
 
-    if (!autoTuneConfig.enabled) {
-      return { configKey, tuningStatus: 'idle', changed: false, logAdded: false };
-    }
-
-    if (cfg.trades.length < minTradesToStart || cfg.trades.length < evalWindowTrades) {
-      return { configKey, tuningStatus: 'idle', changed: false, logAdded: false };
-    }
+    if (!autoTuneConfig.enabled) return { configKey, tuningStatus: 'idle', changed: false, logAdded: false };
+    if (cfg.trades.length < minTradesToStart || cfg.trades.length < evalWindowTrades) return { configKey, tuningStatus: 'idle', changed: false, logAdded: false };
 
     const windowTrades = cfg.trades.slice(-evalWindowTrades);
     const metrics = computeWindowMetrics(windowTrades);
@@ -181,16 +194,24 @@ export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
       const baseline = cfg.pendingEvaluationAfterChange.baseline;
       const improved = (metrics.profitFactor > baseline.profitFactor + autoTuneConfig.minDeltaPF)
         || (metrics.expectancy > baseline.expectancy + autoTuneConfig.minDeltaExpectancy);
+      const pending = cfg.pendingEvaluationAfterChange;
+      cfg.pendingEvaluationAfterChange = null;
+
       if (improved) {
-        cfg.lastDecision = 'KEEP_NEW_TP';
+        cfg.lastDecision = 'KEEP_NEW_PARAM';
         pushLog({ type: 'TUNE_RESULT', configKey, configSummary: summarizeConfig(settings), metrics, reason: 'improved=true' });
-        cfg.pendingEvaluationAfterChange = null;
       } else if (autoTuneConfig.rollbackOnWorse) {
+        cfg.lastDecision = 'ROLLBACK';
+        if (pending.paramName === 'lagMs') {
+          const rollbackLag = cfg.lastLagMs;
+          const fromLag = cfg.currentLagMs;
+          cfg.currentLagMs = rollbackLag;
+          pushLog({ type: 'ROLLBACK', configKey, configSummary: summarizeConfig(settings), metrics, change: { paramName: 'lagMs', from: fromLag, to: rollbackLag, step: 250 }, reason: 'worse/no improvement' });
+          return { configKey, metrics, decision: 'ROLLBACK', changed: true, newLagMs: rollbackLag, tuningStatus: 'idle' };
+        }
         const rollbackTp = cfg.lastTpPct;
         const fromTp = cfg.currentTpPct;
         cfg.currentTpPct = rollbackTp;
-        cfg.pendingEvaluationAfterChange = null;
-        cfg.lastDecision = 'ROLLBACK';
         pushLog({ type: 'ROLLBACK', configKey, configSummary: summarizeConfig(settings), metrics, change: { paramName: 'tpPct', from: fromTp, to: rollbackTp, step: tpStepPct }, reason: 'worse/no improvement' });
         return { configKey, metrics, decision: 'ROLLBACK', changed: true, newTpPct: rollbackTp, tpSource: 'auto', tuningStatus: 'idle' };
       }
@@ -210,7 +231,34 @@ export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
     cfg.consecutiveGoodWindows = 0;
     cfg.consecutiveBadWindows += 1;
 
-    const currentTp = safeNum(cfg.currentTpPct, safeNum(settings?.followerTpPct, 1)) || 1;
+    const paramName = cfg.lastTunedParam === 'tpPct' ? 'lagMs' : 'tpPct';
+    if (paramName === 'lagMs') {
+      const currentLag = normalizeLagMs(cfg.currentLagMs, normalizeLagMs(settings?.lagMs, 250));
+      const newLag = nextLagMs(currentLag);
+      cfg.lastLagMs = currentLag;
+      cfg.currentLagMs = newLag;
+      cfg.lastTunedParam = 'lagMs';
+      cfg.pendingEvaluationAfterChange = {
+        baseline: prevEval || metrics,
+        readyAtTrades: cfg.trades.length + evalWindowTrades,
+        changedAt: Date.now(),
+        paramName: 'lagMs',
+        from: currentLag,
+        to: newLag,
+      };
+      cfg.lastDecision = 'TUNE_LAG_MS';
+      pushLog({
+        type: 'TUNE_APPLY',
+        configKey,
+        configSummary: summarizeConfig({ ...settings, lagMs: newLag }),
+        metrics,
+        change: { paramName: 'lagMs', from: currentLag, to: newLag, step: 250 },
+        reason: `single-change rule: PF<${minProfitFactor} or Exp<${minExpectancy}`,
+      });
+      return { configKey, metrics, decision: 'TUNE_LAG_MS', changed: true, newLagMs: newLag, tuningStatus: 'pending_eval' };
+    }
+
+    const currentTp = safeNum(cfg.currentTpPct, safeNum(settings?.followerTpPct, 0.1)) || 0.1;
     const newTp = clamp(roundPct(currentTp + tpStepPct), tpMinPct, tpMaxPct);
     if (newTp === currentTp) {
       cfg.lastDecision = 'KEEP';
@@ -220,10 +268,14 @@ export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
 
     cfg.lastTpPct = currentTp;
     cfg.currentTpPct = newTp;
+    cfg.lastTunedParam = 'tpPct';
     cfg.pendingEvaluationAfterChange = {
       baseline: prevEval || metrics,
       readyAtTrades: cfg.trades.length + evalWindowTrades,
       changedAt: Date.now(),
+      paramName: 'tpPct',
+      from: currentTp,
+      to: newTp,
     };
     cfg.lastDecision = 'INCREASE_TP';
 
@@ -256,6 +308,10 @@ export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
     return {
       currentTpPct: cfg.currentTpPct,
       lastTpPct: cfg.lastTpPct,
+      currentLagMs: cfg.currentLagMs,
+      lastLagMs: cfg.lastLagMs,
+      lastTunedParam: cfg.lastTunedParam,
+      pendingEvaluationAfterChange: cfg.pendingEvaluationAfterChange,
       lastEvaluation: cfg.lastEvaluation,
       lastDecision: cfg.lastDecision,
       windowsEvaluatedCount: cfg.windowsEvaluatedCount,

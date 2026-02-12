@@ -5,6 +5,65 @@ import { useWsClient } from '../../shared/api/ws.js';
 function fmt(n, d = 3) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(d) : '—'; }
 function fmtTs(ts) { return Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : '—'; }
 function fmtPf(v) { return v === Infinity ? '∞' : fmt(v, 3); }
+function normalizeSymbol(sym) { return String(sym || '').toUpperCase().trim().replace(/[/-]/g, ''); }
+
+function SymbolCombo({ label, value, onChange, options, disabled }) {
+  const [draft, setDraft] = useState(value || '');
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlightIndex, setHighlightIndex] = useState(0);
+
+
+  const filtered = useMemo(() => {
+    const d = normalizeSymbol(draft);
+    return options.filter((s) => s.startsWith(d)).slice(0, 15);
+  }, [draft, options]);
+
+  function commit(sym) {
+    onChange(sym);
+    setDraft(sym);
+    setIsOpen(false);
+    setHighlightIndex(0);
+  }
+
+  function handleInput(raw) {
+    const next = normalizeSymbol(raw);
+    if (!next) { setDraft(''); setIsOpen(true); setHighlightIndex(0); return; }
+    if (!options.some((s) => s.startsWith(next))) return;
+    setDraft(next);
+    setIsOpen(true);
+    setHighlightIndex(0);
+    if (options.includes(next)) commit(next);
+  }
+
+  return <Form.Group className='position-relative'>
+    <Form.Label>{label}</Form.Label>
+    <Form.Control
+      value={draft}
+      disabled={disabled}
+      onFocus={() => setIsOpen(true)}
+      onBlur={() => setTimeout(() => {
+        if (!options.includes(normalizeSymbol(draft))) setDraft(value || '');
+        setIsOpen(false);
+      }, 120)}
+      onChange={(e) => handleInput(e.target.value)}
+      onKeyDown={(e) => {
+        if (!isOpen || !filtered.length) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightIndex((i) => Math.min(filtered.length - 1, i + 1)); }
+        if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightIndex((i) => Math.max(0, i - 1)); }
+        if (e.key === 'Enter') { e.preventDefault(); commit(filtered[highlightIndex] || filtered[0]); }
+      }}
+    />
+    {isOpen && filtered.length ? <div className='border rounded bg-white position-absolute w-100' style={{ zIndex: 10, maxHeight: 220, overflowY: 'auto' }}>
+      {filtered.map((s, idx) => <div
+        key={s}
+        role='button'
+        className='px-2 py-1 small'
+        style={{ background: idx === highlightIndex ? '#e9ecef' : 'transparent' }}
+        onMouseDown={(e) => { e.preventDefault(); commit(s); }}
+      >{s}</div>)}
+    </div> : null}
+  </Form.Group>;
+}
 
 export default function LeadLagPage() {
   const [state, setState] = useState({ status: 'STOPPED' });
@@ -14,7 +73,7 @@ export default function LeadLagPage() {
   const [universe, setUniverse] = useState([]);
   const [universeReady, setUniverseReady] = useState(false);
 
-  const [settings, setSettings] = useState({ leaderSymbol: 'BTCUSDT', followerSymbol: 'ETHUSDT', leaderMovePct: 1, followerTpPct: 1, followerSlPct: 1, allowShort: true, lagMs: 250 });
+  const [settings, setSettings] = useState({ leaderSymbol: 'BTCUSDT', followerSymbol: 'ETHUSDT', leaderMovePct: 0.1, followerTpPct: 0.1, followerSlPct: 0.1, allowShort: true, lagMs: 250 });
   const [autoTuneConfig, setAutoTuneConfig] = useState({ enabled: true, evalWindowTrades: 20, minTradesToStart: 10, minProfitFactor: 1, minExpectancy: 0, tpStepPct: 0.05, tpMinPct: 0.05, tpMaxPct: 0.5 });
 
   const onMessage = useMemo(() => (ev) => {
@@ -43,7 +102,7 @@ export default function LeadLagPage() {
       setState((prev) => ({ ...(prev || {}), search: payload || {} }));
     }
     if (type === 'leadlag.search.ack') setSearchActive(Boolean(payload?.active));
-    if (type === 'universe.updated') setUniverse(Array.isArray(payload?.symbols) ? payload.symbols : []);
+    if (type === 'universe.updated') setUniverse(Array.isArray(payload?.symbols) ? payload.symbols.map(normalizeSymbol) : []);
     if (type === 'leadlag.learningLog') setState((prev) => ({ ...(prev || {}), learningLog: Array.isArray(payload) ? payload : [] }));
   }, [searchActive]);
 
@@ -51,8 +110,8 @@ export default function LeadLagPage() {
 
   useEffect(() => {
     fetch('/api/universe/list').then((r) => r.json()).then((j) => {
-      const symbols = Array.isArray(j?.symbols) ? j.symbols : (Array.isArray(j) ? j.map((x) => x?.symbol || x).filter(Boolean) : []);
-      setUniverse(symbols.map((x) => String(x).trim().toUpperCase()));
+      const symbols = Array.isArray(j?.symbols) ? j.symbols : [];
+      setUniverse(symbols.map(normalizeSymbol).filter(Boolean));
       setUniverseReady(true);
     }).catch(() => { setUniverse([]); setUniverseReady(true); });
   }, []);
@@ -60,10 +119,9 @@ export default function LeadLagPage() {
   const sortedRows = useMemo(() => {
     const list = [...rows];
     const factor = sort.dir === 'asc' ? 1 : -1;
-    list.sort((a, b) => {
-      if (sort.key === 'leader' || sort.key === 'follower') return factor * String(a?.[sort.key] || '').localeCompare(String(b?.[sort.key] || ''));
-      return factor * ((Number(a?.[sort.key]) || 0) - (Number(b?.[sort.key]) || 0));
-    });
+    list.sort((a, b) => (sort.key === 'leader' || sort.key === 'follower')
+      ? factor * String(a?.[sort.key] || '').localeCompare(String(b?.[sort.key] || ''))
+      : factor * ((Number(a?.[sort.key]) || 0) - (Number(b?.[sort.key]) || 0)));
     return list;
   }, [rows, sort]);
 
@@ -74,22 +132,22 @@ export default function LeadLagPage() {
   const lastEvaluation = state?.lastEvaluation || state?.perConfigLearningState?.lastEvaluation || null;
   const decision = state?.perConfigLearningState?.lastDecision || '—';
 
-  const universeSet = useMemo(() => new Set((universe || []).map((x) => String(x).trim().toUpperCase())), [universe]);
-  function validSymbol(sym) { return universeSet.has(String(sym || '').trim().toUpperCase()); }
+  const universeSet = useMemo(() => new Set((universe || []).map(normalizeSymbol)), [universe]);
+  function validSymbol(sym) { return universeSet.has(normalizeSymbol(sym)); }
   const canValidate = universeReady && universeSet.size > 0;
   const canStart = !canValidate || (validSymbol(settings.leaderSymbol) && validSymbol(settings.followerSymbol));
+  const hasInvalidSelection = canValidate && (!settings.leaderSymbol || !settings.followerSymbol || !validSymbol(settings.leaderSymbol) || !validSymbol(settings.followerSymbol));
 
   return <div className='d-grid gap-3'>
     <Row className='g-3'>
       <Col md={4}><Card><Card.Body className='d-grid gap-2'>
         <div className='d-flex justify-content-between'><strong>LeadLag</strong><Badge bg={status === 'connected' ? 'success' : 'secondary'}>{status}</Badge></div>
-        <Form.Group><Form.Label>Leader symbol</Form.Label><Form.Control list='universe-list' value={settings.leaderSymbol} onChange={(e) => setSettings((p) => ({ ...p, leaderSymbol: String(e.target.value || '').trim().toUpperCase() }))} /></Form.Group>
-        <Form.Group><Form.Label>Follower symbol</Form.Label><Form.Control list='universe-list' value={settings.followerSymbol} onChange={(e) => setSettings((p) => ({ ...p, followerSymbol: String(e.target.value || '').trim().toUpperCase() }))} /></Form.Group>
-        <datalist id='universe-list'>{universe.map((s) => <option key={s} value={s} />)}</datalist>
-        <Form.Group><Form.Label>Leader move trigger (%)</Form.Label><Form.Control type='number' min={0} value={settings.leaderMovePct} onChange={(e) => setSettings((p) => ({ ...p, leaderMovePct: Number(e.target.value) }))} /></Form.Group>
-        <Form.Group><Form.Label>Follower TP (%)</Form.Label><Form.Control type='number' min={0} value={settings.followerTpPct} onChange={(e) => setSettings((p) => ({ ...p, followerTpPct: Number(e.target.value), tpSource: 'manual' }))} /></Form.Group>
-        <Form.Group><Form.Label>Follower SL (%)</Form.Label><Form.Control type='number' min={0} value={settings.followerSlPct} onChange={(e) => setSettings((p) => ({ ...p, followerSlPct: Number(e.target.value) }))} /></Form.Group>
-        <Form.Group><Form.Label>lagMs</Form.Label><Form.Control type='number' min={0} value={settings.lagMs} onChange={(e) => setSettings((p) => ({ ...p, lagMs: Number(e.target.value) }))} /></Form.Group>
+        <SymbolCombo key={`leader-${settings.leaderSymbol}`} label='Leader symbol' value={settings.leaderSymbol} options={universe} onChange={(leaderSymbol) => setSettings((p) => ({ ...p, leaderSymbol }))} />
+        <SymbolCombo key={`follower-${settings.followerSymbol}`} label='Follower symbol' value={settings.followerSymbol} options={universe} onChange={(followerSymbol) => setSettings((p) => ({ ...p, followerSymbol }))} />
+        <Form.Group><Form.Label>Leader move trigger (%)</Form.Label><Form.Control type='number' step='0.01' min={0} value={settings.leaderMovePct} onChange={(e) => setSettings((p) => ({ ...p, leaderMovePct: Number(e.target.value) }))} /></Form.Group>
+        <Form.Group><Form.Label>Follower TP (%)</Form.Label><Form.Control type='number' step='0.01' min={0} value={settings.followerTpPct} onChange={(e) => setSettings((p) => ({ ...p, followerTpPct: Number(e.target.value), tpSource: 'manual' }))} /></Form.Group>
+        <Form.Group><Form.Label>Follower SL (%)</Form.Label><Form.Control type='number' step='0.01' min={0} value={settings.followerSlPct} onChange={(e) => setSettings((p) => ({ ...p, followerSlPct: Number(e.target.value) }))} /></Form.Group>
+        <Form.Group><Form.Label>Lag (ms)</Form.Label><Form.Select value={settings.lagMs} onChange={(e) => setSettings((p) => ({ ...p, lagMs: Number(e.target.value) }))}><option value={250}>250</option><option value={500}>500</option><option value={750}>750</option><option value={1000}>1000</option></Form.Select></Form.Group>
         <Form.Check checked={settings.allowShort} onChange={(e) => setSettings((p) => ({ ...p, allowShort: e.target.checked }))} label='allowShort' />
         <div className='small text-muted'>Entry: ${(state?.settings?.entryUsd || 100)} · Leverage: x{state?.settings?.leverage || 10}</div>
         <div className='small text-muted'>TP source: <Badge bg={state?.settings?.tpSource === 'auto' ? 'warning' : 'secondary'}>{state?.settings?.tpSource || 'manual'}</Badge></div>
@@ -98,15 +156,16 @@ export default function LeadLagPage() {
           <Button variant='outline-danger' onClick={() => sendJson({ type: 'stopLeadLag' })}>Stop</Button>
           <Button variant='outline-secondary' onClick={() => sendJson({ type: 'resetLeadLag' })}>Reset</Button>
         </div>
-        {canValidate && !canStart ? <div className='small text-danger'>Выберите символы только из universe.</div> : null}
+        {hasInvalidSelection ? <div className='small text-danger'>Выберите символы только из universe.</div> : null}
       </Card.Body></Card></Col>
 
       <Col md={8}><Card><Card.Body>
         <div className='fw-semibold mb-2'>Trading diagnostics</div>
-        <div className='small text-muted mb-2'>Trades: {tradeStats.trades || 0} · Wins: {tradeStats.wins || 0} · Losses: {tradeStats.losses || 0} · Win rate: {fmt(tradeStats.winRate, 1)}% · PnL: {fmt(tradeStats.pnlUSDT, 3)} · Fees: {fmt(tradeStats.feesUSDT, 3)} · Funding: {fmt(tradeStats.fundingUSDT, 3)} · Проскальзывание: {fmt(tradeStats.slippageUSDT, 3)} · FeeRate maker: {fmt(tradeStats.feeRateMaker, 4)}</div>
+        <div className='small text-muted'>Trades: {tradeStats.trades || 0} · Wins: {tradeStats.wins || 0} · Losses: {tradeStats.losses || 0} · Win rate: {fmt(tradeStats.winRate, 1)}% · PnL: {fmt(tradeStats.pnlUSDT, 3)}</div>
+        <div className='small text-muted mb-2'>Fees: {fmt(tradeStats.feesUSDT, 3)} · Funding: {fmt(tradeStats.fundingUSDT, 3)} · Проскальзывание: {fmt(tradeStats.slippageUSDT, 3)} · FeeRate maker: {fmt(tradeStats.feeRateMaker, 4)}</div>
         <div className='fw-semibold'>Positions: {positions.length}/5</div>
         <Table size='sm'><thead><tr><th>Side</th><th>Entry</th><th>Qty</th><th>TP/SL</th><th>Unrealized</th><th>Age</th></tr></thead><tbody>
-          {positions.length ? positions.map((p) => <tr key={p.id}><td>{p.side}</td><td>{fmt(p.entryPrice, 4)}</td><td>{fmt(p.qty, 4)}</td><td>{fmt(p.tpPrice, 4)} / {fmt(p.slPrice, 4)}</td><td>{fmt(((state.manual?.followerPrice || 0) - p.entryPrice) * p.qty * (p.side === 'LONG' ? 1 : -1), 4)}</td><td>{fmt((Date.now() - Number(p.openedAt || Date.now())) / 1000, 0)}s</td></tr>) : <tr><td colSpan={6} className='text-muted'>No open positions</td></tr>}
+          {positions.length ? positions.map((p) => <tr key={p.id}><td>{p.side}</td><td>{fmt(p.entryPrice, 4)}</td><td>{fmt(p.qty, 4)}</td><td>{fmt(p.tpPrice, 4)} / {fmt(p.slPrice, 4)}</td><td>{fmt(((state.manual?.followerPrice || 0) - p.entryPrice) * p.qty * (p.side === 'LONG' ? 1 : -1), 4)}</td><td>{fmtTs(p.openedAt)}</td></tr>) : <tr><td colSpan={6} className='text-muted'>No open positions</td></tr>}
         </tbody></Table>
 
         <div className='fw-semibold mt-3 mb-2'>Trade events (last 20, current run)</div>
@@ -119,17 +178,16 @@ export default function LeadLagPage() {
     <Card><Card.Body>
       <div className='d-flex gap-2 mb-2'><Button onClick={() => { setSearchActive(true); sendJson({ type: 'startLeadLagSearch' }); }}>Start search</Button><Button variant='outline-danger' onClick={() => sendJson({ type: 'stopLeadLagSearch' })}>Stop search</Button><Badge bg={searchActive ? 'success' : 'secondary'}>{searchActive ? 'ACTIVE' : 'STOPPED'}</Badge></div>
       <div className='fw-semibold mb-2'>Search (top 10, sortable)</div>
-      <Table size='sm' style={{ tableLayout: 'fixed', width: '100%' }}><colgroup><col style={{ width: '20%' }} /><col style={{ width: '20%' }} /><col style={{ width: '15%' }} /><col style={{ width: '15%' }} /><col style={{ width: '30%' }} /></colgroup><thead><tr><th role='button' onClick={() => setSort((p) => ({ key: 'leader', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Leader</th><th role='button' onClick={() => setSort((p) => ({ key: 'follower', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Follower</th><th role='button' onClick={() => setSort((p) => ({ key: 'corr', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Corr</th><th role='button' onClick={() => setSort((p) => ({ key: 'lagMs', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Lag(ms)</th><th>Подтверждения</th></tr></thead><tbody>
-        {sortedRows.slice(0, 10).map((r, i) => <tr key={`${r.leader}-${r.follower}-${i}`}><td>{r.leader}</td><td>{r.follower}</td><td>{fmt(r.corr)}</td><td>{fmt(r.lagMs, 0)}</td><td>{Number(r.confirmations || 0)}</td></tr>)}
+      <div className='fw-semibold small mb-1'>Search progress</div>
+      <div className='small text-muted mb-1'>Phase 1: screening all universe pairs — {Number(state?.search?.processedPairs || 0)}/{Number(state?.search?.totalPairs || 0)}</div>
+      <div style={{ height: 8, background: '#eee', borderRadius: 4, overflow: 'hidden' }} className='mb-2'><div style={{ width: `${Math.max(0, Math.min(100, Number(state?.search?.pairsPct || 0)))}%`, height: '100%', background: '#0d6efd' }} /></div>
+      {state?.search?.phase === 'confirmations' ? <>
+        <div className='small text-muted mb-1'>Phase 2: confirmations on candidates — {Number(state?.search?.processedCandidates || 0)}/{Number(state?.search?.candidatesTotal || 0)}</div>
+        <div style={{ height: 8, background: '#eee', borderRadius: 4, overflow: 'hidden' }} className='mb-2'><div style={{ width: `${Math.max(0, Math.min(100, Number(state?.search?.candidatesPct || 0)))}%`, height: '100%', background: '#198754' }} /></div>
+      </> : null}
+      <Table size='sm' style={{ tableLayout: 'fixed', width: '100%' }}><colgroup><col style={{ width: '140px' }} /><col style={{ width: '140px' }} /><col style={{ width: '100px' }} /><col style={{ width: '100px' }} /><col style={{ width: '140px' }} /></colgroup><thead><tr><th style={{ whiteSpace: 'nowrap' }} role='button' onClick={() => setSort((p) => ({ key: 'leader', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Leader</th><th style={{ whiteSpace: 'nowrap' }} role='button' onClick={() => setSort((p) => ({ key: 'follower', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Follower</th><th style={{ whiteSpace: 'nowrap' }} role='button' onClick={() => setSort((p) => ({ key: 'corr', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Corr</th><th style={{ whiteSpace: 'nowrap' }} role='button' onClick={() => setSort((p) => ({ key: 'lagMs', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Lag(ms)</th><th style={{ whiteSpace: 'nowrap' }}>Подтверждения</th></tr></thead><tbody>
+        {sortedRows.slice(0, 10).map((r, i) => <tr key={`${r.leader}-${r.follower}-${i}`}><td style={{ whiteSpace: 'nowrap' }}>{r.leader}</td><td style={{ whiteSpace: 'nowrap' }}>{r.follower}</td><td style={{ whiteSpace: 'nowrap' }}>{fmt(r.corr)}</td><td style={{ whiteSpace: 'nowrap' }}>{fmt(r.lagMs, 0)}</td><td style={{ whiteSpace: 'nowrap' }}>{Number(r.confirmations || 0)}</td></tr>)}
       </tbody></Table>
-    </Card.Body></Card>
-
-
-    <Card><Card.Body>
-      <div className='fw-semibold mb-2'>Search progress</div>
-      <div className='small text-muted mb-1'>{state?.search?.phase === 'confirmations' ? `Phase 2: Scanning candidates for confirmations… ${Number(state?.search?.candidatesCount || 0)} candidates` : `Phase 1: Screening all universe pairs… ${Number(state?.search?.processedPairs || 0)}/${Number(state?.search?.totalPairs || 0)}`}</div>
-      <div className='small'>Processed: {Number(state?.search?.processedPairs || 0)} / {Number(state?.search?.totalPairs || 0)} ({fmt(state?.search?.pct || 0, 1)}%)</div>
-      <div style={{ height: 8, background: '#eee', borderRadius: 4, overflow: 'hidden' }}><div style={{ width: `${Math.max(0, Math.min(100, Number(state?.search?.pct || 0)))}%`, height: '100%', background: '#0d6efd' }} /></div>
     </Card.Body></Card>
 
     <Card><Card.Body>
@@ -143,7 +201,7 @@ export default function LeadLagPage() {
       <div className='d-flex align-items-center justify-content-between'>
         <div>
           <div className='fw-semibold'>Обучение (Auto-tune)</div>
-          <div className='small text-muted'>Только закрытые сделки (CLOSE), single-change rule: меняем только TP.</div>
+          <div className='small text-muted'>Только закрытые сделки (CLOSE), single-change rule: по очереди меняем TP и lagMs.</div>
         </div>
         <Badge bg={state?.tuningStatus === 'frozen' ? 'info' : state?.tuningStatus === 'pending_eval' ? 'warning' : 'secondary'}>{state?.tuningStatus || 'idle'}</Badge>
       </div>

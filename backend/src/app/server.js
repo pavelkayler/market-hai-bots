@@ -154,10 +154,22 @@ const marketBars = createMicroBarAggregator({
     broadcast({ type: "bybit.bar", payload: bar });
   },
 });
-const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 5000, minSamples: 200, impulseZ: 2.0, minImpulses: 5 });
+const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 1000, minSamples: 200, impulseZ: 2.0, minImpulses: 5 });
 let lastLeadLagTop = [];
 let leadLagSearchActive = false;
-let leadLagSearchState = { searchActive: false, phase: 'idle', totalPairs: 0, processedPairs: 0, pct: 0, candidatesCount: 0, topRows: [] };
+let leadLagSearchState = {
+  searchActive: false,
+  phase: 'idle',
+  totalPairs: 0,
+  processedPairs: 0,
+  pairsPct: 0,
+  pct: 0,
+  candidatesCount: 0,
+  processedCandidates: 0,
+  candidatesTotal: 0,
+  candidatesPct: 0,
+  topRows: [],
+};
 let leadLagSearchRunner = null;
 
 const bybit = createBybitPublicWs({
@@ -260,6 +272,10 @@ universe.start();
 
 function universeGet() {
   return universe.getUniverse({ limit: 80 }).symbols || [];
+}
+
+function getUniverseAllSymbols() {
+  return normalizeSymbols(universe.getUniverse({ limit: 2000 }).symbols || [], 2000);
 }
 
 function pickMostVolatileSymbols(limit = 100) {
@@ -385,25 +401,45 @@ function computeLeadLagTopSimple() {
   broadcast({ type: "leadlag.top", payload: leadLagSearchState });
 }
 
-function startLeadLagSearch() {
-  if (leadLagSearchRunner?.active) return;
-  const universe = bybit.getSymbols().filter((s) => String(s).endsWith('USDT'));
+function startLeadLagSearch(symbols = []) {
+  if (leadLagSearchRunner?.active) leadLagSearchRunner.active = false;
+  const searchSymbols = normalizeSymbols(symbols, 2000).filter((s) => String(s).endsWith('USDT'));
   const activePreset = presetsStore.getActivePreset();
-  const excludedCoins = Array.isArray(activePreset?.excludedCoins) ? activePreset.excludedCoins : [];
-  const totalPairs = universe.length * Math.max(0, universe.length - 1);
+  const excludedCoins = new Set((Array.isArray(activePreset?.excludedCoins) ? activePreset.excludedCoins : []).map((x) => String(x || '').toUpperCase()));
+  const universeSet = new Set(searchSymbols);
+  const totalPairs = searchSymbols.length * Math.max(0, searchSymbols.length - 1);
   const candidates = [];
   const chunkSize = 800;
+  const confirmChunkSize = 30;
   let i = 0;
   let j = 0;
   let processedPairs = 0;
+  let processedCandidates = 0;
   let lastBroadcastAt = 0;
   const runner = { active: true };
   leadLagSearchRunner = runner;
-  leadLagSearchState = { searchActive: true, phase: 'screening', totalPairs, processedPairs: 0, pct: 0, candidatesCount: 0, topRows: [] };
+  leadLagSearchState = {
+    searchActive: true,
+    phase: 'screening',
+    totalPairs,
+    processedPairs: 0,
+    pairsPct: 0,
+    pct: 0,
+    candidatesCount: 0,
+    processedCandidates: 0,
+    candidatesTotal: 0,
+    candidatesPct: 0,
+    topRows: [],
+  };
 
   function fastPass(leader, follower) {
     if (leader === follower) return false;
     if (!String(leader).endsWith('USDT') || !String(follower).endsWith('USDT')) return false;
+    if (!universeSet.has(leader) || !universeSet.has(follower)) return false;
+    const leaderBase = String(leader).replace(/USDT$/,'').replace(/^\d+/, '');
+    const followerBase = String(follower).replace(/USDT$/,'').replace(/^\d+/, '');
+    if (!leaderBase || !followerBase || leaderBase === followerBase) return false;
+    if (excludedCoins.has(leaderBase) || excludedCoins.has(followerBase)) return false;
     const lt = marketData.getTicker(leader, 'BT');
     const ft = marketData.getTicker(follower, 'BT');
     if (!lt || !ft) return false;
@@ -413,8 +449,8 @@ function startLeadLagSearch() {
     const lSpread = Number(lt.bid) > 0 && Number(lt.ask) > 0 ? ((Number(lt.ask) - Number(lt.bid)) / ((Number(lt.ask) + Number(lt.bid)) / 2)) * 100 : 0;
     const fSpread = Number(ft.bid) > 0 && Number(ft.ask) > 0 ? ((Number(ft.ask) - Number(ft.bid)) / ((Number(ft.ask) + Number(ft.bid)) / 2)) * 100 : 0;
     if (lSpread > 0.12 || fSpread > 0.12) return false;
-    if ((marketBars.getBars(leader, 200, 'BT') || []).length < 60) return false;
-    if ((marketBars.getBars(follower, 200, 'BT') || []).length < 60) return false;
+    if ((marketBars.getBars(leader, 200, 'BT') || []).length < 10) return false;
+    if ((marketBars.getBars(follower, 200, 'BT') || []).length < 10) return false;
     return true;
   }
 
@@ -422,43 +458,80 @@ function startLeadLagSearch() {
     const nowTs = Date.now();
     if (!force && nowTs - lastBroadcastAt < 300) return;
     lastBroadcastAt = nowTs;
-    leadLagSearchState = { ...leadLagSearchState, processedPairs, pct: totalPairs > 0 ? Math.min(100, (processedPairs / totalPairs) * 100) : 0, candidatesCount: candidates.length };
+    leadLagSearchState = {
+      ...leadLagSearchState,
+      processedPairs,
+      pairsPct: totalPairs > 0 ? Math.min(100, (processedPairs / totalPairs) * 100) : 0,
+      pct: totalPairs > 0 ? Math.min(100, (processedPairs / totalPairs) * 100) : 0,
+      candidatesCount: candidates.length,
+      processedCandidates,
+      candidatesTotal: candidates.length,
+      candidatesPct: candidates.length > 0 ? Math.min(100, (processedCandidates / candidates.length) * 100) : (leadLagSearchState.phase === 'confirmations' ? 100 : 0),
+    };
     broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
   }
 
   function phase2() {
     if (!runner.active) return;
-    leadLagSearchState = { ...leadLagSearchState, phase: 'confirmations', candidatesCount: candidates.length };
+    leadLagSearchState = {
+      ...leadLagSearchState,
+      phase: 'confirmations',
+      candidatesCount: candidates.length,
+      candidatesTotal: candidates.length,
+      processedCandidates: 0,
+      candidatesPct: candidates.length > 0 ? 0 : 100,
+      pairsPct: 100,
+      pct: 100,
+    };
     const rows = [];
-    for (const { leader, follower } of candidates) {
-      const pairRows = leadLag.computeTop({ leaders: [leader], symbols: [leader, follower], getBars: (sym, n) => marketBars.getBars(sym, n, 'BT'), topN: 1, windowBars: 480, params: activePreset?.params || {} });
-      const row = pairRows[0];
-      if (!row || Number(row.lagMs) < 0) continue;
-      const readiness = evaluateTradeReady({ row, preset: activePreset, excludedCoins, lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0, getBars: (sym, n, source) => marketBars.getBars(sym, n, source), bucketMs: 250 });
-      rows.push({ ...row, leaderSrc: 'bybit', followerSrc: 'bybit', source: 'BT', tradeReady: readiness.tradeReady, blockers: readiness.blockers });
+    let candidateIndex = 0;
+
+    function tickConfirmations() {
+      if (!runner.active) return;
+      let done = 0;
+      while (done < confirmChunkSize && candidateIndex < candidates.length) {
+        const { leader, follower } = candidates[candidateIndex];
+        candidateIndex += 1;
+        processedCandidates += 1;
+        done += 1;
+        const pairRows = leadLag.computeTop({ leaders: [leader], symbols: [leader, follower], getBars: (sym, n) => marketBars.getBars(sym, n, 'BT'), topN: 1, windowBars: 480, params: activePreset?.params || {} });
+        const row = pairRows[0];
+        if (!row || Number(row.lagMs) < 0) continue;
+        const readiness = evaluateTradeReady({ row, preset: activePreset, excludedCoins: Array.from(excludedCoins), lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0, getBars: (sym, n, source) => marketBars.getBars(sym, n, source), bucketMs: 250 });
+        rows.push({ ...row, leaderSrc: 'bybit', followerSrc: 'bybit', source: 'BT', tradeReady: readiness.tradeReady, blockers: readiness.blockers });
+      }
+      rows.sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0) || Math.abs(Number(b.corr || 0)) - Math.abs(Number(a.corr || 0)));
+      lastLeadLagTop = rows.slice(0, 10);
+      leadLagSearchState = { ...leadLagSearchState, topRows: lastLeadLagTop };
+      paperTest.setSearchRows?.(lastLeadLagTop);
+      maybeBroadcast();
+
+      if (candidateIndex >= candidates.length) {
+        leadLagSearchState = { ...leadLagSearchState, pairsPct: 100, pct: 100, candidatesPct: 100, processedCandidates: candidates.length, candidatesTotal: candidates.length };
+        maybeBroadcast(true);
+        return;
+      }
+      setImmediate(tickConfirmations);
     }
-    rows.sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0) || Math.abs(Number(b.corr || 0)) - Math.abs(Number(a.corr || 0)));
-    lastLeadLagTop = rows.slice(0, 10);
-    leadLagSearchState = { ...leadLagSearchState, topRows: lastLeadLagTop, pct: 100 };
-    paperTest.setSearchRows?.(lastLeadLagTop);
-    maybeBroadcast(true);
+
+    setImmediate(tickConfirmations);
   }
 
   function tickScreening() {
     if (!runner.active) return;
     let done = 0;
-    while (done < chunkSize && i < universe.length) {
-      const leader = universe[i];
-      const follower = universe[j];
+    while (done < chunkSize && i < searchSymbols.length) {
+      const leader = searchSymbols[i];
+      const follower = searchSymbols[j];
       j += 1;
-      if (j >= universe.length) { i += 1; j = 0; }
+      if (j >= searchSymbols.length) { i += 1; j = 0; }
       if (!leader || !follower || leader === follower) { processedPairs += 1; done += 1; continue; }
       processedPairs += 1;
       done += 1;
       if (fastPass(leader, follower)) candidates.push({ leader, follower });
     }
     maybeBroadcast();
-    if (i >= universe.length) {
+    if (i >= searchSymbols.length) {
       phase2();
       return;
     }
@@ -471,7 +544,9 @@ function startLeadLagSearch() {
 function stopLeadLagSearch() {
   if (leadLagSearchRunner) leadLagSearchRunner.active = false;
   leadLagSearchRunner = null;
+  leadLagSearchActive = false;
   leadLagSearchState = { ...leadLagSearchState, searchActive: false, phase: 'idle' };
+  broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
 }
 
 setInterval(() => {
@@ -527,7 +602,10 @@ app.get("/api/leadlag/state", async () => paperTest.getState());
 app.get("/api/range/state", async () => rangeTest.getState());
 app.get("/api/impulse/state", async () => impulseBot.getState());
 app.get("/api/universe/status", async () => universe.getStatus());
-app.get("/api/universe/list", async () => ({ symbols: universe.getUniverse({ limit: 200 }).symbols }));
+app.get("/api/universe/list", async () => {
+  const u = universe.getUniverse({ limit: 2000 }) || {};
+  return { symbols: u.symbols || [], updatedAt: u.updatedAt || null };
+});
 app.get("/api/universe", async () => universe.getUniverse({ limit: 300 }));
 app.post("/api/universe/refresh", async () => { await universe.refresh(); return universe.getStatus(); });
 app.get("/api/trade/status", async () => ({ tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
@@ -785,10 +863,14 @@ app.get("/ws", { websocket: true }, (conn) => {
 
 
     if (msg.type === "startLeadLagSearch") {
-      const universe = normalizeSymbols(msg.symbols || universeGet(), 300);
-      subscriptions.requestFeed("leadlag-search", { bybitSymbols: universe, streams: ["ticker"] });
+      const symbols = msg.symbols ? normalizeSymbols(msg.symbols, 2000) : getUniverseAllSymbols();
+      if (!symbols.length) {
+        safeSend(ws, { type: "leadlag.search.ack", payload: { ok: false, active: false, reason: 'UNIVERSE_EMPTY' } });
+        return;
+      }
+      subscriptions.requestFeed("leadlag-search", { bybitSymbols: symbols, streams: ["ticker"] });
       leadLagSearchActive = true;
-      startLeadLagSearch();
+      startLeadLagSearch(symbols);
       safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: true } });
       return;
     }

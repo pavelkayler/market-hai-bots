@@ -29,7 +29,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     autoTuneEnabled: true,
     pendingSignal: null, positions: [],
     stats: { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0, feesUSDT: 0, fundingUSDT: 0, slippageUSDT: 0, feeRateMaker: 0.0002 },
-    manual: { enabled: false, leaderSymbol: null, followerSymbol: null, leaderMovePct: 1, followerTpPct: 1, followerSlPct: 1, allowShort: true, lagMs: 250, leaderBaseline: null, leaderPrice: null, followerPrice: null, leaderMovePctNow: 0, lastNoEntryReason: null },
+    manual: { enabled: false, leaderSymbol: null, followerSymbol: null, leaderMovePct: 0.1, followerTpPct: 0.1, followerSlPct: 0.1, allowShort: true, lagMs: 250, leaderBaseline: null, leaderPrice: null, followerPrice: null, leaderMovePctNow: 0, lastNoEntryReason: null },
     currentRunKey: null, currentTradeEvents: [], runHistory: {},
     currentConfigKey: null,
     lastEvaluation: null,
@@ -109,14 +109,24 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     if (tuneResult?.metrics) state.lastEvaluation = tuneResult.metrics;
     if (tuneResult?.configKey) state.currentConfigKey = tuneResult.configKey;
     state.tuningStatus = perConfigState?.tuningStatus || tuneResult?.tuningStatus || 'idle';
-    if (tuneResult?.changed && Number.isFinite(Number(tuneResult?.newTpPct))) {
-      state.settings = {
-        ...(state.settings || {}),
-        followerTpPct: Number(tuneResult.newTpPct),
-        tpSource: 'auto',
-        lastAutoTuneAt: now(),
-      };
-      state.manual = { ...(state.manual || {}), followerTpPct: state.settings.followerTpPct };
+    if (tuneResult?.changed) {
+      if (Number.isFinite(Number(tuneResult?.newTpPct))) {
+        state.settings = {
+          ...(state.settings || {}),
+          followerTpPct: Number(tuneResult.newTpPct),
+          tpSource: 'auto',
+          lastAutoTuneAt: now(),
+        };
+        state.manual = { ...(state.manual || {}), followerTpPct: state.settings.followerTpPct };
+      }
+      if (Number.isFinite(Number(tuneResult?.newLagMs))) {
+        state.settings = {
+          ...(state.settings || {}),
+          lagMs: Number(tuneResult.newLagMs),
+          lastAutoTuneAt: now(),
+        };
+        state.manual = { ...(state.manual || {}), lagMs: state.settings.lagMs };
+      }
       emitLeadLag('leadlag.settingsUpdated', { settings: state.settings, reason: tuneResult?.decision || 'AUTO_TUNE' });
     }
     return true;
@@ -173,14 +183,19 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
   const timer = setInterval(() => { try { step(); } catch (e) { logger?.warn?.({ err: e }, 'leadlag paper step failed'); } }, tickMs);
 
   function normalizeSettings(settings) {
+    const allowedLagMs = [250, 500, 750, 1000];
+    const lagIn = Math.trunc(safeNum(settings?.lagMs, 250));
+    const lagMs = allowedLagMs.includes(lagIn)
+      ? lagIn
+      : allowedLagMs.reduce((best, val) => (Math.abs(val - lagIn) < Math.abs(best - lagIn) ? val : best), 250);
     return {
       leaderSymbol: String(settings?.leaderSymbol || 'BTCUSDT').toUpperCase(),
       followerSymbol: String(settings?.followerSymbol || 'ETHUSDT').toUpperCase(),
-      leaderMovePct: Math.max(0.01, safeNum(settings?.leaderMovePct, 1)),
-      followerTpPct: Math.max(0.01, safeNum(settings?.followerTpPct, 1)),
-      followerSlPct: Math.max(0.01, safeNum(settings?.followerSlPct, 1)),
+      leaderMovePct: Math.max(0.01, safeNum(settings?.leaderMovePct, 0.1)),
+      followerTpPct: Math.max(0.01, safeNum(settings?.followerTpPct, 0.1)),
+      followerSlPct: Math.max(0.01, safeNum(settings?.followerSlPct, 0.1)),
       allowShort: settings?.allowShort !== false,
-      lagMs: Math.max(0, Math.trunc(safeNum(settings?.lagMs, 250))),
+      lagMs,
       entryUsd: ENTRY_USD,
       leverage: LEVERAGE,
       tpSource: settings?.tpSource === 'auto' ? 'auto' : 'manual',
