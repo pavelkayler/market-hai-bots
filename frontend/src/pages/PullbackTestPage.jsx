@@ -38,8 +38,8 @@ export default function PullbackTestPage() {
 
   const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
 
-  const showAck = (nextAck) => {
-    setAck(nextAck);
+  const showAck = (variant, text) => {
+    setAck({ variant, text });
     if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
     ackTimerRef.current = setTimeout(() => setAck(null), 2000);
   };
@@ -75,13 +75,14 @@ export default function PullbackTestPage() {
         setTrades([...(msg.payload?.trades || [])].reverse());
       }
 
-      if (msg.type === "pullback.start.ack" || msg.type === "pullback.stop.ack") {
-        const ok = Boolean(msg.payload?.ok);
-        const action = msg.type.includes("start") ? "Start" : "Stop";
-        showAck({
-          ok,
-          text: ok ? `${action} acknowledged (${msg.payload?.mode || "n/a"})` : `${action} failed: ${msg.payload?.error || "unknown error"}`,
-        });
+      if (msg.type === "pullback.start.ack") {
+        if (msg.payload?.ok) showAck("success", "Тест запущен");
+        else showAck("danger", msg.payload?.error || "Start failed");
+      }
+
+      if (msg.type === "pullback.stop.ack") {
+        if (msg.payload?.ok) showAck("success", "Тест остановлен");
+        else showAck("danger", msg.payload?.error || "Stop failed");
       }
 
       if (msg.type === "pullback.log") setLogs((prev) => [msg.payload, ...prev].slice(0, 300));
@@ -98,15 +99,16 @@ export default function PullbackTestPage() {
   const stop = () => wsRef.current?.send(JSON.stringify({ type: "stopPullbackTest" }));
   const refresh = () => wsRef.current?.send(JSON.stringify({ type: "getPullbackState" }));
 
-  const pullbackStatus = pb?.status || "STOPPED";
-  const startDisabled = wsStatus !== "connected" || ["RUNNING", "STARTING"].includes(pullbackStatus);
-  const stopDisabled = wsStatus !== "connected" || !pb || ["STOPPED", "STOPPING"].includes(pullbackStatus);
+  const wsConnected = wsStatus === "connected";
+  const status = pb?.status || "STOPPED";
+  const startDisabled = !wsConnected || status === "RUNNING" || status === "STARTING";
+  const stopDisabled = !wsConnected || status === "STOPPED" || status === "STOPPING";
 
   return <Row className="g-3">
     <Col md={4}>
       <Card><Card.Body className="d-grid gap-2">
         <div className="d-flex justify-content-between"><strong>Pullback</strong><Badge bg={wsBadgeVariant(wsStatus)}>{wsStatus}</Badge></div>
-        <div className="d-flex justify-content-between"><span>Status</span><Badge bg={pb?.status === "RUNNING" ? "success" : pb?.status === "STARTING" || pb?.status === "STOPPING" ? "warning" : "secondary"}>{pullbackStatus}</Badge></div>
+        <div className="d-flex justify-content-between"><span>Status</span><Badge bg={pb?.status === "RUNNING" ? "success" : pb?.status === "STARTING" || pb?.status === "STOPPING" ? "warning" : "secondary"}>{status}</Badge></div>
         <Form.Select value={mode} onChange={(e) => setMode(e.target.value)}>
           <option value="paper">paper</option>
           <option value="demo">demo</option>
@@ -114,24 +116,25 @@ export default function PullbackTestPage() {
         {mode === "demo" && !tradeStatus?.enabled ? <Alert variant="danger" className="mb-0 py-2">Demo disabled: missing BYBIT keys.</Alert> : null}
         <div className="small">trade: {tradeStatus?.enabled ? "enabled" : "disabled"} | base: {tradeStatus?.baseUrl || "—"}</div>
         {(warnings || []).map((w, i) => <Alert key={i} variant={w.severity === "error" ? "danger" : "warning"} className="mb-0 py-2">{w.code}: {w.message}</Alert>)}
-        {ack ? <Alert variant={ack.ok ? "success" : "danger"} className="mb-0 py-2">{ack.text}</Alert> : null}
+        {ack ? <Alert variant={ack.variant} className="mb-0 py-2">{ack.text}</Alert> : null}
         <div className="d-flex gap-2">
           <Button onClick={start} disabled={startDisabled}>Start</Button>
           <Button variant="outline-danger" onClick={stop} disabled={stopDisabled}>Stop</Button>
-          <Button variant="outline-secondary" onClick={refresh} disabled={wsStatus !== "connected"}>Refresh state</Button>
+          <Button variant="outline-secondary" onClick={refresh} disabled={!wsConnected}>Refresh</Button>
         </div>
       </Card.Body></Card>
     </Col>
     <Col md={8}>
       <Card className="mb-3"><Card.Body>
         <strong>Trades</strong>
-        <Table size="sm"><thead><tr><th style={{ width: "24%" }}>t</th><th>sym</th><th>side</th><th className="text-end" style={{ width: "20%" }}>pnl</th></tr></thead><tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-          {trades.slice(0, 50).map((t, i) => <tr key={i}><td>{fmtTs(t.tClose || t.t)}</td><td>{t.symbol}</td><td>{t.side}</td><td className="text-end">{fmtNum(t.pnlUSDT, 4)}</td></tr>)}
+        <Table size="sm"><thead><tr><th style={{ width: "24%" }}>t</th><th>sym</th><th>side</th><th className="text-end" style={{ width: "20%" }}>price</th><th className="text-end" style={{ width: "20%" }}>pnl</th></tr></thead><tbody>
+          {trades.slice(0, 50).map((t, i) => <tr key={i}><td>{fmtTs(t.tClose || t.t)}</td><td>{t.symbol}</td><td>{t.side}</td><td className="text-end font-monospace">{fmtNum(t.price || t.entryPrice)}</td><td className="text-end font-monospace">{fmtNum(t.pnlUSDT, 4)}</td></tr>)}
         </tbody></Table>
       </Card.Body></Card>
-      <Card><Card.Body><strong>Logs (newest first)</strong>
+      <Card><Card.Body>
+        <div className="d-flex justify-content-between align-items-center mb-2"><strong>Logs (newest first)</strong><span className="text-muted">{logs.length}</span></div>
         <div style={{ minHeight: 220, maxHeight: 420, overflow: "auto", resize: "vertical", border: "1px solid #e5e7eb", borderRadius: 6, padding: 8, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace", fontSize: 12 }}>
-          {logs.map((l, i) => <div key={i}><span className="text-muted">[{fmtTs(l.ts || l.t)}] {l.level ? `${String(l.level).toUpperCase()} ` : ""}</span>{l.msg || "—"}</div>)}
+          {logs.map((l, i) => <div key={i}>[{fmtTs(l.ts || l.t)}] {l.msg || "—"}</div>)}
         </div>
       </Card.Body></Card>
     </Col>
