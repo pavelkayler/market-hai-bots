@@ -1,7 +1,7 @@
 // frontend/src/pages/BybitPage.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, Col, Form, Row, Table } from "react-bootstrap";
-import { formatPriceWithSource, sourceTag } from "../priceFormat.js";
+import { sourceTag } from "../priceFormat.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
@@ -18,8 +18,9 @@ function toWsUrl(apiBase) {
 function toSymbolList(text) {
   return text
     .split(",")
-    .map((s) => s.trim().toUpperCase().replace("/", "").replace("-", ""))
-    .filter(Boolean);
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => s && !s.includes("-"))
+    .map((s) => s.replaceAll("/", ""));
 }
 
 function statusVariant(s) {
@@ -32,6 +33,22 @@ function tickerKey(source, symbol) {
   return `${sourceTag(source)}:${String(symbol || "").toUpperCase()}`;
 }
 
+function displayPrice(ticker) {
+  const px = ticker?.mid ?? ticker?.last;
+  if (!Number.isFinite(px)) return "—";
+  return `${px}`;
+}
+
+function eventType(msg) {
+  if (msg?.type === "event" && typeof msg.topic === "string") return msg.topic;
+  return msg?.type;
+}
+
+function eventPayload(msg) {
+  if (msg?.type === "event") return msg.payload;
+  return msg?.payload;
+}
+
 export default function BybitPage() {
   const wsRef = useRef(null);
   const pendingTickersRef = useRef(new Map());
@@ -40,28 +57,23 @@ export default function BybitPage() {
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [bybitStatus, setBybitStatus] = useState({ status: "unknown" });
   const [binanceStatus, setBinanceStatus] = useState({ status: "unknown" });
-
   const [symbols, setSymbols] = useState(["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
   const [symbolsInput, setSymbolsInput] = useState("BTCUSDT,ETHUSDT,SOLUSDT");
   const [selected, setSelected] = useState("BTCUSDT");
-
-  useEffect(() => { selectedRef.current = selected; }, [selected]);
-
   const [marketTickers, setMarketTickers] = useState({});
-
-  const [lastBybitBars, setLastBybitBars] = useState({});
-  const [lastBinanceBars, setLastBinanceBars] = useState({});
-  const [barsSource, setBarsSource] = useState("bybit");
+  const [barsSource, setBarsSource] = useState("BT");
   const [bars, setBars] = useState([]);
-
   const [leadLagTop, setLeadLagTop] = useState([]);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
 
   useEffect(() => {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-    setWsStatus("connecting");
 
     const flushTimer = setInterval(() => {
       if (!pendingTickersRef.current.size) return;
@@ -83,29 +95,29 @@ export default function BybitPage() {
         return;
       }
 
-      if (msg.type === "snapshot") {
-        const p = msg.payload || {};
+      const type = eventType(msg);
+      const payload = eventPayload(msg);
+
+      if (type === "snapshot") {
+        const p = payload || {};
         if (p.bybit) setBybitStatus(p.bybit);
         if (p.binance) setBinanceStatus(p.binance);
-
         if (Array.isArray(p.symbols)) {
           setSymbols(p.symbols);
           setSymbolsInput(p.symbols.join(","));
           if (!p.symbols.includes(selectedRef.current)) setSelected(p.symbols[0] || "BTCUSDT");
         }
-
         if (Array.isArray(p.marketTickers)) {
           const merged = {};
           for (const t of p.marketTickers) merged[tickerKey(t?.source, t?.symbol)] = t;
           setMarketTickers(merged);
         }
-
         if (Array.isArray(p.leadLagTop)) setLeadLagTop(p.leadLagTop);
         return;
       }
 
-      if (msg.type === "market.snapshot") {
-        const arr = msg.payload?.tickers;
+      if (type === "market.snapshot") {
+        const arr = payload?.tickers;
         if (!Array.isArray(arr)) return;
         const merged = {};
         for (const t of arr) merged[tickerKey(t?.source, t?.symbol)] = t;
@@ -113,153 +125,195 @@ export default function BybitPage() {
         return;
       }
 
-      if (msg.type === "market.ticker") {
-        const t = msg.payload;
+      if (type === "market.ticker") {
+        const t = payload;
         if (!t?.symbol) return;
         pendingTickersRef.current.set(tickerKey(t?.source, t?.symbol), t);
         return;
       }
 
-      if (msg.type === "bybit.status") return setBybitStatus(msg.payload || { status: "unknown" });
-      if (msg.type === "binance.status") return setBinanceStatus(msg.payload || { status: "unknown" });
+      if (type === "bybit.status") return setBybitStatus(payload || { status: "unknown" });
+      if (type === "binance.status") return setBinanceStatus(payload || { status: "unknown" });
 
-      if (msg.type === "bybit.bar") {
-        const b = msg.payload;
-        if (b?.symbol) setLastBybitBars((prev) => ({ ...prev, [b.symbol]: b }));
-        return;
-      }
-
-      if (msg.type === "binance.bar") {
-        const b = msg.payload;
-        if (b?.symbol) setLastBinanceBars((prev) => ({ ...prev, [b.symbol]: b }));
-        return;
-      }
-
-      if (msg.type === "bars") {
-        const p = msg.payload || {};
+      if (type === "bars") {
+        const p = payload || {};
         if (typeof p.source === "string") setBarsSource(p.source);
         if (Array.isArray(p.bars)) setBars(p.bars);
         return;
       }
 
-      if (msg.type === "leadlag.top" && Array.isArray(msg.payload)) {
-        setLeadLagTop(msg.payload);
-        return;
+      if (type === "leadlag.top") {
+        if (Array.isArray(payload)) {
+          setLeadLagTop(payload);
+          return;
+        }
+        if (Array.isArray(payload?.rows)) {
+          setLeadLagTop(payload.rows);
+        }
       }
 
-      if (msg.type === "setSymbols.ack") {
-        const next = msg.payload?.symbols;
-        if (Array.isArray(next)) {
-          setSymbols(next);
-          setSymbolsInput(next.join(","));
-          if (!next.includes(selectedRef.current)) setSelected(next[0] || "BTCUSDT");
-        }
+      if (type === "setSymbols.ack") {
+        const next = payload?.symbols;
+        if (!Array.isArray(next)) return;
+        setSymbols(next);
+        setSymbolsInput(next.join(","));
+        if (!next.includes(selectedRef.current)) setSelected(next[0] || "BTCUSDT");
       }
     };
 
     return () => {
       clearInterval(flushTimer);
-      try { ws.close(); } catch { /* ignore */ }
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
     };
   }, [wsUrl]);
-
-  const selectedBybit = useMemo(() => marketTickers[tickerKey("BT", selected)] || null, [marketTickers, selected]);
-  const selectedBinance = useMemo(() => marketTickers[tickerKey("BNB", selected)] || null, [marketTickers, selected]);
 
   const onApplySymbols = () => {
     const next = toSymbolList(symbolsInput).slice(0, 100);
     if (!next.length) return;
-    try { wsRef.current?.send(JSON.stringify({ type: "setSymbols", symbols: next })); } catch { /* ignore */ }
+    try {
+      wsRef.current?.send(JSON.stringify({ type: "setSymbols", symbols: next }));
+    } catch {
+      // ignore
+    }
   };
 
   const refreshSnapshot = () => {
-    try { wsRef.current?.send(JSON.stringify({ type: "getSnapshot" })); } catch { /* ignore */ }
+    try {
+      wsRef.current?.send(JSON.stringify({ type: "getSnapshot" }));
+    } catch {
+      // ignore
+    }
   };
+
   const fetchBars = (source) => {
-    try { wsRef.current?.send(JSON.stringify({ type: "getBars", symbol: selected, n: 200, source })); } catch { /* ignore */ }
+    const symbol = selectedRef.current || "BTCUSDT";
+    try {
+      wsRef.current?.send(JSON.stringify({ type: "getBars", symbol, n: 200, source }));
+    } catch {
+      // ignore
+    }
   };
+
   const fetchLeadLag = () => {
-    try { wsRef.current?.send(JSON.stringify({ type: "getLeadLagTop", n: 10 })); } catch { /* ignore */ }
+    try {
+      wsRef.current?.send(JSON.stringify({ type: "getLeadLagTop", n: 10 }));
+    } catch {
+      // ignore
+    }
   };
+
+  const priceRows = useMemo(() => {
+    const rows = [];
+    for (const t of Object.values(marketTickers)) {
+      if (!t?.symbol || !t?.source) continue;
+      rows.push(t);
+    }
+    rows.sort((a, b) => {
+      const sym = String(a.symbol).localeCompare(String(b.symbol));
+      if (sym !== 0) return sym;
+      return sourceTag(a.source).localeCompare(sourceTag(b.source));
+    });
+    return rows;
+  }, [marketTickers]);
 
   return (
     <Row className="g-3">
-      <Col md={5}><Card><Card.Body>
-        <div className="d-flex align-items-center justify-content-between mb-3">
-          <div className="d-flex align-items-center gap-2"><div className="fw-semibold">Backend WS</div>
-            <Badge bg={wsStatus === "connected" ? "success" : wsStatus === "connecting" ? "warning" : "secondary"}>{wsStatus}</Badge></div>
-          <div className="d-flex align-items-center gap-3">
-            <div className="d-flex align-items-center gap-2"><div className="fw-semibold">Bybit</div><Badge bg={statusVariant(bybitStatus?.status)}>{bybitStatus?.status || "unknown"}</Badge></div>
-            <div className="d-flex align-items-center gap-2"><div className="fw-semibold">Binance</div><Badge bg={statusVariant(binanceStatus?.status)}>{binanceStatus?.status || "unknown"}</Badge></div>
-          </div>
-        </div>
+      <Col md={4}>
+        <Card>
+          <Card.Body>
+            <div className="d-flex flex-wrap gap-2 mb-3">
+              <Badge bg={statusVariant(wsStatus)}>WS: {wsStatus}</Badge>
+              <Badge bg={statusVariant(bybitStatus?.status)}>Bybit: {bybitStatus?.status || "unknown"}</Badge>
+              <Badge bg={statusVariant(binanceStatus?.status)}>Binance: {binanceStatus?.status || "unknown"}</Badge>
+            </div>
 
-        <Form.Group className="mb-2"><Form.Label className="fw-semibold">Symbols (comma-separated)</Form.Label>
-          <Form.Control value={symbolsInput} onChange={(e) => setSymbolsInput(e.target.value)} placeholder="BTCUSDT,ETHUSDT,SOLUSDT" />
-          <Form.Text muted>До 100 символов.</Form.Text>
-        </Form.Group>
+            <Form.Group className="mb-3">
+              <Form.Label className="fw-semibold">Symbols (comma-separated)</Form.Label>
+              <Form.Control
+                value={symbolsInput}
+                onChange={(e) => setSymbolsInput(e.target.value)}
+                placeholder="BTCUSDT,ETHUSDT,SOLUSDT"
+              />
+              <Form.Text className="text-muted">До 100 символов, / удаляется, символы с '-' игнорируются.</Form.Text>
+            </Form.Group>
 
-        <div className="d-flex flex-wrap gap-2">
-          <Button variant="primary" onClick={onApplySymbols} disabled={wsStatus !== "connected"}>Apply</Button>
-          <Button variant="outline-secondary" onClick={refreshSnapshot} disabled={wsStatus !== "connected"}>Refresh snapshot</Button>
-          <Button variant="outline-primary" onClick={() => fetchBars("bybit")} disabled={wsStatus !== "connected"}>Fetch bars (BT)</Button>
-          <Button variant="outline-primary" onClick={() => fetchBars("binance")} disabled={wsStatus !== "connected"}>Fetch bars (BNB)</Button>
-          <Button variant="outline-success" onClick={fetchLeadLag} disabled={wsStatus !== "connected"}>Fetch lead-lag</Button>
-        </div>
+            <div className="d-flex flex-wrap gap-2 mb-3">
+              <Button variant="primary" onClick={onApplySymbols} disabled={wsStatus !== "connected"}>Apply</Button>
+              <Button variant="outline-secondary" onClick={refreshSnapshot} disabled={wsStatus !== "connected"}>Refresh snapshot</Button>
+              <Button variant="outline-primary" onClick={() => fetchBars("bybit")} disabled={wsStatus !== "connected"}>Fetch bars (BT)</Button>
+              <Button variant="outline-primary" onClick={() => fetchBars("binance")} disabled={wsStatus !== "connected"}>Fetch bars (BNB)</Button>
+              <Button variant="outline-success" onClick={fetchLeadLag} disabled={wsStatus !== "connected"}>Fetch lead-lag</Button>
+            </div>
 
-        <hr />
-        <Form.Group><Form.Label className="fw-semibold">Selected symbol</Form.Label>
-          <Form.Select value={selected} onChange={(e) => setSelected(e.target.value)}>{symbols.map((s) => <option key={s} value={s}>{s}</option>)}</Form.Select>
-        </Form.Group>
+            <Form.Group>
+              <Form.Label className="fw-semibold">Selected symbol</Form.Label>
+              <Form.Select value={selected} onChange={(e) => setSelected(e.target.value)}>
+                {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
+              </Form.Select>
+            </Form.Group>
 
-        <div className="mt-3"><div className="fw-semibold mb-2">Prices</div>
-          <div style={{ maxHeight: 260, overflow: "auto" }}>
-            <Table bordered size="sm" responsive className="m-0"><thead><tr><th>Symbol</th><th>BT</th><th>BNB</th></tr></thead>
-              <tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-                {symbols.map((s) => (
-                  <tr key={s} className={s === selected ? "table-active" : ""}><td>{s}</td>
-                    <td>{formatPriceWithSource(marketTickers[tickerKey("BT", s)])}</td>
-                    <td>{formatPriceWithSource(marketTickers[tickerKey("BNB", s)])}</td>
+            <hr />
+            <div className="fw-semibold mb-2">Bars ({barsSource}, last {bars.length})</div>
+            <div style={{ maxHeight: 200, overflow: "auto", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+              <pre className="m-0">{JSON.stringify(bars.slice(-20), null, 2)}</pre>
+            </div>
+          </Card.Body>
+        </Card>
+      </Col>
+
+      <Col md={8}>
+        <Card className="mb-3">
+          <Card.Body>
+            <div className="fw-semibold mb-2">Цены</div>
+            <div style={{ maxHeight: 320, overflow: "auto" }}>
+              <Table bordered size="sm" responsive className="m-0">
+                <thead>
+                  <tr><th>Symbol</th><th>Price</th><th>Source</th></tr>
+                </thead>
+                <tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+                  {priceRows.map((t) => (
+                    <tr key={tickerKey(t.source, t.symbol)} className={selected === t.symbol ? "table-active" : ""}>
+                      <td>{t.symbol}</td>
+                      <td>{displayPrice(t)} ({sourceTag(t.source)})</td>
+                      <td>{sourceTag(t.source)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            </div>
+          </Card.Body>
+        </Card>
+
+        <Card>
+          <Card.Body>
+            <div className="fw-semibold mb-2">Лид-лаг TOP-10 (BNB)</div>
+            <Table bordered size="sm" responsive className="m-0">
+              <thead>
+                <tr>
+                  <th>Leader</th><th>Follower</th><th>Corr (Корреляция)</th><th>Lag (Δt)</th><th>Подтверждение</th>
+                </tr>
+              </thead>
+              <tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+                {leadLagTop.length ? leadLagTop.slice(0, 10).map((r, idx) => (
+                  <tr key={`${r.leader}-${r.follower}-${idx}`}>
+                    <td>{r.leader} ({sourceTag(r.source)})</td>
+                    <td>{r.follower} ({sourceTag(r.source)})</td>
+                    <td>{Number.isFinite(r.corr) ? r.corr.toFixed(3) : "—"}</td>
+                    <td>{Number.isFinite(r.lagMs) ? `${r.lagMs}ms` : "—"}</td>
+                    <td>{r.confirmed ? "✅" : "—"} <span className="text-muted">({r.samples ?? 0}/{r.impulses ?? 0})</span></td>
                   </tr>
-                ))}
-              </tbody></Table>
-          </div>
-        </div>
-      </Card.Body></Card></Col>
-
-      <Col md={7}><Card><Card.Body>
-        <div className="d-flex align-items-center justify-content-between mb-3">
-          <div className="fw-semibold">Ticker: {selected}</div>
-          <div className="text-muted" style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-            {selectedBybit?.ts ? `BT ${new Date(selectedBybit.ts).toLocaleTimeString()}` : "BT —"}  |  {selectedBinance?.ts ? `BNB ${new Date(selectedBinance.ts).toLocaleTimeString()}` : "BNB —"}
-          </div>
-        </div>
-
-        <Row className="g-3">
-          <Col md={6}><Table bordered size="sm" responsive><tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-            <tr><td>price</td><td>{formatPriceWithSource(selectedBybit)}</td></tr><tr><td>bid/ask/mid</td><td>{selectedBybit ? `${selectedBybit.bid ?? "—"}/${selectedBybit.ask ?? "—"}/${selectedBybit.mid ?? "—"}` : "—"}</td></tr>
-          </tbody></Table></Col>
-          <Col md={6}><Table bordered size="sm" responsive><tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-            <tr><td>price</td><td>{formatPriceWithSource(selectedBinance)}</td></tr><tr><td>bid/ask/mid</td><td>{selectedBinance ? `${selectedBinance.bid ?? "—"}/${selectedBinance.ask ?? "—"}/${selectedBinance.mid ?? "—"}` : "—"}</td></tr>
-          </tbody></Table></Col>
-        </Row>
-
-        <hr /><div className="fw-semibold mb-2">Latest 250ms bar</div>
-        <Row className="g-3"><Col md={6}><div className="text-muted mb-1">BT</div><pre className="m-0">{JSON.stringify(lastBybitBars[selected] || null, null, 2)}</pre></Col><Col md={6}><div className="text-muted mb-1">BNB</div><pre className="m-0">{JSON.stringify(lastBinanceBars[selected] || null, null, 2)}</pre></Col></Row>
-
-        <hr />
-        <div className="d-flex align-items-center justify-content-between mb-2"><div className="fw-semibold">Bars ({barsSource === "binance" ? "BNB" : "BT"}, last {bars.length})</div><div className="text-muted" style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>{barsSource}</div></div>
-        <div style={{ maxHeight: 220, overflow: "auto", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}><pre className="m-0">{JSON.stringify(bars.slice(-30), null, 2)}</pre></div>
-
-        <hr />
-        <div className="d-flex align-items-center justify-content-between mb-2"><div className="fw-semibold">Lead-Lag (TOP 10)</div><div className="text-muted" style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>{leadLagTop?.length ? `${leadLagTop.length} rows` : "warming up"}</div></div>
-        <Table bordered size="sm" responsive><thead><tr><th>#</th><th>Pair</th><th>Corr</th><th>Lag (Δt)</th><th>Подтверждение</th></tr></thead>
-          <tbody style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-            {leadLagTop && leadLagTop.length ? leadLagTop.map((r, idx) => (
-              <tr key={`${r.leader}-${r.follower}-${idx}`}><td>{idx + 1}</td><td>{r.leader} ({sourceTag(r.leaderSrc)}) → {r.follower} ({sourceTag(r.followerSrc)}) <span className="text-muted">[{sourceTag(r.source)}]</span></td><td>{Number.isFinite(r.corr) ? r.corr.toFixed(3) : "—"}</td><td>{Number.isFinite(r.lagMs) ? `${(r.lagMs / 1000).toFixed(2)}s` : "—"}</td><td>{r.confirmed ? "OK" : "—"} <span className="text-muted">({r.samples ?? 0}samp, {r.impulses ?? 0}imp)</span></td></tr>
-            )) : <tr><td colSpan={5} className="text-muted">Нет расчётов ещё (нужно накопить ~15–20s микробаров).</td></tr>}
-          </tbody></Table>
-      </Card.Body></Card></Col>
+                )) : (
+                  <tr><td colSpan={5} className="text-muted">Нет расчётов ещё (нужно накопить ~50s микробаров).</td></tr>
+                )}
+              </tbody>
+            </Table>
+          </Card.Body>
+        </Card>
+      </Col>
     </Row>
   );
 }

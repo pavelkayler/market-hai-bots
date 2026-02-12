@@ -1,6 +1,6 @@
 // backend/src/leadLag.js
 // Rolling lead-lag estimator on fixed-interval microbars.
-// Output: top-N pairs with best lag (max |corr|) + confirmation (samples/impulses).
+// Output: top-N pairs with best lag + confirmation (samples/impulses).
 
 function meanStd(values) {
   const n = values.length;
@@ -27,7 +27,6 @@ function pearsonFromSums(n, sumX, sumY, sumX2, sumY2, sumXY) {
 }
 
 function toReturnMap(bars) {
-  // bars: [{ts,c,...}] sorted ascending
   const map = new Map();
   const rets = [];
   let prevC = null;
@@ -35,7 +34,6 @@ function toReturnMap(bars) {
     const t = Number(b?.ts ?? b?.t);
     const c = Number(b?.c);
     if (!Number.isFinite(t) || !Number.isFinite(c) || c <= 0) continue;
-
     if (prevC !== null && prevC > 0) {
       const r = Math.log(c / prevC);
       map.set(t, r);
@@ -49,18 +47,22 @@ function toReturnMap(bars) {
 export function createLeadLag({
   bucketMs = 250,
   maxLagMs = 5000,
-  minSamples = 120,
+  minSamples = 200,
   impulseZ = 2.0,
-  minImpulses = 6,
+  minImpulses = 5,
 } = {}) {
   const maxLagBars = Math.max(1, Math.floor(maxLagMs / bucketMs));
 
-  function computeTop({ symbols, getBars, topN = 10, windowBars = 400 } = {}) {
+  function computeTop({ leaders = [], symbols, getBars, topN = 10, windowBars = 400 } = {}) {
     const syms = (Array.isArray(symbols) ? symbols : [])
       .map((s) => String(s).trim().toUpperCase())
       .filter(Boolean);
+    const leaderSet = new Set(
+      (Array.isArray(leaders) ? leaders : syms)
+        .map((s) => String(s).trim().toUpperCase())
+        .filter((s) => syms.includes(s)),
+    );
 
-    // precompute return maps per symbol
     const per = new Map();
     for (const s of syms) {
       const bars = getBars(s, windowBars) || [];
@@ -72,31 +74,29 @@ export function createLeadLag({
 
     const results = [];
 
-    for (let i = 0; i < syms.length; i++) {
-      for (let j = 0; j < syms.length; j++) {
-        if (i === j) continue;
-        const leader = syms[i];
-        const follower = syms[j];
+    for (const leader of syms) {
+      if (!leaderSet.has(leader)) continue;
+      for (const follower of syms) {
+        if (leader === follower) continue;
 
         const leaderData = per.get(leader);
         const followerData = per.get(follower);
         if (!leaderData || !followerData) continue;
-        if (leaderData.map.size < minSamples || followerData.map.size < minSamples) continue;
 
         const leaderStd = leaderData.std;
         const impulseThr = leaderStd > 0 ? impulseZ * leaderStd : Infinity;
-
         let best = null;
 
-        for (let lagBars = 1; lagBars <= maxLagBars; lagBars++) {
+        for (let lagBars = -maxLagBars; lagBars <= maxLagBars; lagBars++) {
+          if (lagBars === 0) continue;
           const lagMs = lagBars * bucketMs;
 
           let n = 0;
-          let sumX = 0,
-            sumY = 0,
-            sumX2 = 0,
-            sumY2 = 0,
-            sumXY = 0;
+          let sumX = 0;
+          let sumY = 0;
+          let sumX2 = 0;
+          let sumY2 = 0;
+          let sumXY = 0;
           let impulses = 0;
 
           for (const [tFollower, y] of followerData.map.entries()) {
@@ -110,31 +110,20 @@ export function createLeadLag({
             sumX2 += x * x;
             sumY2 += y * y;
             sumXY += x * y;
-
             if (Math.abs(x) >= impulseThr) impulses++;
           }
 
-          if (n < minSamples) continue;
+          if (n < 2) continue;
           const corr = pearsonFromSums(n, sumX, sumY, sumX2, sumY2, sumXY);
           const absCorr = Math.abs(corr);
+          const confirmed = n >= minSamples && impulses >= minImpulses;
 
-          if (!best || absCorr > best.absCorr) {
-            best = {
-              leader,
-              follower,
-              corr,
-              absCorr,
-              lagMs,
-              samples: n,
-              impulses,
-            };
+          if (!best || (confirmed ? 1 : 0) > (best.confirmed ? 1 : 0) || absCorr > best.absCorr) {
+            best = { leader, follower, corr, absCorr, lagMs, samples: n, impulses, confirmed };
           }
         }
 
         if (!best) continue;
-
-        const confirmScore = Math.min(1, best.samples / minSamples) * Math.min(1, best.impulses / minImpulses);
-        const confirmed = best.samples >= minSamples && best.impulses >= minImpulses;
 
         results.push({
           leader: best.leader,
@@ -143,18 +132,16 @@ export function createLeadLag({
           lagMs: best.lagMs,
           samples: best.samples,
           impulses: best.impulses,
-          confirmScore,
-          confirmed,
+          confirmed: best.confirmed,
         });
       }
     }
 
     results.sort((a, b) => {
-      if (b.confirmScore !== a.confirmScore) return b.confirmScore - a.confirmScore;
-      const aa = Math.abs(a.corr);
-      const bb = Math.abs(b.corr);
-      if (bb !== aa) return bb - aa;
-      return a.lagMs - b.lagMs;
+      if (a.confirmed !== b.confirmed) return a.confirmed ? -1 : 1;
+      const absDiff = Math.abs(b.corr) - Math.abs(a.corr);
+      if (absDiff !== 0) return absDiff;
+      return Math.abs(a.lagMs) - Math.abs(b.lagMs);
     });
 
     return results.slice(0, Math.max(0, topN | 0));

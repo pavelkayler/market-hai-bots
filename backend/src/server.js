@@ -18,7 +18,7 @@ import { createBybitPrivateRest } from "./bybitPrivateRest.js";
 import { createBybitInstrumentsCache } from "./bybitInstrumentsCache.js";
 import { createBybitTradeExecutor } from "./bybitTradeExecutor.js";
 import { createBybitRest } from "./bybitRest.js";
-import { createMarketDataStore, toLegacySource, toTickerSourceCode } from "./marketDataStore.js";
+import { createMarketDataStore, toTickerSourceCode } from "./marketDataStore.js";
 
 dotenv.config();
 
@@ -41,15 +41,25 @@ function broadcast(obj) {
   }
 }
 
+function sendEvent(ws, topic, payload) {
+  safeSend(ws, { type: "event", topic, payload });
+}
+
+function broadcastEvent(topic, payload) {
+  broadcast({ type: "event", topic, payload });
+}
+
 function normalizeSymbols(symbols) {
   if (!Array.isArray(symbols)) return [];
   const uniq = new Set();
   for (const sym of symbols) {
     if (typeof sym !== "string") continue;
-    const normalized = sym.trim().toUpperCase().replace(/[\/-]/g, "");
+    const upper = sym.trim().toUpperCase();
+    if (!upper || upper.includes("-")) continue;
+    const normalized = upper.replace(/\//g, "");
     if (!normalized) continue;
     uniq.add(normalized);
-    if (uniq.size >= 10) break;
+    if (uniq.size >= 100) break;
   }
   return [...uniq];
 }
@@ -105,7 +115,7 @@ const marketBars = createMicroBarAggregator({
     broadcast({ type: legacyType, payload: bar });
   },
 });
-const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 5000, minSamples: 60, impulseZ: 2.0, minImpulses: 4 });
+const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 5000, minSamples: 200, impulseZ: 2.0, minImpulses: 5 });
 let lastLeadLagTop = [];
 
 const bybit = createBybitPublicWs({
@@ -119,6 +129,7 @@ const bybit = createBybitPublicWs({
     marketBars.ingest(normalized);
     broadcast({ type: "bybit.ticker", payload: normalized });
     broadcast({ type: "market.ticker", payload: normalized });
+    broadcastEvent("market.ticker", normalized);
   },
   onLiquidation: (ev) => pushLiq(ev),
 });
@@ -132,6 +143,7 @@ const binance = createBinanceSpotWs({
     marketBars.ingest(normalized);
     broadcast({ type: "binance.ticker", payload: normalized });
     broadcast({ type: "market.ticker", payload: normalized });
+    broadcastEvent("market.ticker", normalized);
   },
 });
 
@@ -182,8 +194,11 @@ function getSnapshotPayload() {
 
 function computeLeadLagTop() {
   const symbols = bybit.getSymbols();
-  const eligible = symbols.filter((sym) => marketBars.getBars(sym, 70, "BNB").length >= 70);
+  const leaders = ["BTCUSDT", "ETHUSDT", "SOLUSDT"].filter((sym) => symbols.includes(sym));
+  const followers = symbols.filter((sym) => marketBars.getBars(sym, 200, "BNB").length >= 200);
+  const eligible = [...new Set([...leaders, ...followers])];
   const top = leadLag.computeTop({
+    leaders,
     symbols: eligible,
     getBars: (sym, n) => marketBars.getBars(sym, n, "BNB"),
     topN: 10,
@@ -191,6 +206,7 @@ function computeLeadLagTop() {
   });
   lastLeadLagTop = top.map((r) => ({ ...r, leaderSrc: "binance", followerSrc: "binance", source: "BNB" }));
   broadcast({ type: "leadlag.top", payload: lastLeadLagTop });
+  broadcastEvent("leadlag.top", { ts: Date.now(), source: "BNB", rows: lastLeadLagTop });
 }
 setInterval(() => { try { computeLeadLagTop(); } catch {} }, 1000);
 setInterval(() => broadcast({ type: "universe.status", payload: universe.getStatus() }), 30000);
@@ -221,6 +237,7 @@ app.get("/ws", { websocket: true }, (conn) => {
   clients.add(ws);
   safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
   safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
+  sendEvent(ws, "market.snapshot", { tickers: marketData.getTickersArray(), ts: Date.now() });
 
   ws.on("message", (raw) => {
     let msg; try { msg = JSON.parse(raw.toString("utf8")); } catch { return; }
@@ -229,6 +246,7 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "getSnapshot") {
       safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
       safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
+      sendEvent(ws, "market.snapshot", { tickers: marketData.getTickersArray(), ts: Date.now() });
       return;
     }
 
@@ -239,17 +257,19 @@ app.get("/ws", { websocket: true }, (conn) => {
       safeSend(ws, { type: "setSymbols.ack", payload: { symbols: bybit.getSymbols() } });
       safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
       safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
+      sendEvent(ws, "market.snapshot", { tickers: marketData.getTickersArray(), ts: Date.now() });
       return;
     }
 
     if (msg.type === "getBars") {
       const symbol = String(msg.symbol || "").toUpperCase();
-      const sourceCode = toTickerSourceCode(msg.source === "binance" ? "BNB" : msg.source);
-      const source = toLegacySource(sourceCode || "BT");
+      const sourceCode = toTickerSourceCode(msg.source === "binance" ? "BNB" : msg.source === "bybit" ? "BT" : msg.source) || "BT";
       const requestedN = Number(msg.n);
       const n = Number.isFinite(requestedN) ? Math.max(1, Math.min(2000, Math.trunc(requestedN))) : 200;
-      const bars = marketBars.getBars(symbol, n, sourceCode || "BT");
-      safeSend(ws, { type: "bars", payload: { symbol, source, bars } });
+      const bars = marketBars.getBars(symbol, n, sourceCode);
+      const payload = { symbol, source: sourceCode, bars };
+      if (!bars.length) payload.warning = "NO_BARS";
+      safeSend(ws, { type: "bars", payload });
       return;
     }
 
