@@ -1,6 +1,10 @@
+import { createLeadLagAutoTune } from './leadlagAutoTune.js';
+
 function safeNum(x, fallback = null) { const n = Number(x); return Number.isFinite(n) ? n : fallback; }
 const MAX_POSITIONS = 5;
 const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
+const ENTRY_USD = 100;
+const LEVERAGE = 10;
 
 function now() { return Date.now(); }
 function runKeyFromSettings(settings) {
@@ -17,14 +21,19 @@ function pickPx(t) {
 }
 
 export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, getUniverseSymbols = () => [], presetsStore, logger = console, onEvent = () => {}, tickMs = 250 } = {}) {
+  const autoTune = createLeadLagAutoTune({ maxLogEntries: 200 });
   const state = {
     status: 'STOPPED', startedAt: null, endedAt: null, ticks: 0,
     activePresetId: null, sessionPresetId: null, lastLeadLagTop: [], lastNoEntryReasons: [],
     settings: null, executionMode: 'paper',
+    autoTuneEnabled: true,
     pendingSignal: null, positions: [],
     stats: { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0, feesUSDT: 0, fundingUSDT: 0, slippageUSDT: 0, feeRateMaker: 0.0002 },
     manual: { enabled: false, leaderSymbol: null, followerSymbol: null, leaderMovePct: 1, followerTpPct: 1, followerSlPct: 1, allowShort: true, lagMs: 250, leaderBaseline: null, leaderPrice: null, followerPrice: null, leaderMovePctNow: 0, lastNoEntryReason: null },
     currentRunKey: null, currentTradeEvents: [], runHistory: {},
+    currentConfigKey: null,
+    lastEvaluation: null,
+    tuningStatus: 'idle',
   };
   let logs = [];
   let trades = [];
@@ -47,7 +56,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
       state.lastNoEntryReasons = [{ key: 'MAX_POSITIONS_REACHED', detail: `positions=${state.positions.length}/${MAX_POSITIONS}` }];
       return;
     }
-    const qty = Math.max(0.0001, (safeNum(presetsStore?.getActivePreset?.()?.params?.maxNotionalUsd, 100) || 100) / execPx);
+    const qty = Math.max(0.0001, ((ENTRY_USD * LEVERAGE) / execPx));
     const tp = side === 'LONG' ? execPx * (1 + s.followerTpPct / 100) : execPx * (1 - s.followerTpPct / 100);
     const sl = side === 'LONG' ? execPx * (1 - s.followerSlPct / 100) : execPx * (1 + s.followerSlPct / 100);
     const feeEntry = execPx * qty * state.stats.feeRateMaker;
@@ -94,6 +103,22 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     const hist = upsertHistory(state.currentRunKey);
     hist.trades += 1; if (pnl >= 0) hist.wins += 1; else hist.losses += 1;
     hist.pnlUSDT += pnl; hist.feesUSDT += feeExit + pos.feeEntry; hist.fundingUSDT += funding; hist.slippageUSDT += slippage;
+
+    const tuneResult = autoTune.onTradeClosed({ settings: state.settings || {}, trade: row });
+    const perConfigState = autoTune.getPerConfigState(tuneResult?.configKey);
+    if (tuneResult?.metrics) state.lastEvaluation = tuneResult.metrics;
+    if (tuneResult?.configKey) state.currentConfigKey = tuneResult.configKey;
+    state.tuningStatus = perConfigState?.tuningStatus || tuneResult?.tuningStatus || 'idle';
+    if (tuneResult?.changed && Number.isFinite(Number(tuneResult?.newTpPct))) {
+      state.settings = {
+        ...(state.settings || {}),
+        followerTpPct: Number(tuneResult.newTpPct),
+        tpSource: 'auto',
+        lastAutoTuneAt: now(),
+      };
+      state.manual = { ...(state.manual || {}), followerTpPct: state.settings.followerTpPct };
+      emitLeadLag('leadlag.settingsUpdated', { settings: state.settings, reason: tuneResult?.decision || 'AUTO_TUNE' });
+    }
     return true;
   }
 
@@ -156,6 +181,10 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
       followerSlPct: Math.max(0.01, safeNum(settings?.followerSlPct, 1)),
       allowShort: settings?.allowShort !== false,
       lagMs: Math.max(0, Math.trunc(safeNum(settings?.lagMs, 250))),
+      entryUsd: ENTRY_USD,
+      leverage: LEVERAGE,
+      tpSource: settings?.tpSource === 'auto' ? 'auto' : 'manual',
+      lastAutoTuneAt: Number.isFinite(Number(settings?.lastAutoTuneAt)) ? Number(settings.lastAutoTuneAt) : null,
     };
   }
 
@@ -170,8 +199,12 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     state.pendingSignal = null;
     state.lastNoEntryReasons = [];
     state.settings = normalizeSettings(settings || {});
+    state.autoTuneEnabled = autoTune.getAutoTuneConfig().enabled;
     state.manual = { ...state.manual, enabled: true, ...state.settings, leaderBaseline: null, leaderPrice: null, followerPrice: null, leaderMovePctNow: 0 };
     state.currentRunKey = `${Date.now()}::${runKeyFromSettings(state.settings)}`;
+    state.currentConfigKey = autoTune.buildConfigKey(state.settings);
+    state.lastEvaluation = null;
+    state.tuningStatus = 'idle';
     state.currentTradeEvents = [];
     upsertHistory(state.currentRunKey);
     state.activePresetId = presetId || presetsStore?.getState()?.activePresetId || null;
@@ -193,9 +226,24 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     state.pendingSignal = null; state.positions = []; state.currentTradeEvents = []; state.currentRunKey = null; state.runHistory = {};
     state.lastNoEntryReasons = [];
     state.stats = { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0, feesUSDT: 0, fundingUSDT: 0, slippageUSDT: 0, feeRateMaker: 0.0002 };
+    state.currentConfigKey = null;
+    state.lastEvaluation = null;
+    state.tuningStatus = 'idle';
     trades = []; logs = [];
+    autoTune.reset();
     emitLeadLag('leadlag.state', getState());
     return { ok: true };
+  }
+
+  function setAutoTuneConfig(nextConfig = {}) {
+    const cfg = autoTune.setAutoTuneConfig(nextConfig);
+    state.autoTuneEnabled = cfg.enabled;
+    return getState({ includeHistory: false });
+  }
+
+  function clearLearningLog() {
+    autoTune.clearLearningLog();
+    return getState({ includeHistory: false });
   }
 
   function setSearchRows(rows = []) {
@@ -207,6 +255,10 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
 
   function getState({ includeHistory = true } = {}) {
     const base = { ...state, position: state.positions[0] || null, activePreset: presetsStore?.getPresetById(state.activePresetId) || null, sessionPreset: presetsStore?.getPresetById(state.sessionPresetId) || null };
+    base.autoTuneEnabled = autoTune.getAutoTuneConfig().enabled;
+    base.autoTuneConfig = autoTune.getAutoTuneConfig();
+    base.learningLog = autoTune.getLearningLog();
+    base.perConfigLearningState = state.currentConfigKey ? autoTune.getPerConfigState(state.currentConfigKey) : null;
     if (includeHistory) {
       base.trades = trades.slice(0, 100);
       base.logs = logs.slice(0, 200);
@@ -215,5 +267,5 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     return base;
   }
 
-  return { start, stop, reset, setSearchRows, getState, dispose: () => clearInterval(timer) };
+  return { start, stop, reset, setSearchRows, setAutoTuneConfig, clearLearningLog, getState, dispose: () => clearInterval(timer) };
 }

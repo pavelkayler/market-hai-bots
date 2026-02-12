@@ -4,6 +4,7 @@ import { useWsClient } from '../../shared/api/ws.js';
 
 function fmt(n, d = 3) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(d) : '—'; }
 function fmtTs(ts) { return Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : '—'; }
+function fmtPf(v) { return v === Infinity ? '∞' : fmt(v, 3); }
 
 export default function LeadLagPage() {
   const [state, setState] = useState({ status: 'STOPPED' });
@@ -13,20 +14,35 @@ export default function LeadLagPage() {
   const [universe, setUniverse] = useState([]);
 
   const [settings, setSettings] = useState({ leaderSymbol: 'BTCUSDT', followerSymbol: 'ETHUSDT', leaderMovePct: 1, followerTpPct: 1, followerSlPct: 1, allowShort: true, lagMs: 250 });
+  const [autoTuneConfig, setAutoTuneConfig] = useState({ enabled: true, evalWindowTrades: 20, minTradesToStart: 10, minProfitFactor: 1, minExpectancy: 0, tpStepPct: 0.05, tpMinPct: 0.05, tpMaxPct: 0.5 });
 
   const onMessage = useMemo(() => (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     const type = msg.type === 'event' ? msg.topic : msg.type;
     const payload = msg.payload;
-    if (type === 'snapshot' && payload?.leadlagState) setState(payload.leadlagState);
-    if (type === 'leadlag.state') setState((prev) => ({ ...(prev || {}), ...(payload || {}) }));
+    if (type === 'snapshot' && payload?.leadlagState) {
+      setState(payload.leadlagState);
+      if (payload.leadlagState?.settings) setSettings((prev) => ({ ...prev, ...payload.leadlagState.settings }));
+      if (payload.leadlagState?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.leadlagState.autoTuneConfig }));
+    }
+    if (type === 'leadlag.state') {
+      setState((prev) => ({ ...(prev || {}), ...(payload || {}) }));
+      if (payload?.settings) setSettings((prev) => ({ ...prev, ...payload.settings }));
+      if (payload?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.autoTuneConfig }));
+    }
     if (type === 'leadlag.trade') setState((prev) => ({ ...(prev || {}), currentTradeEvents: [payload, ...(prev?.currentTradeEvents || [])].slice(0, 20) }));
+    if (type === 'leadlag.settingsUpdated') {
+      const nextSettings = payload?.settings || {};
+      setSettings((prev) => ({ ...prev, ...nextSettings }));
+      setState((prev) => ({ ...(prev || {}), settings: { ...(prev?.settings || {}), ...nextSettings } }));
+    }
     if (type === 'leadlag.top' && searchActive) setRows(Array.isArray(payload?.rows) ? payload.rows : (Array.isArray(payload) ? payload : []));
     if (type === 'leadlag.search.ack') setSearchActive(Boolean(payload?.active));
     if (type === 'universe.updated') setUniverse(Array.isArray(payload?.symbols) ? payload.symbols : []);
+    if (type === 'leadlag.learningLog') setState((prev) => ({ ...(prev || {}), learningLog: Array.isArray(payload) ? payload : [] }));
   }, [searchActive]);
 
-  const { status, sendJson } = useWsClient({ onOpen: () => { sendJson({ type: 'getLeadLagState' }); sendJson({ type: 'getSnapshot' }); }, onMessage });
+  const { status, sendJson } = useWsClient({ onOpen: () => { sendJson({ type: 'getLeadLagState' }); sendJson({ type: 'getSnapshot' }); sendJson({ type: 'leadlag.getLearningLog' }); }, onMessage });
 
   useEffect(() => {
     fetch('/api/universe/list').then((r) => r.json()).then((j) => setUniverse(Array.isArray(j?.symbols) ? j.symbols : [])).catch(() => {});
@@ -45,6 +61,9 @@ export default function LeadLagPage() {
   const runSummary = Array.isArray(state?.runSummary) ? state.runSummary : [];
   const positions = Array.isArray(state?.positions) ? state.positions : [];
   const tradeStats = state?.stats || {};
+  const learningLog = Array.isArray(state?.learningLog) ? state.learningLog : [];
+  const lastEvaluation = state?.lastEvaluation || state?.perConfigLearningState?.lastEvaluation || null;
+  const decision = state?.perConfigLearningState?.lastDecision || '—';
 
   function validSymbol(sym) { return universe.includes(String(sym || '').toUpperCase()); }
   const canStart = validSymbol(settings.leaderSymbol) && validSymbol(settings.followerSymbol);
@@ -57,10 +76,12 @@ export default function LeadLagPage() {
         <Form.Group><Form.Label>Follower symbol</Form.Label><Form.Control list='universe-list' value={settings.followerSymbol} onChange={(e) => setSettings((p) => ({ ...p, followerSymbol: e.target.value.toUpperCase() }))} /></Form.Group>
         <datalist id='universe-list'>{universe.map((s) => <option key={s} value={s} />)}</datalist>
         <Form.Group><Form.Label>Leader move trigger (%)</Form.Label><Form.Control type='number' min={0} value={settings.leaderMovePct} onChange={(e) => setSettings((p) => ({ ...p, leaderMovePct: Number(e.target.value) }))} /></Form.Group>
-        <Form.Group><Form.Label>Follower TP (%)</Form.Label><Form.Control type='number' min={0} value={settings.followerTpPct} onChange={(e) => setSettings((p) => ({ ...p, followerTpPct: Number(e.target.value) }))} /></Form.Group>
+        <Form.Group><Form.Label>Follower TP (%)</Form.Label><Form.Control type='number' min={0} value={settings.followerTpPct} onChange={(e) => setSettings((p) => ({ ...p, followerTpPct: Number(e.target.value), tpSource: 'manual' }))} /></Form.Group>
         <Form.Group><Form.Label>Follower SL (%)</Form.Label><Form.Control type='number' min={0} value={settings.followerSlPct} onChange={(e) => setSettings((p) => ({ ...p, followerSlPct: Number(e.target.value) }))} /></Form.Group>
         <Form.Group><Form.Label>lagMs</Form.Label><Form.Control type='number' min={0} value={settings.lagMs} onChange={(e) => setSettings((p) => ({ ...p, lagMs: Number(e.target.value) }))} /></Form.Group>
         <Form.Check checked={settings.allowShort} onChange={(e) => setSettings((p) => ({ ...p, allowShort: e.target.checked }))} label='allowShort' />
+        <div className='small text-muted'>Entry: ${(state?.settings?.entryUsd || 100)} · Leverage: x{state?.settings?.leverage || 10}</div>
+        <div className='small text-muted'>TP source: <Badge bg={state?.settings?.tpSource === 'auto' ? 'warning' : 'secondary'}>{state?.settings?.tpSource || 'manual'}</Badge></div>
         <div className='d-flex gap-2'>
           <Button disabled={!canStart} onClick={() => sendJson({ type: 'startLeadLag', settings })}>Start</Button>
           <Button variant='outline-danger' onClick={() => sendJson({ type: 'stopLeadLag' })}>Stop</Button>
@@ -95,8 +116,59 @@ export default function LeadLagPage() {
     <Card><Card.Body>
       <div className='fw-semibold mb-2'>Run summary / History</div>
       <Table size='sm'><thead><tr><th>Pair</th><th>Настройки</th><th>Подтверждения</th><th>Trades/W/L/WR</th><th>PnL</th><th>Fees</th><th>Funding</th><th>Slippage</th><th></th></tr></thead><tbody>
-        {runSummary.length ? runSummary.map((r) => <tr key={r.runKey}><td>{r.pair}</td><td>{`trg:${r.settings?.leaderMovePct} tp:${r.settings?.followerTpPct} sl:${r.settings?.followerSlPct} short:${r.settings?.allowShort ? 'y' : 'n'} lag:${r.settings?.lagMs}`}</td><td>{r.confirmations || 0}</td><td>{r.trades}/{r.wins}/{r.losses}/{fmt(r.winRate, 1)}%</td><td>{fmt(r.pnlUSDT, 3)}</td><td>{fmt(r.feesUSDT, 3)}</td><td>{fmt(r.fundingUSDT, 3)}</td><td>{fmt(r.slippageUSDT, 3)}</td><td><Button size='sm' variant='outline-secondary' onClick={() => setSettings({ ...(r.settings || settings) })}>Copy</Button></td></tr>) : <tr><td colSpan={9} className='text-muted'>No run history</td></tr>}
+        {runSummary.length ? runSummary.map((r) => <tr key={r.runKey}><td>{r.pair}</td><td>{`trg:${r.settings?.leaderMovePct} tp:${r.settings?.followerTpPct} sl:${r.settings?.followerSlPct} short:${r.settings?.allowShort ? 'y' : 'n'} lag:${r.settings?.lagMs}`}</td><td>{r.confirmations || 0}</td><td>{r.trades}/{r.wins}/{r.losses}/{fmt(r.winRate, 1)}%</td><td>{fmt(r.pnlUSDT, 3)}</td><td>{fmt(r.feesUSDT, 3)}</td><td>{fmt(r.fundingUSDT, 3)}</td><td>{fmt(r.slippageUSDT, 3)}</td><td><Button size='sm' variant='outline-secondary' onClick={() => setSettings({ ...(r.settings || settings), tpSource: 'manual' })}>Copy</Button></td></tr>) : <tr><td colSpan={9} className='text-muted'>No run history</td></tr>}
       </tbody></Table>
+    </Card.Body></Card>
+
+    <Card><Card.Body className='d-grid gap-3'>
+      <div className='d-flex align-items-center justify-content-between'>
+        <div>
+          <div className='fw-semibold'>Обучение (Auto-tune)</div>
+          <div className='small text-muted'>Только закрытые сделки (CLOSE), single-change rule: меняем только TP.</div>
+        </div>
+        <Badge bg={state?.tuningStatus === 'frozen' ? 'info' : state?.tuningStatus === 'pending_eval' ? 'warning' : 'secondary'}>{state?.tuningStatus || 'idle'}</Badge>
+      </div>
+
+      <Row className='g-2'>
+        <Col md={2}><Form.Check label='Auto-tune' checked={Boolean(autoTuneConfig.enabled)} onChange={(e) => setAutoTuneConfig((p) => ({ ...p, enabled: e.target.checked }))} /></Col>
+        <Col md={2}><Form.Group><Form.Label>Window trades</Form.Label><Form.Control type='number' value={autoTuneConfig.evalWindowTrades} onChange={(e) => setAutoTuneConfig((p) => ({ ...p, evalWindowTrades: Number(e.target.value) }))} /></Form.Group></Col>
+        <Col md={2}><Form.Group><Form.Label>Min trades</Form.Label><Form.Control type='number' value={autoTuneConfig.minTradesToStart} onChange={(e) => setAutoTuneConfig((p) => ({ ...p, minTradesToStart: Number(e.target.value) }))} /></Form.Group></Col>
+        <Col md={2}><Form.Group><Form.Label>Min PF</Form.Label><Form.Control type='number' step='0.01' value={autoTuneConfig.minProfitFactor} onChange={(e) => setAutoTuneConfig((p) => ({ ...p, minProfitFactor: Number(e.target.value) }))} /></Form.Group></Col>
+        <Col md={2}><Form.Group><Form.Label>Min Exp</Form.Label><Form.Control type='number' step='0.0001' value={autoTuneConfig.minExpectancy} onChange={(e) => setAutoTuneConfig((p) => ({ ...p, minExpectancy: Number(e.target.value) }))} /></Form.Group></Col>
+        <Col md={2}><Form.Group><Form.Label>TP step (%)</Form.Label><Form.Control type='number' step='0.01' value={autoTuneConfig.tpStepPct} onChange={(e) => setAutoTuneConfig((p) => ({ ...p, tpStepPct: Number(e.target.value) }))} /></Form.Group></Col>
+        <Col md={2}><Form.Group><Form.Label>TP min (%)</Form.Label><Form.Control type='number' step='0.01' value={autoTuneConfig.tpMinPct} onChange={(e) => setAutoTuneConfig((p) => ({ ...p, tpMinPct: Number(e.target.value) }))} /></Form.Group></Col>
+        <Col md={2}><Form.Group><Form.Label>TP max (%)</Form.Label><Form.Control type='number' step='0.01' value={autoTuneConfig.tpMaxPct} onChange={(e) => setAutoTuneConfig((p) => ({ ...p, tpMaxPct: Number(e.target.value) }))} /></Form.Group></Col>
+        <Col md={8} className='d-flex align-items-end gap-2'>
+          <Button onClick={() => sendJson({ type: 'leadlag.setAutoTuneConfig', payload: autoTuneConfig })}>Apply</Button>
+          <Button variant='outline-secondary' onClick={() => sendJson({ type: 'leadlag.getLearningLog' })}>Refresh log</Button>
+          <Button variant='outline-danger' onClick={() => sendJson({ type: 'leadlag.clearLearningLog' })}>Clear log</Button>
+        </Col>
+      </Row>
+
+      <div className='small text-muted'>
+        Current window quality: PF {fmtPf(lastEvaluation?.profitFactor)} · Expectancy {fmt(lastEvaluation?.expectancy, 4)} · Trades {lastEvaluation?.trades || 0} / Wins {lastEvaluation?.wins || 0} / Losses {lastEvaluation?.losses || 0} · TotalPnL {fmt(lastEvaluation?.totalPnL, 4)} · Decision {decision}
+      </div>
+
+      <div className='fw-semibold'>Learning log (last 200)</div>
+      <div style={{ maxHeight: 320, overflow: 'auto' }}>
+        <Table size='sm' striped hover>
+          <thead><tr><th>Time</th><th>Event</th><th>Config</th><th>Metrics</th><th>Change</th><th>Reason</th></tr></thead>
+          <tbody>
+            {learningLog.length ? learningLog.map((row, idx) => {
+              const m = row.metrics || {};
+              const ch = row.change || {};
+              return <tr key={`${row.ts || idx}-${idx}`}>
+                <td>{fmtTs(row.ts)}</td>
+                <td>{row.type || '—'}</td>
+                <td className='small'>{row.configSummary || row.configKey || '—'}</td>
+                <td className='small'>T:{m.trades ?? '—'} PF:{m.profitFactor === Infinity ? '∞' : fmt(m.profitFactor, 2)} Exp:{fmt(m.expectancy, 4)} PnL:{fmt(m.totalPnL, 3)}</td>
+                <td className='small'>{ch.paramName ? `${ch.paramName}: ${fmt(ch.from, 4)} → ${fmt(ch.to, 4)} (step ${fmt(ch.step, 4)})` : '—'}</td>
+                <td className='small'>{row.reason || '—'}</td>
+              </tr>;
+            }) : <tr><td colSpan={6} className='text-muted'>No learning events yet</td></tr>}
+          </tbody>
+        </Table>
+      </div>
     </Card.Body></Card>
   </div>;
 }
