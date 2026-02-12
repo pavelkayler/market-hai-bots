@@ -118,6 +118,7 @@ export function createWsManager(
       lastPongAt = Date.now();
       notifyStatus("connected");
       sendJson({ type: "ping", ts: Date.now() });
+      sendJson({ type: "getStatus" });
       sendJson({ type: "getSnapshot" });
       startHeartbeat();
     };
