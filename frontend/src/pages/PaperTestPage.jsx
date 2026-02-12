@@ -33,8 +33,7 @@ function statusBadge(s) {
 
 export default function PaperTestPage() {
   const wsRef = useRef(null);
-  const startPopupTimerRef = useRef(null);
-  const startPopupVisibleRef = useRef(false);
+  const ackTimerRef = useRef(null);
 
   const [wsStatus, setWsStatus] = useState("disconnected");
 
@@ -47,20 +46,15 @@ export default function PaperTestPage() {
   const [pending, setPending] = useState(null);
 
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [showStartPopup, setShowStartPopup] = useState(false);
+  const [ack, setAck] = useState(null);
   const [showPreset, setShowPreset] = useState(false);
 
   const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
 
-  const triggerStartPopup = () => {
-    if (startPopupVisibleRef.current) return;
-    startPopupVisibleRef.current = true;
-    setShowStartPopup(true);
-    if (startPopupTimerRef.current) clearTimeout(startPopupTimerRef.current);
-    startPopupTimerRef.current = setTimeout(() => {
-      startPopupVisibleRef.current = false;
-      setShowStartPopup(false);
-    }, 2000);
+  const showAck = (variant, text) => {
+    setAck({ variant, text });
+    if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
+    ackTimerRef.current = setTimeout(() => setAck(null), 2000);
   };
 
   useEffect(() => {
@@ -85,7 +79,7 @@ export default function PaperTestPage() {
         if (p.paperState) {
           setPaper(p.paperState);
           setTrades(Array.isArray(p.paperState.trades) ? [...p.paperState.trades].reverse().slice(0, 100) : []);
-          setLogs(Array.isArray(p.paperState.logs) ? p.paperState.logs : []);
+          setLogs(Array.isArray(p.paperState.logs) ? [...p.paperState.logs].reverse() : []);
           setPosition(p.paperState.position || null);
           setPending(p.paperState.pending || null);
           setPresetText(p.paperState.preset ? JSON.stringify(p.paperState.preset, null, 2) : "");
@@ -101,8 +95,15 @@ export default function PaperTestPage() {
         return;
       }
 
-      if (msg.type === "paper.start.ack" && msg.payload?.ok) {
-        triggerStartPopup();
+      if (msg.type === "paper.start.ack") {
+        if (msg.payload?.ok) showAck("success", "Тест запущен");
+        else showAck("danger", msg.payload?.error || "Start failed");
+        return;
+      }
+
+      if (msg.type === "paper.stop.ack") {
+        if (msg.payload?.ok) showAck("success", "Тест остановлен");
+        else showAck("danger", msg.payload?.error || "Stop failed");
         return;
       }
 
@@ -133,7 +134,7 @@ export default function PaperTestPage() {
       if (msg.type === "paper.state") {
         setPaper(msg.payload || null);
         setTrades(Array.isArray(msg.payload?.trades) ? [...msg.payload.trades].reverse().slice(0, 100) : []);
-        setLogs(Array.isArray(msg.payload?.logs) ? msg.payload.logs : []);
+        setLogs(Array.isArray(msg.payload?.logs) ? [...msg.payload.logs].reverse() : []);
         setPosition(msg.payload?.position || null);
         setPending(msg.payload?.pending || null);
         if (msg.payload?.preset) setPresetText(JSON.stringify(msg.payload.preset, null, 2));
@@ -141,7 +142,7 @@ export default function PaperTestPage() {
     };
 
     return () => {
-      if (startPopupTimerRef.current) clearTimeout(startPopupTimerRef.current);
+      if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
       try {
         ws.close();
       } catch {}
@@ -162,7 +163,6 @@ export default function PaperTestPage() {
   const startPaper = () => {
     try {
       wsRef.current?.send(JSON.stringify({ type: "startPaperTest" }));
-      triggerStartPopup();
     } catch {}
   };
 
@@ -178,7 +178,10 @@ export default function PaperTestPage() {
     } catch {}
   };
 
-  const running = paper?.status === "RUNNING";
+  const status = paper?.status || "STOPPED";
+  const running = status === "RUNNING";
+  const startDisabled = wsStatus !== "connected" || ["RUNNING", "STARTING"].includes(status);
+  const stopDisabled = wsStatus !== "connected" || ["STOPPED", "STOPPING"].includes(status);
   const monoStyle = { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" };
 
   return (
@@ -188,7 +191,7 @@ export default function PaperTestPage() {
           <Card.Body className="d-grid gap-2">
             <div className="d-flex align-items-center justify-content-between">
               <div className="fw-semibold">Paper Test</div>
-              <Badge bg={wsStatus === "connected" ? "success" : wsStatus === "connecting" ? "warning" : "secondary"}>
+              <Badge bg={wsStatus === "connected" ? "success" : wsStatus === "connecting" ? "warning" : wsStatus === "error" ? "danger" : "secondary"}>
                 WS: {wsStatus}
               </Badge>
             </div>
@@ -200,17 +203,17 @@ export default function PaperTestPage() {
               </Badge>
             </div>
 
-            {showStartPopup ? <Alert variant="success" className="mb-0 py-2">Тест запущен</Alert> : null}
+            {ack ? <Alert variant={ack.variant} className="mb-0 py-2">{ack.text}</Alert> : null}
 
             <div className="text-muted">
               WS URL: {wsUrl}
             </div>
 
             <div className="d-flex gap-2">
-              <Button variant="primary" onClick={startPaper} disabled={wsStatus !== "connected" || running}>
+              <Button variant="primary" onClick={startPaper} disabled={startDisabled}>
                 Start
               </Button>
-              <Button variant="outline-danger" onClick={stopPaper} disabled={wsStatus !== "connected" || !paper || paper?.status === "STOPPED"}>
+              <Button variant="outline-danger" onClick={stopPaper} disabled={stopDisabled}>
                 Stop
               </Button>
               <Button variant="outline-secondary" onClick={refreshState} disabled={wsStatus !== "connected"}>
