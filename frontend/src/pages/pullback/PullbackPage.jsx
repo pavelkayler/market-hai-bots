@@ -1,23 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Badge, Button, Card, Col, Form, Nav, Row, Tab, Table } from "react-bootstrap";
+import { useWsClient } from "../../shared/api/ws.js";
+import { mergeNonUndefined } from "../../shared/utils/merge.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
-
-function toWsUrl(apiBase) {
-  const u = new URL(apiBase);
-  const proto = u.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${u.host}/ws`;
-}
 
 const fmtNum = (x, d = 6) => (Number.isFinite(Number(x)) ? Number(x).toFixed(d) : "—");
 const fmtTs = (ts) => (Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : "—");
 const modeBadge = (m) => (m === "real" ? "danger" : m === "demo" ? "warning" : "secondary");
 
-export default function PullbackTestPage() {
-  const wsRef = useRef(null);
+export default function PullbackPage() {
   const ackTimerRef = useRef(null);
   const pendingRef = useRef(new Map());
-  const [wsStatus, setWsStatus] = useState("connecting");
+  const symbolRef = useRef("BTCUSDT");
+
   const [mode, setMode] = useState("paper");
   const [realConfirmText, setRealConfirmText] = useState("");
   const [pb, setPb] = useState(null);
@@ -28,9 +24,6 @@ export default function PullbackTestPage() {
   const [orders, setOrders] = useState([]);
   const [history, setHistory] = useState([]);
   const [ack, setAck] = useState(null);
-
-  const wsUrl = useMemo(() => toWsUrl(API_BASE), [API_BASE]);
-  const symbolRef = useRef("BTCUSDT");
 
   useEffect(() => {
     symbolRef.current = pb?.position?.symbol || pb?.scan?.lastCandidate?.symbol || "BTCUSDT";
@@ -58,16 +51,66 @@ export default function PullbackTestPage() {
     setTradeState(state);
     setTradeStatus(pos.tradeStatus || state.tradeStatus || null);
     setWarnings(pos.warnings || state.warnings || []);
-    setPositions(pos.positions || []);
-    setOrders(ord.orders || []);
-    setHistory(Array.isArray(hist.history) ? hist.history.filter((x) => x && typeof x === "object") : []);
+    if (Array.isArray(pos.positions)) setPositions(pos.positions);
+    if (Array.isArray(ord.orders)) setOrders(ord.orders);
+    if (Array.isArray(hist.history)) setHistory(hist.history.filter((x) => x && typeof x === "object"));
   };
 
-  useEffect(() => {
-    let shouldClose = false;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+  const onMessage = useMemo(() => (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    const type = msg?.type === "event" ? msg.topic : msg.type;
+    const payload = msg?.payload;
 
+    if (type === "snapshot") {
+      if (payload?.pullbackState) setPb(payload.pullbackState);
+      setTradeStatus(payload?.tradeStatus || null);
+      setWarnings(payload?.warnings || []);
+      return;
+    }
+
+    if (type === "pullback.status" || type === "pullback.state") {
+      if (!payload || typeof payload !== "object") return;
+      setPb((prev) => mergeNonUndefined(prev, payload));
+      return;
+    }
+
+    if (type === "pullback.log") {
+      if (!payload) return;
+      const queued = pendingRef.current.get("logs") || [];
+      pendingRef.current.set("logs", [payload, ...queued].slice(0, 60));
+      return;
+    }
+
+    if (type === "trade.positions") {
+      if (Array.isArray(payload?.positions)) pendingRef.current.set("positions", payload.positions);
+      pendingRef.current.set("tradeStatus", payload?.tradeStatus || null);
+      pendingRef.current.set("warnings", payload?.warnings || []);
+      return;
+    }
+    if (type === "trade.orders") {
+      if (Array.isArray(payload?.orders)) pendingRef.current.set("orders", payload.orders);
+      return;
+    }
+    if (type === "trade.killswitch") {
+      setTradeState((p) => mergeNonUndefined(p, { killSwitch: payload?.enabled }));
+      return;
+    }
+
+    if (type === "pullback.start.ack") {
+      if (payload?.state) setPb((prev) => mergeNonUndefined(prev, payload.state));
+      showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест запущен" : (payload?.error || "Start failed"));
+      return;
+    }
+    if (type === "pullback.stop.ack") {
+      if (payload?.state) setPb((prev) => mergeNonUndefined(prev, payload.state));
+      showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест остановлен" : (payload?.error || "Stop failed"));
+    }
+  }, []);
+
+  const { wsUrl, status: wsStatus, sendJson } = useWsClient({ apiBase: API_BASE, onMessage, onOpen: () => sendJson({ type: "getPullbackState" }) });
+
+  useEffect(() => {
     const flushTimer = setInterval(() => {
       if (!pendingRef.current.size) return;
       const next = {};
@@ -75,117 +118,80 @@ export default function PullbackTestPage() {
       pendingRef.current.clear();
 
       if (next.pb !== undefined) setPb(next.pb);
-      if (next.positions !== undefined) setPositions(next.positions || []);
-      if (next.orders !== undefined) setOrders(next.orders || []);
+      if (Array.isArray(next.positions)) setPositions(next.positions);
+      if (Array.isArray(next.orders)) setOrders(next.orders);
       if (next.warnings !== undefined) setWarnings(next.warnings || []);
       if (next.tradeStatus !== undefined) setTradeStatus(next.tradeStatus || null);
+      if (Array.isArray(next.logs) && next.logs.length) {
+        setPb((prev) => ({ ...(prev || {}), logs: [...next.logs, ...(prev?.logs || [])].slice(0, 300) }));
+      }
     }, 350);
 
-    ws.onopen = () => {
-      if (shouldClose) {
-        if (ws.readyState === WebSocket.OPEN) {
-          try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
-        }
-        return;
-      }
-      setWsStatus("connected");
-      try {
-        ws.send(JSON.stringify({ type: "getPullbackState" }));
-      } catch {
-        // ignore
-      }
+    const id = setInterval(() => {
+      if (mode === "paper") return;
       pollTrade().catch(() => {});
-    };
-    ws.onclose = () => setWsStatus("disconnected");
-    ws.onerror = () => setWsStatus("error");
-    ws.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      const type = msg?.type === "event" ? msg.topic : msg.type;
-      const payload = msg?.type === "event" ? msg.payload : msg.payload;
-      if (type === "snapshot") {
-        if (payload?.pullbackState) setPb(payload.pullbackState);
-        setTradeStatus(payload?.tradeStatus || null);
-        setWarnings(payload?.warnings || []);
-      }
-      if (type === "pullback.status" || type === "pullback.state") {
-        setPb(payload || null);
-      }
-      if (type === "trade.positions") {
-        pendingRef.current.set("positions", Array.isArray(payload?.positions) ? payload.positions : []);
-        pendingRef.current.set("tradeStatus", payload?.tradeStatus || null);
-        pendingRef.current.set("warnings", payload?.warnings || []);
-      }
-      if (type === "trade.orders") pendingRef.current.set("orders", Array.isArray(payload?.orders) ? payload.orders : []);
-      if (type === "trade.killswitch") setTradeState((p) => ({ ...(p || {}), killSwitch: payload?.enabled }));
-      if (type === "pullback.start.ack") {
-        if (payload?.state) setPb((prev) => ({ ...(prev || {}), ...payload.state }));
-        showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест запущен" : (payload?.error || "Start failed"));
-      }
-      if (type === "pullback.stop.ack") {
-        if (payload?.state) setPb((prev) => ({ ...(prev || {}), ...payload.state }));
-        showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест остановлен" : (payload?.error || "Stop failed"));
-      }
-    };
+    }, 4000);
 
-    const id = setInterval(() => pollTrade().catch(() => {}), 4000);
     return () => {
-      shouldClose = true;
       clearInterval(id);
       clearInterval(flushTimer);
       pendingRef.current.clear();
       if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
-      if (ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.close(1000, "cleanup");
-        } catch {
-          // ignore
-        }
-      }
     };
-  }, [wsUrl]);
+  }, [mode]);
 
   const start = () => {
     if (mode === "real" && realConfirmText !== "REAL") return showAck("warning", "Введите REAL для подтверждения.");
-    wsRef.current?.send(JSON.stringify({ type: "startPullbackTest", mode }));
+    sendJson({ type: "startPullbackTest", mode });
   };
-  const stop = () => wsRef.current?.send(JSON.stringify({ type: "stopPullbackTest" }));
+  const stop = () => sendJson({ type: "stopPullbackTest" });
 
   const setKillSwitch = async (enabled) => {
     const res = await fetch(`${API_BASE}/api/trade/killswitch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled }) });
     const data = await res.json();
-    setTradeState((p) => ({ ...(p || {}), killSwitch: data.enabled }));
+    setTradeState((p) => mergeNonUndefined(p, { killSwitch: data.enabled }));
   };
 
   const realDisabled = tradeStatus && !tradeStatus.realAllowed;
   const status = pb?.status || "STOPPED";
+  const paperMode = mode === "paper";
 
   return <Row className="g-3">
     <Col md={4}><Card><Card.Body className="d-grid gap-2">
       <div className="d-flex justify-content-between"><strong>Pullback</strong><Badge bg={wsStatus === "connected" ? "success" : "secondary"}>{wsStatus}</Badge></div>
       <div className="d-flex justify-content-between"><span>Status</span><Badge bg={status === "RUNNING" ? "success" : "secondary"}>{status}</Badge></div>
       <div className="d-flex justify-content-between"><span>Execution</span><Badge bg={modeBadge(mode)}>{mode.toUpperCase()}</Badge></div>
-      <Form.Select value={mode} onChange={(e) => setMode(e.target.value)}>
-        <option value="paper">PAPER</option><option value="demo">DEMO</option><option value="real" disabled={realDisabled}>REAL</option>
-      </Form.Select>
+      <Form.Select value={mode} onChange={(e) => setMode(e.target.value)}><option value="paper">PAPER</option><option value="demo">DEMO</option><option value="real" disabled={realDisabled}>REAL</option></Form.Select>
       {mode === "real" ? <Form.Control value={realConfirmText} onChange={(e) => setRealConfirmText(e.target.value)} placeholder="Type REAL to confirm" /> : null}
       {warnings.map((w, i) => <Alert key={i} variant={w.severity === "error" ? "danger" : "warning"} className="py-2 mb-0">{w.code}: {w.message}</Alert>)}
       {ack ? <Alert variant={ack.variant} className="mb-0 py-2">{ack.text}</Alert> : null}
       <div className="d-flex gap-2"><Button onClick={start}>Start</Button><Button variant="outline-danger" onClick={stop}>Stop</Button></div>
-      <Button variant={tradeState?.killSwitch ? "danger" : "outline-danger"} onClick={() => setKillSwitch(!tradeState?.killSwitch)}>{tradeState?.killSwitch ? "Kill-switch ON" : "Kill-switch OFF"}</Button>
+      {!paperMode ? <Button variant={tradeState?.killSwitch ? "danger" : "outline-danger"} onClick={() => setKillSwitch(!tradeState?.killSwitch)}>{tradeState?.killSwitch ? "Kill-switch ON" : "Kill-switch OFF"}</Button> : null}
+      <div className="text-muted small">WS URL: {wsUrl}</div>
     </Card.Body></Card></Col>
-    <Col md={8}>
-      <Card><Card.Body>
+    <Col md={8}><Card><Card.Body>
+      {paperMode ? (
+        <div className="d-grid gap-3">
+          <div><strong>Strategy summary</strong><div className="text-muted">Started: {fmtTs(pb?.startedAt)} | Last scan: {fmtTs(pb?.scan?.lastScanAt)}</div></div>
+          <Table size="sm" className="mb-0"><tbody>
+            <tr><td>Status</td><td>{pb?.status || "—"}</td></tr>
+            <tr><td>Candidate</td><td>{pb?.scan?.lastCandidate?.symbol || "—"} ({pb?.scan?.lastCandidate?.side || "—"})</td></tr>
+            <tr><td>Reason</td><td>{pb?.scan?.lastCandidate?.reason || "—"}</td></tr>
+            <tr><td>Trades</td><td>{pb?.stats?.trades ?? 0}</td></tr>
+          </tbody></Table>
+          <div><strong>Logs</strong><div style={{ maxHeight: 360, overflow: "auto" }}><Table size="sm"><tbody>{Array.isArray(pb?.logs) && pb.logs.length ? pb.logs.map((l, i) => <tr key={`${l.t || i}-${i}`}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className="text-muted">No logs yet</td></tr>}</tbody></Table></div></div>
+        </div>
+      ) : (
         <Tab.Container defaultActiveKey="orders"><Nav variant="tabs" className="mb-3">
           <Nav.Item><Nav.Link eventKey="orders">Orders ({orders.length})</Nav.Link></Nav.Item>
           <Nav.Item><Nav.Link eventKey="positions">Positions ({positions.length})</Nav.Link></Nav.Item>
           <Nav.Item><Nav.Link eventKey="history">History ({history.length})</Nav.Link></Nav.Item>
         </Nav><Tab.Content>
-          <Tab.Pane eventKey="orders"><Table size="sm"><tbody>{orders.length ? orders.map((r)=><tr key={r.orderId}><td>{r.symbol}</td><td>{r.side}</td><td>{fmtNum(r.qty,4)}</td><td>{fmtNum(r.price)}</td></tr>) : <tr><td className="text-muted">No open orders</td></tr>}</tbody></Table></Tab.Pane>
-          <Tab.Pane eventKey="positions"><Table size="sm"><tbody>{positions.length ? positions.map((r,i)=><tr key={`${r.symbol}-${i}`}><td>{r.symbol}</td><td>{r.side}</td><td>{fmtNum(r.size,4)}</td><td>{fmtNum(r.avgPrice)}</td></tr>) : <tr><td className="text-muted">No positions</td></tr>}</tbody></Table></Tab.Pane>
-          <Tab.Pane eventKey="history"><Table size="sm"><tbody>{history.length ? history.map((r,i)=><tr key={i}><td>{fmtTs(r.updatedTime || r.createdTime)}</td><td>{r.symbol}</td><td>{fmtNum(r.closedPnl,4)}</td></tr>) : <tr><td className="text-muted">No history</td></tr>}</tbody></Table></Tab.Pane>
+          <Tab.Pane eventKey="orders"><Table size="sm"><tbody>{orders.length ? orders.map((r) => <tr key={r.orderId}><td>{r.symbol}</td><td>{r.side}</td><td>{fmtNum(r.qty, 4)}</td><td>{fmtNum(r.price)}</td></tr>) : <tr><td className="text-muted">No open orders</td></tr>}</tbody></Table></Tab.Pane>
+          <Tab.Pane eventKey="positions"><Table size="sm"><tbody>{positions.length ? positions.map((r, i) => <tr key={`${r.symbol}-${i}`}><td>{r.symbol}</td><td>{r.side}</td><td>{fmtNum(r.size, 4)}</td><td>{fmtNum(r.avgPrice)}</td></tr>) : <tr><td className="text-muted">No positions</td></tr>}</tbody></Table></Tab.Pane>
+          <Tab.Pane eventKey="history"><Table size="sm"><tbody>{history.length ? history.map((r, i) => <tr key={i}><td>{fmtTs(r.updatedTime || r.createdTime)}</td><td>{r.symbol}</td><td>{fmtNum(r.closedPnl, 4)}</td></tr>) : <tr><td className="text-muted">No history</td></tr>}</tbody></Table></Tab.Pane>
         </Tab.Content></Tab.Container>
-      </Card.Body></Card>
-    </Col>
+      )}
+    </Card.Body></Card></Col>
   </Row>;
 }
