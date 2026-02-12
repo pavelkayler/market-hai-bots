@@ -3,29 +3,25 @@ function normSym(sym) {
   return s || null;
 }
 
-function keyFor(source, stream, symbol) {
-  return `${source}:${stream}:${symbol}`;
+function keyFor(stream, symbol) {
+  return `BYBIT:${stream}:${symbol}`;
 }
 
-export function createSubscriptionManager({ bybit, binance, logger = console } = {}) {
+export function createSubscriptionManager({ bybit, logger = console } = {}) {
   const refs = new Map();
   const ownerKeys = new Map();
 
   function recomputeSymbols() {
     const bybitSymbols = new Set();
-    const binanceSymbols = new Set();
     for (const [key, count] of refs.entries()) {
       if (count <= 0) continue;
-      const [source, _stream, symbol] = key.split(':');
-      if (!symbol) continue;
-      if (source === 'BYBIT') bybitSymbols.add(symbol);
-      if (source === 'BINANCE') binanceSymbols.add(symbol);
+      const [_source, _stream, symbol] = key.split(':');
+      if (symbol) bybitSymbols.add(symbol);
     }
     bybit.setSymbols([...bybitSymbols]);
-    binance.setSymbols([...binanceSymbols]);
   }
 
-  function requestFeed(owner, { bybitSymbols = [], binanceSymbols = [], streams = ['ticker'], needsOi = false } = {}) {
+  function requestFeed(owner, { bybitSymbols = [], streams = ['ticker'], needsOi = false } = {}) {
     const id = String(owner || 'unknown');
     const current = ownerKeys.get(id) || new Set();
 
@@ -34,13 +30,8 @@ export function createSubscriptionManager({ bybit, binance, logger = console } =
     for (const symbolRaw of bybitSymbols) {
       const symbol = normSym(symbolRaw);
       if (!symbol) continue;
-      for (const stream of streamList) next.add(keyFor('BYBIT', stream, symbol));
-      if (needsOi) next.add(keyFor('BYBIT', 'oi', symbol));
-    }
-    for (const symbolRaw of binanceSymbols) {
-      const symbol = normSym(symbolRaw);
-      if (!symbol) continue;
-      for (const stream of streamList) next.add(keyFor('BINANCE', stream, symbol));
+      for (const stream of streamList) next.add(keyFor(stream, symbol));
+      if (needsOi) next.add(keyFor('oi', symbol));
     }
 
     for (const key of current) {
@@ -80,7 +71,6 @@ export function createSubscriptionManager({ bybit, binance, logger = console } =
       refs: Object.fromEntries(refs.entries()),
       owners: Object.fromEntries([...ownerKeys.entries()].map(([k, v]) => [k, [...v]])),
       bybitSymbols: bybit.getSymbols(),
-      binanceSymbols: binance.getSymbols(),
     };
   }
 

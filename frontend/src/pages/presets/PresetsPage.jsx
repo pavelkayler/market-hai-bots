@@ -148,7 +148,7 @@ export default function PresetsPage() {
                 <Col><Form.Control placeholder="symbol" value={row.symbol} onChange={(e) => setEdit((p) => ({ ...p, excludedCoins: p.excludedCoins.map((x, ix) => ix === i ? { ...x, symbol: e.target.value } : x) }))} /></Col>
                 <Col>
                   <Form.Select value={row.source} onChange={(e) => setEdit((p) => ({ ...p, excludedCoins: p.excludedCoins.map((x, ix) => ix === i ? { ...x, source: e.target.value } : x) }))}>
-                    <option>ANY</option><option>BT</option><option>BNB</option>
+                    <option>ANY</option><option>BT</option>
                   </Form.Select>
                 </Col>
                 <Col><Form.Control placeholder="reason" value={row.reason} onChange={(e) => setEdit((p) => ({ ...p, excludedCoins: p.excludedCoins.map((x, ix) => ix === i ? { ...x, reason: e.target.value } : x) }))} /></Col>

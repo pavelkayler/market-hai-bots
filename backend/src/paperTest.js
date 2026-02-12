@@ -1,541 +1,219 @@
-function safeNum(x, fallback = null) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : fallback;
+function safeNum(x, fallback = null) { const n = Number(x); return Number.isFinite(n) ? n : fallback; }
+const MAX_POSITIONS = 5;
+const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
+
+function now() { return Date.now(); }
+function runKeyFromSettings(settings) {
+  const s = settings || {};
+  return [s.leaderSymbol, s.followerSymbol, s.leaderMovePct, s.followerTpPct, s.followerSlPct, s.allowShort, s.lagMs].join('|');
+}
+function pickPx(t) {
+  const mark = safeNum(t?.mark, null);
+  if (Number.isFinite(mark) && mark > 0) return mark;
+  const mid = safeNum(t?.mid, null);
+  if (Number.isFinite(mid) && mid > 0) return mid;
+  const last = safeNum(t?.last, safeNum(t?.lastPrice, null));
+  return Number.isFinite(last) && last > 0 ? last : null;
 }
 
-function clamp(value, bounds) {
-  const min = safeNum(bounds?.min, -Infinity);
-  const max = safeNum(bounds?.max, Infinity);
-  return Math.max(min, Math.min(max, value));
-}
-
-function countBlockers(rows) {
-  const map = new Map();
-  for (const row of rows) {
-    for (const b of Array.isArray(row?.blockers) ? row.blockers : []) {
-      const prev = map.get(b.key) || { ...b, key: b.key, count: 0 };
-      prev.count += 1;
-      prev.value = b.value;
-      prev.threshold = b.threshold;
-      prev.pass = b.pass;
-      prev.detail = b.detail;
-      map.set(b.key, prev);
-    }
-  }
-  return [...map.values()].sort((a, b) => b.count - a.count);
-}
-
-export function createPaperTest({
-  getLeadLagTop,
-  getMarketTicker = () => null,
-  getUniverseSymbols = () => [],
-  presetsStore,
-  logger = console,
-  onEvent = () => {},
-  tickMs = 250,
-  reasonsEveryMs = 10_000,
-} = {}) {
+export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, getUniverseSymbols = () => [], presetsStore, logger = console, onEvent = () => {}, tickMs = 250 } = {}) {
   const state = {
-    status: "STOPPED",
-    startedAt: null,
-    endedAt: null,
-    ticks: 0,
-    activePresetId: null,
-    sessionPresetId: null,
-    lastLeadLagTop: [],
-    lastNoEntryReasons: [],
-    position: null,
-    pending: null,
-    executionMode: "paper",
-    stats: { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0 },
-    quality: {
-      signalsCount: 0,
-      entriesCount: 0,
-      winsCount: 0,
-      lossesCount: 0,
-      pnlUSDT: 0,
-      avgPnL: 0,
-      maxDrawdownUSDT: 0,
-      lastSignalTs: null,
-      lastEntryTs: null,
-      signalsPerHour: 0,
-      entriesPerHour: 0,
-    },
-    settings: null,
-    manual: {
-      enabled: false,
-      leaderSymbol: null,
-      followerSymbol: null,
-      leaderMovePct: 0,
-      followerTpPct: 0,
-      followerSlPct: 0,
-      allowShort: true,
-      leaderBaseline: null,
-      leaderPrice: null,
-      followerPrice: null,
-      leaderMovePctNow: 0,
-      lastNoEntryReason: null,
-    },
+    status: 'STOPPED', startedAt: null, endedAt: null, ticks: 0,
+    activePresetId: null, sessionPresetId: null, lastLeadLagTop: [], lastNoEntryReasons: [],
+    settings: null, executionMode: 'paper',
+    pendingSignal: null, positions: [],
+    stats: { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0, feesUSDT: 0, fundingUSDT: 0, slippageUSDT: 0, feeRateMaker: 0.0002 },
+    manual: { enabled: false, leaderSymbol: null, followerSymbol: null, leaderMovePct: 1, followerTpPct: 1, followerSlPct: 1, allowShort: true, lagMs: 250, leaderBaseline: null, leaderPrice: null, followerPrice: null, leaderMovePctNow: 0, lastNoEntryReason: null },
+    currentRunKey: null, currentTradeEvents: [], runHistory: {},
   };
-
   let logs = [];
-  let tuneChanges = [];
   let trades = [];
-  let lastNoEntryAt = 0;
-  let lastTradeAt = 0;
-  let lastTuneAt = 0;
-  let peakEquity = 0;
-  let rollingPnl = [];
 
-  function updateQualityRates(now = Date.now()) {
-    const elapsedMs = Math.max(1, now - (state.startedAt || now));
-    const hours = elapsedMs / 3_600_000;
-    state.quality.signalsPerHour = state.quality.signalsCount / hours;
-    state.quality.entriesPerHour = state.quality.entriesCount / hours;
+  function emit(type, payload) { try { onEvent({ type, payload }); } catch {} }
+  function emitLeadLag(type, payload) { emit(type, payload); emit(type.replace('leadlag.', 'paper.'), payload); }
+  function pushLog(level, msg, extra = {}) { const row = { ts: now(), level, msg, ...extra }; logs.unshift(row); logs = logs.slice(0, 300); emitLeadLag('leadlag.log', row); }
+  function getTicker(symbol) { return getMarketTicker(symbol, 'BT'); }
+
+  function upsertHistory(runKey) {
+    if (!state.runHistory[runKey]) {
+      state.runHistory[runKey] = { runKey, settings: { ...(state.settings || {}) }, pair: `${state.settings?.leaderSymbol || ''}/${state.settings?.followerSymbol || ''}`, confirmations: 0, trades: 0, wins: 0, losses: 0, pnlUSDT: 0, feesUSDT: 0, fundingUSDT: 0, slippageUSDT: 0 };
+    }
+    return state.runHistory[runKey];
   }
 
-  function emit(type, payload) {
-    try { onEvent({ type, payload }); } catch {}
-  }
-
-  function emitLeadLag(type, payload) {
-    emit(type, payload);
-    const legacyType = type.replace("leadlag.", "paper.");
-    emit(legacyType, payload);
-  }
-
-  function getPreset() {
-    return presetsStore?.getPresetById(state.sessionPresetId) || presetsStore?.getPresetById(state.activePresetId) || presetsStore?.getActivePreset?.() || null;
-  }
-
-  function pushLog(level, msg, extra = {}) {
-    const row = { ts: Date.now(), level, msg, ...extra };
-    logs.unshift(row);
-    logs = logs.slice(0, 500);
-    emitLeadLag("leadlag.log", row);
-  }
-
-  function emitState() {
-    emitLeadLag("leadlag.state", getState({ includeHistory: false }));
-    emitLeadLag("leadlag.status", getState({ includeHistory: false }));
-  }
-
-  function maybeAutoTune(now) {
-    if (state.status !== "RUNNING" || !state.sessionPresetId || !presetsStore) return;
-    if (now - lastTradeAt < 4 * 60 * 1000) return;
-    if (now - lastTuneAt < 60 * 1000) return;
-    const top = state.lastNoEntryReasons[0];
-    if (!top) return;
-
-    const map = {
-      minCorr: { step: -0.01, reason: "no trades: reduce corr gate" },
-      impulseZ: { step: -0.05, reason: "no trades: reduce impulse gate" },
-      minSamples: { step: -10, reason: "no trades: reduce sample gate" },
-      minImpulses: { step: -1, reason: "no trades: reduce impulses gate" },
-      cooldown: { param: "cooldownSec", step: -2, reason: "no trades: reduce cooldown" },
-      entryWindow: { param: "edgeMult", step: 0.05, reason: "no trades: expand entry window" },
-    };
-    const action = map[top.key] || { param: "minCorr", step: -0.01, reason: "fallback tune" };
-    const param = action.param || top.key;
-
-    const preset = presetsStore.getPresetById(state.sessionPresetId);
-    if (!preset) return;
-    const from = safeNum(preset.params?.[param], null);
-    if (from === null) return;
-    const to = clamp(from + action.step, preset.bounds?.[param]);
-    if (to === from) return;
-
-    const nextParams = { ...preset.params, [param]: to };
-    presetsStore.updatePreset(preset.id, { params: nextParams });
-    const change = { ts: now, param, from, to, reason: action.reason, bounds: preset.bounds?.[param] || null };
-    tuneChanges.unshift(change);
-    tuneChanges = tuneChanges.slice(0, 50);
-    lastTuneAt = now;
-    emitLeadLag("leadlag.tune", change);
-    pushLog("info", `AUTO-TUNE ${param}: ${from} -> ${to}`, { change });
-  }
-
-  function maybeEmitNoEntry(now) {
-    if (state.manual?.enabled) return;
-    if (now - lastNoEntryAt < reasonsEveryMs) return;
-    const rows = Array.isArray(state.lastLeadLagTop) ? state.lastLeadLagTop : [];
-    const hasReady = rows.some((r) => r?.tradeReady);
-    if (hasReady) {
-      lastNoEntryAt = now;
-      state.lastNoEntryReasons = [];
+  function openPosition(side, decisionPx, execPx) {
+    const s = state.settings || {};
+    if (state.positions.length >= MAX_POSITIONS) {
+      state.lastNoEntryReasons = [{ key: 'MAX_POSITIONS_REACHED', detail: `positions=${state.positions.length}/${MAX_POSITIONS}` }];
       return;
     }
-
-    const top = countBlockers(rows).slice(0, 3);
-    state.lastNoEntryReasons = top;
-    pushLog("info", "NO ENTRY: top reasons", {
-      reasons: top.map((x) => ({ key: x.key, value: x.value, threshold: x.threshold, pass: x.pass, detail: x.detail })),
-      whatWeWaitNext: top.slice(0, 2).map((x) => x.detail || `wait ${x.key}`),
-    });
-    lastNoEntryAt = now;
+    const qty = Math.max(0.0001, (safeNum(presetsStore?.getActivePreset?.()?.params?.maxNotionalUsd, 100) || 100) / execPx);
+    const tp = side === 'LONG' ? execPx * (1 + s.followerTpPct / 100) : execPx * (1 - s.followerTpPct / 100);
+    const sl = side === 'LONG' ? execPx * (1 - s.followerSlPct / 100) : execPx * (1 + s.followerSlPct / 100);
+    const feeEntry = execPx * qty * state.stats.feeRateMaker;
+    state.stats.feesUSDT += feeEntry;
+    state.stats.pnlUSDT -= feeEntry;
+    const pos = { id: `${now()}-${Math.random()}`, symbol: s.followerSymbol, side, entryPrice: execPx, theoreticalEntry: decisionPx, slPrice: sl, tpPrice: tp, openedAt: now(), qty, feeEntry, fundingAccrued: 0 };
+    state.positions.push(pos);
+    emitLeadLag('leadlag.trade', { ts: now(), event: 'OPEN', symbol: pos.symbol, side, entryPrice: pos.entryPrice, qty: pos.qty, runKey: state.currentRunKey });
+    state.currentTradeEvents.unshift({ ts: now(), event: 'OPEN', symbol: pos.symbol, side, entryPrice: pos.entryPrice, qty: pos.qty });
+    state.currentTradeEvents = state.currentTradeEvents.slice(0, 20);
   }
 
-  function getTickerPrice(symbol) {
-    const t = getMarketTicker(symbol, "BNB") || getMarketTicker(symbol, "BT");
-    return {
-      ticker: t,
-      px: safeNum(t?.mid, safeNum(t?.lastPrice, null)),
-    };
-  }
+  function maybeClosePosition(pos, px, fundingRate) {
+    const hitTp = pos.side === 'LONG' ? px >= pos.tpPrice : px <= pos.tpPrice;
+    const hitSl = pos.side === 'LONG' ? px <= pos.slPrice : px >= pos.slPrice;
+    if (!hitTp && !hitSl) return false;
 
-  function setManualNoEntryReason(now, key, detail, extra = {}) {
-    if (now - lastNoEntryAt < reasonsEveryMs) return;
-    const reason = {
-      key,
-      count: 1,
-      detail,
-      ...extra,
-      ts: now,
-    };
-    state.lastNoEntryReasons = [reason];
-    state.manual.lastNoEntryReason = reason;
-    pushLog("info", detail, { reason });
-    lastNoEntryAt = now;
-  }
+    const actualExit = px;
+    const theoreticalExit = hitTp ? pos.tpPrice : pos.slPrice;
+    const pnlCore = (pos.side === 'LONG' ? (actualExit - pos.entryPrice) : (pos.entryPrice - actualExit)) * pos.qty;
+    const feeExit = actualExit * pos.qty * state.stats.feeRateMaker;
+    const fundingIntervals = Math.max(0, Math.floor((now() - pos.openedAt) / FUNDING_INTERVAL_MS));
+    const fr = Number.isFinite(fundingRate) ? fundingRate : 0;
+    const notional = actualExit * pos.qty;
+    const sideSign = pos.side === 'LONG' ? 1 : -1;
+    const funding = fundingIntervals * (-fr * notional * sideSign);
+    const slippage = (pos.side === 'LONG' ? (actualExit - theoreticalExit) : (theoreticalExit - actualExit)) * pos.qty
+      + (pos.side === 'LONG' ? (pos.entryPrice - pos.theoreticalEntry) : (pos.theoreticalEntry - pos.entryPrice)) * pos.qty;
 
-  function maybeOpenManualTrade(now) {
-    if (!state.manual?.enabled || state.position) return;
-    const m = state.manual;
-    const leaderSymbol = String(m.leaderSymbol || "").toUpperCase();
-    const followerSymbol = String(m.followerSymbol || "").toUpperCase();
-    if (!leaderSymbol || !followerSymbol) return;
-
-    const leader = getTickerPrice(leaderSymbol);
-    m.leaderPrice = leader.px;
-    if (!Number.isFinite(leader.px) || leader.px <= 0) {
-      setManualNoEntryReason(now, "NO_LEADER_PRICE", `NO_LEADER_PRICE ${leaderSymbol}`);
-      return;
-    }
-    if (!Number.isFinite(m.leaderBaseline) || m.leaderBaseline <= 0) m.leaderBaseline = leader.px;
-
-    const movePctNow = ((leader.px - m.leaderBaseline) / m.leaderBaseline) * 100;
-    m.leaderMovePctNow = movePctNow;
-    const moveThreshold = Math.max(0, safeNum(m.leaderMovePct, 1));
-
-    if (Math.abs(movePctNow) < moveThreshold) {
-      setManualNoEntryReason(now, "WAIT_LEADER_MOVE", `WAIT_LEADER_MOVE ${movePctNow.toFixed(3)}% < ${moveThreshold.toFixed(3)}%`, {
-        value: movePctNow,
-        threshold: moveThreshold,
-        pass: false,
-      });
-      return;
-    }
-
-    const side = movePctNow >= 0 ? "LONG" : "SHORT";
-    if (side === "SHORT" && !m.allowShort) {
-      setManualNoEntryReason(now, "SHORT_DISABLED", `SHORT_DISABLED leaderMovePctNow=${movePctNow.toFixed(3)}%`);
-      return;
-    }
-
-    const follower = getTickerPrice(followerSymbol);
-    m.followerPrice = follower.px;
-    if (!Number.isFinite(follower.px) || follower.px <= 0) {
-      setManualNoEntryReason(now, "NO_FOLLOWER_PRICE", `NO_FOLLOWER_PRICE ${followerSymbol}`);
-      return;
-    }
-
-    const tpPct = Math.max(0, safeNum(m.followerTpPct, 1));
-    const slPct = Math.max(0, safeNum(m.followerSlPct, 1));
-    const tp = side === "LONG" ? follower.px * (1 + tpPct / 100) : follower.px * (1 - tpPct / 100);
-    const sl = side === "LONG" ? follower.px * (1 - slPct / 100) : follower.px * (1 + slPct / 100);
-
-    const riskNotional = Math.max(1, safeNum(getPreset()?.params?.maxNotionalUsd, 100));
-    const qty = riskNotional / follower.px;
-
-    state.position = {
-      symbol: followerSymbol,
-      side,
-      entryPrice: follower.px,
-      slPrice: sl,
-      tpPrices: [tp],
-      openedAt: now,
-      qty,
-      tpsHit: 0,
-      feeRate: 0.0002,
-    };
-    state.lastNoEntryReasons = [];
-    state.manual.lastNoEntryReason = null;
-    state.quality.signalsCount += 1;
-    state.quality.lastSignalTs = now;
-    state.quality.entriesCount += 1;
-    state.quality.lastEntryTs = now;
-    updateQualityRates(now);
-
-    emitLeadLag("leadlag.position", state.position);
-    emitLeadLag("leadlag.trade", {
-      ts: now,
-      event: "OPEN",
-      symbol: followerSymbol,
-      side,
-      entry: follower.px,
-      sl,
-      tp,
-      tpPrices: [tp],
-      qty,
-      mode: state.executionMode,
-    });
-    pushLog("info", `OPEN ${side} ${followerSymbol} @ ${follower.px.toFixed(4)} (manual)`);
-  }
-
-  function maybeOpenTrade(now) {
-    if (state.manual?.enabled) return;
-    if (state.position) return;
-    const rows = Array.isArray(state.lastLeadLagTop) ? state.lastLeadLagTop : [];
-    const ready = rows.find((r) => r?.tradeReady);
-    if (!ready) return;
-    state.quality.signalsCount += 1;
-    state.quality.lastSignalTs = now;
-    updateQualityRates(now);
-
-    const follower = String(ready.follower || "").toUpperCase();
-    if (!follower) return;
-    const { ticker: t, px } = getTickerPrice(follower);
-    if (!Number.isFinite(px) || px <= 0) return;
-
-    const direction = (safeNum(ready.impulseSign, 0) || 0) >= 0 ? "LONG" : "SHORT";
-    const tp1 = direction === "LONG" ? px * 1.0015 : px * 0.9985;
-    const tp2 = direction === "LONG" ? px * 1.003 : px * 0.997;
-    const tp3 = direction === "LONG" ? px * 1.0045 : px * 0.9955;
-    const sl = direction === "LONG" ? px * 0.9985 : px * 1.0015;
-
-    const riskNotional = Math.min(100, safeNum(getPreset()?.params?.maxNotionalUsd, 100));
-    const qty = riskNotional / px;
-
-    state.position = {
-      symbol: follower,
-      side: direction,
-      entryPrice: px,
-      slPrice: sl,
-      tpPrices: [tp1, tp2, tp3],
-      openedAt: now,
-      qty,
-      tpsHit: 0,
-      feeRate: 0.0002,
-    };
-    state.quality.entriesCount += 1;
-    state.quality.lastEntryTs = now;
-    updateQualityRates(now);
-
-    emitLeadLag("leadlag.position", state.position);
-    emitLeadLag("leadlag.trade", { ts: now, event: "OPEN", symbol: follower, side: direction, entry: px, sl: sl, tpPrices: [tp1, tp2, tp3], qty, mode: state.executionMode });
-    pushLog("info", `OPEN ${direction} ${follower} @ ${px.toFixed(4)} (source=${t?.source || "BNB"})`);
-  }
-
-  function maybeCloseTrade(now) {
-    const p = state.position;
-    if (!p) return;
-
-    const { ticker: t, px } = getTickerPrice(p.symbol);
-    if (!Number.isFinite(px) || px <= 0) return;
-
-    const stopHit = p.side === "LONG" ? px <= p.slPrice : px >= p.slPrice;
-    const tpHit = p.side === "LONG" ? px >= p.tpPrices[p.tpsHit] : px <= p.tpPrices[p.tpsHit];
-
-    if (!stopHit && !tpHit) return;
-
-    let reason = "SL";
-    let exit = px;
-
-    if (tpHit) {
-      p.tpsHit += 1;
-      if (p.tpsHit < p.tpPrices.length) {
-        if (p.tpsHit === 1) p.slPrice = p.entryPrice;
-        pushLog("info", `TP${p.tpsHit} hit on ${p.symbol}, moving on`);
-        return;
-      }
-      reason = "TP3";
-      exit = p.tpPrices[p.tpPrices.length - 1];
-    }
-
-    const signed = p.side === "LONG" ? (exit - p.entryPrice) : (p.entryPrice - exit);
-    const gross = signed * p.qty;
-    const fees = (p.entryPrice + exit) * p.qty * p.feeRate;
-    const pnl = gross - fees;
-
-    const tradeRow = {
-      ts: now,
-      event: "CLOSE",
-      symbol: p.symbol,
-      side: p.side,
-      entryPrice: p.entryPrice,
-      exitPrice: exit,
-      pnlUSDT: pnl,
-      reason,
-      source: t?.source || "BNB",
-    };
-
+    const pnl = pnlCore - feeExit + funding;
     state.stats.trades += 1;
+    if (pnl >= 0) state.stats.wins += 1; else state.stats.losses += 1;
     state.stats.pnlUSDT += pnl;
-    if (pnl >= 0) state.stats.wins += 1;
-    else state.stats.losses += 1;
+    state.stats.feesUSDT += feeExit;
+    state.stats.fundingUSDT += funding;
+    state.stats.slippageUSDT += slippage;
     state.stats.winRate = state.stats.trades ? (state.stats.wins / state.stats.trades) * 100 : 0;
-    state.quality.pnlUSDT = state.stats.pnlUSDT;
-    state.quality.winsCount = state.stats.wins;
-    state.quality.lossesCount = state.stats.losses;
-    rollingPnl.unshift(pnl);
-    rollingPnl = rollingPnl.slice(0, 30);
-    state.quality.avgPnL = rollingPnl.length ? rollingPnl.reduce((acc, x) => acc + x, 0) / rollingPnl.length : 0;
-    peakEquity = Math.max(peakEquity, state.quality.pnlUSDT);
-    state.quality.maxDrawdownUSDT = Math.max(state.quality.maxDrawdownUSDT, peakEquity - state.quality.pnlUSDT);
 
-    trades.unshift(tradeRow);
-    trades = trades.slice(0, 200);
-    emitLeadLag("leadlag.trade", tradeRow);
-    pushLog("info", `CLOSE ${p.side} ${p.symbol} ${reason} pnl=${pnl.toFixed(4)} USDT`);
+    const row = { ts: now(), event: 'CLOSE', symbol: pos.symbol, side: pos.side, entryPrice: pos.entryPrice, exitPrice: actualExit, theoreticalExit, pnlUSDT: pnl, feesUSDT: feeExit + pos.feeEntry, fundingUSDT: funding, slippageUSDT: slippage, reason: hitTp ? 'TP' : 'SL', runKey: state.currentRunKey };
+    trades.unshift(row); trades = trades.slice(0, 300);
+    state.currentTradeEvents.unshift(row); state.currentTradeEvents = state.currentTradeEvents.slice(0, 20);
+    emitLeadLag('leadlag.trade', row);
 
-    if (state.sessionPresetId) {
-      presetsStore?.upsertStats?.(state.sessionPresetId, {
-        pnlUsdt: state.stats.pnlUSDT,
-        trades: state.stats.trades,
-        winRate: state.stats.winRate,
-      });
-    }
-
-    state.position = null;
-    emitLeadLag("leadlag.position", null);
-    if (state.manual?.enabled) {
-      const leaderSymbol = String(state.manual.leaderSymbol || "").toUpperCase();
-      const leaderPx = getTickerPrice(leaderSymbol).px;
-      if (Number.isFinite(leaderPx) && leaderPx > 0) state.manual.leaderBaseline = leaderPx;
-    }
-    lastTradeAt = now;
+    const hist = upsertHistory(state.currentRunKey);
+    hist.trades += 1; if (pnl >= 0) hist.wins += 1; else hist.losses += 1;
+    hist.pnlUSDT += pnl; hist.feesUSDT += feeExit + pos.feeEntry; hist.fundingUSDT += funding; hist.slippageUSDT += slippage;
+    return true;
   }
 
   function step() {
-    if (state.status !== "RUNNING") return;
-    const now = Date.now();
+    if (state.status !== 'RUNNING') return;
     state.ticks += 1;
     state.lastLeadLagTop = Array.isArray(getLeadLagTop?.()) ? getLeadLagTop().slice(0, 10) : [];
-    if (state.manual?.enabled) {
-      const m = state.manual;
-      const leaderPx = getTickerPrice(m.leaderSymbol).px;
-      const followerPx = getTickerPrice(m.followerSymbol).px;
-      m.leaderPrice = leaderPx;
-      m.followerPrice = followerPx;
-      if (Number.isFinite(leaderPx) && Number.isFinite(m.leaderBaseline) && m.leaderBaseline > 0) {
-        m.leaderMovePctNow = ((leaderPx - m.leaderBaseline) / m.leaderBaseline) * 100;
+    const s = state.settings || {};
+    const leaderTicker = getTicker(s.leaderSymbol);
+    const followerTicker = getTicker(s.followerSymbol);
+    const leaderPx = pickPx(leaderTicker);
+    const followerPx = pickPx(followerTicker);
+    state.manual.leaderPrice = leaderPx;
+    state.manual.followerPrice = followerPx;
+
+    if (!Number.isFinite(state.manual.leaderBaseline) && Number.isFinite(leaderPx)) state.manual.leaderBaseline = leaderPx;
+    if (Number.isFinite(leaderPx) && Number.isFinite(state.manual.leaderBaseline) && state.manual.leaderBaseline > 0) {
+      state.manual.leaderMovePctNow = ((leaderPx - state.manual.leaderBaseline) / state.manual.leaderBaseline) * 100;
+    }
+
+    if (!state.pendingSignal && Number.isFinite(leaderPx) && Number.isFinite(followerPx) && Number.isFinite(state.manual.leaderBaseline) && state.manual.leaderBaseline > 0) {
+      const movePct = ((leaderPx - state.manual.leaderBaseline) / state.manual.leaderBaseline) * 100;
+      if (Math.abs(movePct) >= s.leaderMovePct) {
+        const side = movePct >= 0 ? 'LONG' : 'SHORT';
+        if (side === 'SHORT' && !s.allowShort) {
+          state.lastNoEntryReasons = [{ key: 'SHORT_DISABLED', detail: 'allowShort=false' }];
+        } else {
+          state.pendingSignal = { side, executeAt: now() + s.lagMs, theoreticalEntry: followerPx };
+        }
       }
     }
-    maybeOpenManualTrade(now);
-    maybeOpenTrade(now);
-    maybeCloseTrade(now);
-    maybeEmitNoEntry(now);
-    maybeAutoTune(now);
-    updateQualityRates(now);
-    emitState();
-  }
 
-  const timer = setInterval(() => {
-    try { step(); } catch (e) { logger?.warn?.({ err: e }, "leadlag paper step failed"); }
-  }, tickMs);
-
-  function start({ presetId, mode = "paper", settings = null } = {}) {
-    if (state.status === "RUNNING" || state.status === "STARTING") return { ok: false };
-    state.status = "STARTING";
-    state.executionMode = mode;
-    state.endedAt = null;
-    state.startedAt = null;
-    state.ticks = 0;
-    state.position = null;
-    state.lastLeadLagTop = [];
-    state.lastNoEntryReasons = [];
-    state.quality = {
-      signalsCount: 0,
-      entriesCount: 0,
-      winsCount: 0,
-      lossesCount: 0,
-      pnlUSDT: 0,
-      avgPnL: 0,
-      maxDrawdownUSDT: 0,
-      lastSignalTs: null,
-      lastEntryTs: null,
-      signalsPerHour: 0,
-      entriesPerHour: 0,
-    };
-    const normalizedSettings = settings && typeof settings === "object" ? {
-      leaderSymbol: String(settings.leaderSymbol || "").toUpperCase() || null,
-      followerSymbol: String(settings.followerSymbol || "").toUpperCase() || null,
-      leaderMovePct: Math.max(0, safeNum(settings.leaderMovePct, 1)),
-      followerTpPct: Math.max(0, safeNum(settings.followerTpPct, 1)),
-      followerSlPct: Math.max(0, safeNum(settings.followerSlPct, 1)),
-      allowShort: settings.allowShort !== false,
-    } : null;
-    state.settings = normalizedSettings;
-    state.manual = {
-      enabled: Boolean(normalizedSettings?.leaderSymbol && normalizedSettings?.followerSymbol),
-      leaderSymbol: normalizedSettings?.leaderSymbol || null,
-      followerSymbol: normalizedSettings?.followerSymbol || null,
-      leaderMovePct: normalizedSettings?.leaderMovePct ?? 1,
-      followerTpPct: normalizedSettings?.followerTpPct ?? 1,
-      followerSlPct: normalizedSettings?.followerSlPct ?? 1,
-      allowShort: normalizedSettings?.allowShort !== false,
-      leaderBaseline: null,
-      leaderPrice: null,
-      followerPrice: null,
-      leaderMovePctNow: 0,
-      lastNoEntryReason: null,
-    };
-    peakEquity = 0;
-    rollingPnl = [];
-    pushLog("info", "Starting...");
-
-    const selectedId = presetId || presetsStore?.getState()?.activePresetId;
-    const activePreset = presetsStore?.getPresetById(selectedId) || presetsStore?.getActivePreset?.();
-    if (!activePreset) {
-      pushLog("error", "No active preset");
-      state.status = "STOPPED";
-      return { ok: false };
+    if (state.pendingSignal && now() >= state.pendingSignal.executeAt) {
+      if (Number.isFinite(followerPx) && followerPx > 0) openPosition(state.pendingSignal.side, state.pendingSignal.theoreticalEntry, followerPx);
+      else state.lastNoEntryReasons = [{ key: 'NO_FOLLOWER_PRICE', detail: 'missing price at executeAt' }];
+      state.pendingSignal = null;
+      if (Number.isFinite(leaderPx) && leaderPx > 0) state.manual.leaderBaseline = leaderPx;
     }
 
-    state.activePresetId = activePreset.id;
-    const clone = presetsStore.clonePresetAsSession(activePreset.id);
-    state.sessionPresetId = clone?.id || null;
-    pushLog("info", `Universe loaded (${getUniverseSymbols().length} symbols)`);
-    if (state.sessionPresetId) pushLog("info", "Session preset clone created");
+    const fr = safeNum(followerTicker?.fundingRate, 0);
+    const remaining = [];
+    for (const p of state.positions) {
+      if (!Number.isFinite(followerPx)) { remaining.push(p); continue; }
+      const closed = maybeClosePosition(p, followerPx, fr);
+      if (!closed) remaining.push(p);
+    }
+    state.positions = remaining;
 
-    setTimeout(() => {
-      state.startedAt = Date.now();
-      state.status = "RUNNING";
-      pushLog("info", `RUNNING mode=${mode}${state.manual.enabled ? " manual" : " auto"}`);
-      emitState();
-    }, 10);
-    emitState();
+    emitLeadLag('leadlag.state', getState({ includeHistory: false }));
+  }
+
+  const timer = setInterval(() => { try { step(); } catch (e) { logger?.warn?.({ err: e }, 'leadlag paper step failed'); } }, tickMs);
+
+  function normalizeSettings(settings) {
+    return {
+      leaderSymbol: String(settings?.leaderSymbol || 'BTCUSDT').toUpperCase(),
+      followerSymbol: String(settings?.followerSymbol || 'ETHUSDT').toUpperCase(),
+      leaderMovePct: Math.max(0.01, safeNum(settings?.leaderMovePct, 1)),
+      followerTpPct: Math.max(0.01, safeNum(settings?.followerTpPct, 1)),
+      followerSlPct: Math.max(0.01, safeNum(settings?.followerSlPct, 1)),
+      allowShort: settings?.allowShort !== false,
+      lagMs: Math.max(0, Math.trunc(safeNum(settings?.lagMs, 250))),
+    };
+  }
+
+  function start({ presetId, mode = 'paper', settings = null } = {}) {
+    if (state.status === 'RUNNING' || state.status === 'STARTING') return { ok: false };
+    state.status = 'STARTING';
+    state.executionMode = mode;
+    state.startedAt = null;
+    state.endedAt = null;
+    state.ticks = 0;
+    state.positions = [];
+    state.pendingSignal = null;
+    state.lastNoEntryReasons = [];
+    state.settings = normalizeSettings(settings || {});
+    state.manual = { ...state.manual, enabled: true, ...state.settings, leaderBaseline: null, leaderPrice: null, followerPrice: null, leaderMovePctNow: 0 };
+    state.currentRunKey = `${Date.now()}::${runKeyFromSettings(state.settings)}`;
+    state.currentTradeEvents = [];
+    upsertHistory(state.currentRunKey);
+    state.activePresetId = presetId || presetsStore?.getState()?.activePresetId || null;
+    const clone = presetsStore?.clonePresetAsSession?.(state.activePresetId);
+    state.sessionPresetId = clone?.id || null;
+    setTimeout(() => { state.status = 'RUNNING'; state.startedAt = now(); emitLeadLag('leadlag.state', getState()); }, 10);
     return { ok: true };
   }
 
-  function stop({ reason = "manual" } = {}) {
-    if (state.status === "STOPPED" || state.status === "STOPPING") return { ok: false };
-    state.status = "STOPPING";
-    emitState();
-    setTimeout(() => {
-      state.status = "STOPPED";
-      state.position = null;
-      state.endedAt = Date.now();
-      pushLog("info", `Stopped (${reason})`);
-      emitState();
-    }, 10);
+  function stop({ reason = 'manual' } = {}) {
+    if (state.status === 'STOPPED' || state.status === 'STOPPING') return { ok: false };
+    state.status = 'STOPPING';
+    setTimeout(() => { state.status = 'STOPPED'; state.endedAt = now(); state.pendingSignal = null; state.positions = []; pushLog('info', `Stopped (${reason})`); emitLeadLag('leadlag.state', getState()); }, 10);
     return { ok: true };
+  }
+
+  function reset() {
+    state.status = 'STOPPED'; state.startedAt = null; state.endedAt = now(); state.ticks = 0;
+    state.pendingSignal = null; state.positions = []; state.currentTradeEvents = []; state.currentRunKey = null; state.runHistory = {};
+    state.lastNoEntryReasons = [];
+    state.stats = { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0, feesUSDT: 0, fundingUSDT: 0, slippageUSDT: 0, feeRateMaker: 0.0002 };
+    trades = []; logs = [];
+    emitLeadLag('leadlag.state', getState());
+    return { ok: true };
+  }
+
+  function setSearchRows(rows = []) {
+    if (!state.currentRunKey) return;
+    const hist = upsertHistory(state.currentRunKey);
+    const match = rows.find((r) => String(r?.leader) === state.settings?.leaderSymbol && String(r?.follower) === state.settings?.followerSymbol);
+    hist.confirmations = Number(match?.confirmations || hist.confirmations || 0);
   }
 
   function getState({ includeHistory = true } = {}) {
-    const base = {
-      ...state,
-      activePreset: presetsStore?.getPresetById(state.activePresetId) || null,
-      sessionPreset: presetsStore?.getPresetById(state.sessionPresetId) || null,
-      pending: null,
-    };
+    const base = { ...state, position: state.positions[0] || null, activePreset: presetsStore?.getPresetById(state.activePresetId) || null, sessionPreset: presetsStore?.getPresetById(state.sessionPresetId) || null };
     if (includeHistory) {
-      base.tuneChanges = tuneChanges.slice(0, 10);
       base.trades = trades.slice(0, 100);
       base.logs = logs.slice(0, 200);
+      base.runSummary = Object.values(state.runHistory).map((r) => ({ ...r, winRate: r.trades ? (r.wins / r.trades) * 100 : 0 }));
     }
     return base;
   }
 
-  return { start, stop, getState, dispose: () => clearInterval(timer) };
+  return { start, stop, reset, setSearchRows, getState, dispose: () => clearInterval(timer) };
 }

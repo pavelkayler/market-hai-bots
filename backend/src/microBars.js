@@ -12,8 +12,7 @@ function pickPrice(t) {
 function normalizeSource(source) {
   const src = String(source || "").toUpperCase();
   if (src === "BT" || src === "BYBIT") return "BT";
-  if (src === "BNB" || src === "BINANCE") return "BNB";
-  return null;
+    return null;
 }
 
 export function createMicroBarAggregator({
