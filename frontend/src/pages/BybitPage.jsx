@@ -82,7 +82,9 @@ export default function BybitPage() {
 
     ws.onopen = () => {
       if (shouldClose) {
-        try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        }
         return;
       }
       setWsStatus("connected");
@@ -319,7 +321,7 @@ export default function BybitPage() {
                     <td>{Number.isFinite(r.lagMs) ? `${r.lagMs}ms` : "—"}</td>
                     <td>{r.confirmed ? "✅" : "—"} <span className="text-muted">({r.samples ?? 0}/{r.impulses ?? 0})</span></td>
                     <td>{r.tradeReady ? <Badge bg="success">ready</Badge> : <Badge bg="secondary">wait</Badge>}</td>
-                    <td className="small">{Array.isArray(r.blockers) ? r.blockers.map((b) => b.key).slice(0, 3).join("; ") : "—"}</td>
+                    <td className="small">{Array.isArray(r.blockers) ? r.blockers.slice(0, 3).map((b) => `${b.key}: ${b.detail || `${b.value}/${b.threshold}`}`).join("; ") : "—"}</td>
                   </tr>
                 )) : (
                   <tr><td colSpan={7} className="text-muted">Нет расчётов ещё (нужно накопить ~50s микробаров).</td></tr>

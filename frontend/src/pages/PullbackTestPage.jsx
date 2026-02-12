@@ -60,7 +60,7 @@ export default function PullbackTestPage() {
     setWarnings(pos.warnings || state.warnings || []);
     setPositions(pos.positions || []);
     setOrders(ord.orders || []);
-    setHistory(hist.history || []);
+    setHistory(Array.isArray(hist.history) ? hist.history.filter((x) => x && typeof x === "object") : []);
   };
 
   useEffect(() => {
@@ -83,7 +83,9 @@ export default function PullbackTestPage() {
 
     ws.onopen = () => {
       if (shouldClose) {
-        try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        }
         return;
       }
       setWsStatus("connected");
@@ -102,7 +104,7 @@ export default function PullbackTestPage() {
       const type = msg?.type === "event" ? msg.topic : msg.type;
       const payload = msg?.type === "event" ? msg.payload : msg.payload;
       if (type === "snapshot") {
-        setPb(payload?.pullbackState || null);
+        if (payload?.pullbackState) setPb(payload.pullbackState);
         setTradeStatus(payload?.tradeStatus || null);
         setWarnings(payload?.warnings || []);
       }
@@ -110,18 +112,18 @@ export default function PullbackTestPage() {
         setPb(payload || null);
       }
       if (type === "trade.positions") {
-        pendingRef.current.set("positions", payload?.positions || []);
+        pendingRef.current.set("positions", Array.isArray(payload?.positions) ? payload.positions : []);
         pendingRef.current.set("tradeStatus", payload?.tradeStatus || null);
         pendingRef.current.set("warnings", payload?.warnings || []);
       }
-      if (type === "trade.orders") pendingRef.current.set("orders", payload?.orders || []);
+      if (type === "trade.orders") pendingRef.current.set("orders", Array.isArray(payload?.orders) ? payload.orders : []);
       if (type === "trade.killswitch") setTradeState((p) => ({ ...(p || {}), killSwitch: payload?.enabled }));
       if (type === "pullback.start.ack") {
-        if (payload?.state) setPb(payload.state);
+        if (payload?.state) setPb((prev) => ({ ...(prev || {}), ...payload.state }));
         showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест запущен" : (payload?.error || "Start failed"));
       }
       if (type === "pullback.stop.ack") {
-        if (payload?.state) setPb(payload.state);
+        if (payload?.state) setPb((prev) => ({ ...(prev || {}), ...payload.state }));
         showAck(payload?.ok ? "success" : "danger", payload?.ok ? "Тест остановлен" : (payload?.error || "Stop failed"));
       }
     };

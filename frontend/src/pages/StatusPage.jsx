@@ -25,6 +25,7 @@ export default function StatusPage() {
   const [wsStatus, setWsStatus] = useState('disconnected')
   const [wsLastMsg, setWsLastMsg] = useState(null)
   const wsRef = useRef(null)
+  const shouldCloseWsRef = useRef(false)
 
   const [symbols, setSymbols] = useState(['BTCUSDT', 'ETHUSDT', 'SOLUSDT'])
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT')
@@ -55,15 +56,30 @@ export default function StatusPage() {
   function connectWs() {
     const wsUrl = toWsUrl(API_BASE)
 
-    if (wsRef.current) {
-      try { wsRef.current.close() } catch { /* ignore */ }
+    shouldCloseWsRef.current = true
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      try { wsRef.current.close(1000, 'reconnect') } catch { /* ignore */ }
     }
 
+    shouldCloseWsRef.current = false
     setWsStatus('connecting')
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
-    ws.onopen = () => setWsStatus('connected')
+    ws.onopen = () => {
+      if (shouldCloseWsRef.current) {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.close(1000, 'cleanup') } catch { /* ignore */ }
+        }
+        return
+      }
+      setWsStatus('connected')
+      try {
+        ws.send(JSON.stringify({ type: 'getSnapshot' }))
+      } catch {
+        // ignore
+      }
+    }
     ws.onclose = () => setWsStatus('disconnected')
     ws.onerror = () => setWsStatus('error')
 
@@ -146,9 +162,10 @@ export default function StatusPage() {
     }, 250)
 
     return () => {
+      shouldCloseWsRef.current = true
       clearInterval(flushTimer)
-      if (wsRef.current) {
-        try { wsRef.current.close() } catch { /* ignore */ }
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        try { wsRef.current.close(1000, 'cleanup') } catch { /* ignore */ }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

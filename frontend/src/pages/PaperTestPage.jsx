@@ -76,7 +76,9 @@ export default function PaperTestPage() {
 
     ws.onopen = () => {
       if (shouldClose) {
-        try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        }
         return;
       }
       setWsStatus("connected");
@@ -112,17 +114,18 @@ export default function PaperTestPage() {
       }
 
       if (msg.type === "paper.status") {
-        setPaper(msg.payload || null);
+        if (!msg.payload || typeof msg.payload !== "object") return;
+        setPaper((prev) => ({ ...(prev || {}), ...msg.payload }));
         if (msg.payload?.sessionPreset) setPresetText(JSON.stringify(msg.payload.sessionPreset, null, 2));
-        setTuneChanges(Array.isArray(msg.payload?.tuneChanges) ? msg.payload.tuneChanges : []);
-        setPosition(msg.payload?.position || null);
-        setPending(msg.payload?.pending || null);
+        if (Array.isArray(msg.payload?.tuneChanges)) setTuneChanges(msg.payload.tuneChanges);
+        if (Object.prototype.hasOwnProperty.call(msg.payload, "position")) setPosition(msg.payload?.position || null);
+        if (Object.prototype.hasOwnProperty.call(msg.payload, "pending")) setPending(msg.payload?.pending || null);
         return;
       }
 
       if (msg.type === "paper.start.ack") {
         if (msg.payload?.state) {
-          setPaper(msg.payload.state);
+          setPaper((prev) => ({ ...(prev || {}), ...msg.payload.state }));
         }
         if (msg.payload?.ok) showAck("success", "Тест запущен");
         else showAck("danger", msg.payload?.error || "Start failed");
@@ -131,7 +134,7 @@ export default function PaperTestPage() {
 
       if (msg.type === "paper.stop.ack") {
         if (msg.payload?.state) {
-          setPaper(msg.payload.state);
+          setPaper((prev) => ({ ...(prev || {}), ...msg.payload.state }));
         }
         if (msg.payload?.ok) showAck("success", "Тест остановлен");
         else showAck("danger", msg.payload?.error || "Stop failed");
@@ -172,7 +175,8 @@ export default function PaperTestPage() {
       }
 
       if (msg.type === "paper.state") {
-        setPaper(msg.payload || null);
+        if (!msg.payload || typeof msg.payload !== "object") return;
+        setPaper((prev) => ({ ...(prev || {}), ...msg.payload }));
         setTrades(Array.isArray(msg.payload?.trades) ? [...msg.payload.trades].reverse().slice(0, 100) : []);
         setLogs(Array.isArray(msg.payload?.logs) ? [...msg.payload.logs].reverse() : []);
         setPosition(msg.payload?.position || null);

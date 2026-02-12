@@ -23,8 +23,6 @@ export default function RangeMetricsPage() {
   const [positions, setPositions] = useState([]);
   const [orders, setOrders] = useState([]);
   const [history, setHistory] = useState([]);
-  const [logs, setLogs] = useState([]);
-  const [detectedMode, setDetectedMode] = useState("—");
   const wsUrl = useMemo(() => toWsUrl(API_BASE), [API_BASE]);
   const symbolRef = useRef("BTCUSDT");
 
@@ -49,9 +47,7 @@ export default function RangeMetricsPage() {
     setWarnings(pos.warnings || []);
     setPositions(pos.positions || []);
     setOrders(ord.orders || []);
-    setHistory(hist.history || []);
-    const idx = new Set((pos.positions || []).map((x) => Number(x.positionIdx)));
-    setDetectedMode(idx.has(1) || idx.has(2) ? "HEDGE" : "ONE_WAY");
+    setHistory(Array.isArray(hist.history) ? hist.history.filter((x) => x && typeof x === "object") : []);
   };
 
   useEffect(() => {
@@ -67,12 +63,13 @@ export default function RangeMetricsPage() {
 
       if (next.positions !== undefined) setPositions(next.positions || []);
       if (next.orders !== undefined) setOrders(next.orders || []);
-      if (next.logs !== undefined) setLogs((prev) => [...next.logs, ...prev].slice(0, 200));
     }, 400);
 
     ws.onopen = () => {
       if (shouldClose) {
-        try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        }
         return;
       }
       setWsStatus("connected");
@@ -90,21 +87,18 @@ export default function RangeMetricsPage() {
       const type = msg?.type === "event" ? msg.topic : msg.type;
       const payload = msg?.type === "event" ? msg.payload : msg.payload;
       if (type === "snapshot") {
-        setRange(payload?.rangeState || null);
-        setLogs(payload?.rangeState?.logs || []);
+        if (payload?.rangeState) {
+          setRange(payload.rangeState);
+        }
       }
       if (type === "range.status" || type === "range.state") {
-        setRange(payload || null);
-        setLogs(payload?.logs || []);
+        if (!payload || typeof payload !== "object") return;
+        setRange((prev) => ({ ...(prev || {}), ...payload }));
       }
-      if (type === "trade.positions") pendingRef.current.set("positions", payload?.positions || []);
-      if (type === "trade.orders") pendingRef.current.set("orders", payload?.orders || []);
-      if (type === "range.log") {
-        const queued = pendingRef.current.get("logs") || [];
-        pendingRef.current.set("logs", [payload, ...queued].slice(0, 50));
-      }
+      if (type === "trade.positions") pendingRef.current.set("positions", Array.isArray(payload?.positions) ? payload.positions : []);
+      if (type === "trade.orders") pendingRef.current.set("orders", Array.isArray(payload?.orders) ? payload.orders : []);
       if (type === "range.start.ack" || type === "range.stop.ack") {
-        if (payload?.state) setRange(payload.state);
+        if (payload?.state) setRange((prev) => ({ ...(prev || {}), ...payload.state }));
       }
     };
     const id = setInterval(() => poll().catch(() => {}), 4000);
@@ -129,17 +123,14 @@ export default function RangeMetricsPage() {
   };
   const stop = () => wsRef.current?.send(JSON.stringify({ type: "stopRangeTest" }));
   const realDisabled = tradeState?.tradeStatus && !tradeState.tradeStatus.realAllowed;
-  const has10001 = logs.some((l) => String(l?.msg || "").includes("10001"));
 
   return <Row className="g-3">
     <Col md={4}><Card><Card.Body className="d-grid gap-2">
-      <div className="d-flex justify-content-between"><strong>Range (Hedge)</strong><Badge bg={wsStatus === "connected" ? "success" : "secondary"}>{wsStatus}</Badge></div>
+      <div className="d-flex justify-content-between"><strong>Range (Metrics)</strong><Badge bg={wsStatus === "connected" ? "success" : "secondary"}>{wsStatus}</Badge></div>
       <Form.Select value={mode} onChange={(e) => setMode(e.target.value)}>
         <option value="paper">PAPER</option><option value="demo">DEMO</option><option value="real" disabled={realDisabled}>REAL</option>
       </Form.Select>
       {mode === "real" ? <Form.Control value={realConfirmText} onChange={(e) => setRealConfirmText(e.target.value)} placeholder="Type REAL" /> : null}
-      <div>Detected position mode: <Badge bg={detectedMode === "HEDGE" ? "info" : "secondary"}>{detectedMode}</Badge></div>
-      {has10001 ? <Alert variant="warning" className="mb-0 py-2">Your account is in HEDGE mode; use positionIdx=1/2 for LONG/SHORT.</Alert> : null}
       {warnings.map((w, i) => <Alert key={i} variant={w.severity === "error" ? "danger" : "warning"} className="mb-0 py-2">{w.code}: {w.message}</Alert>)}
       <div className="d-flex gap-2"><Button onClick={start}>Start</Button><Button variant="outline-danger" onClick={stop}>Stop</Button></div>
     </Card.Body></Card></Col>
@@ -151,7 +142,7 @@ export default function RangeMetricsPage() {
       </Nav><Tab.Content>
         <Tab.Pane eventKey="orders"><Table size="sm"><tbody>{orders.length ? orders.map((r)=><tr key={r.orderId}><td>{r.symbol}</td><td>{r.side}</td><td>{fmt(r.qty,4)}</td><td>{fmt(r.price)}</td></tr>) : <tr><td className="text-muted">No open orders</td></tr>}</tbody></Table></Tab.Pane>
         <Tab.Pane eventKey="positions"><Table size="sm"><tbody>{positions.length ? positions.map((r,i)=><tr key={i}><td>{r.symbol}</td><td>{r.side}</td><td>{fmt(r.size,4)}</td><td>{fmt(r.avgPrice)}</td><td>{r.positionIdx}</td></tr>) : <tr><td className="text-muted">No positions</td></tr>}</tbody></Table></Tab.Pane>
-        <Tab.Pane eventKey="history"><Table size="sm"><tbody>{history.length ? history.map((r,i)=><tr key={i}><td>{r.symbol}</td><td>{fmt(r.closedPnl,4)}</td></tr>) : <tr><td className="text-muted">No history</td></tr>}</tbody></Table></Tab.Pane>
+        <Tab.Pane eventKey="history"><Table size="sm"><tbody>{history.length ? history.map((r,i)=><tr key={i}><td>{r.symbol}</td><td>{fmt(r.closedPnl,4)}</td></tr>)  : <tr><td className="text-muted">No history yet</td></tr>}</tbody></Table></Tab.Pane>
       </Tab.Content></Tab.Container>
     </Card.Body></Card></Col>
   </Row>;
