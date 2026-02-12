@@ -27,6 +27,7 @@ function countBlockers(rows) {
 
 export function createPaperTest({
   getLeadLagTop,
+  getMarketTicker = () => null,
   getUniverseSymbols = () => [],
   presetsStore,
   logger = console,
@@ -43,16 +44,27 @@ export function createPaperTest({
     sessionPresetId: null,
     lastLeadLagTop: [],
     lastNoEntryReasons: [],
+    position: null,
+    pending: null,
+    executionMode: "paper",
+    stats: { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0 },
   };
 
   let logs = [];
   let tuneChanges = [];
+  let trades = [];
   let lastNoEntryAt = 0;
-  let lastTradeReadyAt = 0;
+  let lastTradeAt = 0;
   let lastTuneAt = 0;
 
   function emit(type, payload) {
     try { onEvent({ type, payload }); } catch {}
+  }
+
+  function emitLeadLag(type, payload) {
+    emit(type, payload);
+    const legacyType = type.replace("leadlag.", "paper.");
+    emit(legacyType, payload);
   }
 
   function getPreset() {
@@ -63,28 +75,28 @@ export function createPaperTest({
     const row = { ts: Date.now(), level, msg, ...extra };
     logs.unshift(row);
     logs = logs.slice(0, 500);
-    emit("paper.log", row);
+    emitLeadLag("leadlag.log", row);
   }
 
   function emitState() {
-    emit("paper.state", getState({ includeHistory: false }));
-    emit("paper.status", getState({ includeHistory: false }));
+    emitLeadLag("leadlag.state", getState({ includeHistory: false }));
+    emitLeadLag("leadlag.status", getState({ includeHistory: false }));
   }
 
   function maybeAutoTune(now) {
     if (state.status !== "RUNNING" || !state.sessionPresetId || !presetsStore) return;
-    if (now - lastTradeReadyAt < 5 * 60 * 1000) return;
-    if (now - lastTuneAt < 5 * 60 * 1000) return;
+    if (now - lastTradeAt < 4 * 60 * 1000) return;
+    if (now - lastTuneAt < 60 * 1000) return;
     const top = state.lastNoEntryReasons[0];
     if (!top) return;
 
     const map = {
-      minCorr: { step: -0.01, reason: "reduce corr gate" },
-      impulseZ: { step: -0.05, reason: "reduce impulse gate" },
-      minSamples: { step: -10, reason: "reduce sample gate" },
-      minImpulses: { step: -1, reason: "reduce impulses gate" },
-      cooldown: { param: "cooldownSec", step: -2, reason: "reduce cooldown" },
-      entryWindow: { param: "edgeMult", step: 0.05, reason: "expand entry window" },
+      minCorr: { step: -0.01, reason: "no trades: reduce corr gate" },
+      impulseZ: { step: -0.05, reason: "no trades: reduce impulse gate" },
+      minSamples: { step: -10, reason: "no trades: reduce sample gate" },
+      minImpulses: { step: -1, reason: "no trades: reduce impulses gate" },
+      cooldown: { param: "cooldownSec", step: -2, reason: "no trades: reduce cooldown" },
+      entryWindow: { param: "edgeMult", step: 0.05, reason: "no trades: expand entry window" },
     };
     const action = map[top.key] || { param: "minCorr", step: -0.01, reason: "fallback tune" };
     const param = action.param || top.key;
@@ -102,7 +114,7 @@ export function createPaperTest({
     tuneChanges.unshift(change);
     tuneChanges = tuneChanges.slice(0, 50);
     lastTuneAt = now;
-    emit("paper.tune", change);
+    emitLeadLag("leadlag.tune", change);
     pushLog("info", `AUTO-TUNE ${param}: ${from} -> ${to}`, { change });
   }
 
@@ -111,7 +123,6 @@ export function createPaperTest({
     const rows = Array.isArray(state.lastLeadLagTop) ? state.lastLeadLagTop : [];
     const hasReady = rows.some((r) => r?.tradeReady);
     if (hasReady) {
-      lastTradeReadyAt = now;
       lastNoEntryAt = now;
       state.lastNoEntryReasons = [];
       return;
@@ -126,26 +137,134 @@ export function createPaperTest({
     lastNoEntryAt = now;
   }
 
+  function maybeOpenTrade(now) {
+    if (state.position) return;
+    const rows = Array.isArray(state.lastLeadLagTop) ? state.lastLeadLagTop : [];
+    const ready = rows.find((r) => r?.tradeReady);
+    if (!ready) return;
+
+    const follower = String(ready.follower || "").toUpperCase();
+    if (!follower) return;
+    const t = getMarketTicker(follower, "BNB") || getMarketTicker(follower, "BT");
+    const px = safeNum(t?.mid, safeNum(t?.lastPrice, null));
+    if (!Number.isFinite(px) || px <= 0) return;
+
+    const direction = (safeNum(ready.impulseSign, 0) || 0) >= 0 ? "LONG" : "SHORT";
+    const tp1 = direction === "LONG" ? px * 1.0015 : px * 0.9985;
+    const tp2 = direction === "LONG" ? px * 1.003 : px * 0.997;
+    const tp3 = direction === "LONG" ? px * 1.0045 : px * 0.9955;
+    const sl = direction === "LONG" ? px * 0.9985 : px * 1.0015;
+
+    const riskNotional = Math.min(100, safeNum(getPreset()?.params?.maxNotionalUsd, 100));
+    const qty = riskNotional / px;
+
+    state.position = {
+      symbol: follower,
+      side: direction,
+      entryPrice: px,
+      slPrice: sl,
+      tpPrices: [tp1, tp2, tp3],
+      openedAt: now,
+      qty,
+      tpsHit: 0,
+      feeRate: 0.0002,
+    };
+
+    emitLeadLag("leadlag.position", state.position);
+    pushLog("info", `OPEN ${direction} ${follower} @ ${px.toFixed(4)} (source=${t?.source || "BNB"})`);
+  }
+
+  function maybeCloseTrade(now) {
+    const p = state.position;
+    if (!p) return;
+
+    const t = getMarketTicker(p.symbol, "BNB") || getMarketTicker(p.symbol, "BT");
+    const px = safeNum(t?.mid, safeNum(t?.lastPrice, null));
+    if (!Number.isFinite(px) || px <= 0) return;
+
+    const stopHit = p.side === "LONG" ? px <= p.slPrice : px >= p.slPrice;
+    const tpHit = p.side === "LONG" ? px >= p.tpPrices[p.tpsHit] : px <= p.tpPrices[p.tpsHit];
+
+    if (!stopHit && !tpHit) return;
+
+    let reason = "SL";
+    let exit = px;
+
+    if (tpHit) {
+      p.tpsHit += 1;
+      if (p.tpsHit < p.tpPrices.length) {
+        if (p.tpsHit === 1) p.slPrice = p.entryPrice;
+        pushLog("info", `TP${p.tpsHit} hit on ${p.symbol}, moving on`);
+        return;
+      }
+      reason = "TP3";
+      exit = p.tpPrices[p.tpPrices.length - 1];
+    }
+
+    const signed = p.side === "LONG" ? (exit - p.entryPrice) : (p.entryPrice - exit);
+    const gross = signed * p.qty;
+    const fees = (p.entryPrice + exit) * p.qty * p.feeRate;
+    const pnl = gross - fees;
+
+    const tradeRow = {
+      ts: now,
+      symbol: p.symbol,
+      side: p.side,
+      entryPrice: p.entryPrice,
+      exitPrice: exit,
+      pnlUSDT: pnl,
+      reason,
+      source: t?.source || "BNB",
+    };
+
+    state.stats.trades += 1;
+    state.stats.pnlUSDT += pnl;
+    if (pnl >= 0) state.stats.wins += 1;
+    else state.stats.losses += 1;
+    state.stats.winRate = state.stats.trades ? (state.stats.wins / state.stats.trades) * 100 : 0;
+
+    trades.unshift(tradeRow);
+    trades = trades.slice(0, 200);
+    emitLeadLag("leadlag.trade", tradeRow);
+    pushLog("info", `CLOSE ${p.side} ${p.symbol} ${reason} pnl=${pnl.toFixed(4)} USDT`);
+
+    if (state.sessionPresetId) {
+      presetsStore?.upsertStats?.(state.sessionPresetId, {
+        pnlUsdt: state.stats.pnlUSDT,
+        trades: state.stats.trades,
+        winRate: state.stats.winRate,
+      });
+    }
+
+    state.position = null;
+    emitLeadLag("leadlag.position", null);
+    lastTradeAt = now;
+  }
+
   function step() {
     if (state.status !== "RUNNING") return;
     const now = Date.now();
     state.ticks += 1;
     state.lastLeadLagTop = Array.isArray(getLeadLagTop?.()) ? getLeadLagTop().slice(0, 10) : [];
+    maybeOpenTrade(now);
+    maybeCloseTrade(now);
     maybeEmitNoEntry(now);
     maybeAutoTune(now);
     emitState();
   }
 
   const timer = setInterval(() => {
-    try { step(); } catch (e) { logger?.warn?.({ err: e }, "paper step failed"); }
+    try { step(); } catch (e) { logger?.warn?.({ err: e }, "leadlag paper step failed"); }
   }, tickMs);
 
-  function start({ presetId } = {}) {
+  function start({ presetId, mode = "paper" } = {}) {
     if (state.status === "RUNNING" || state.status === "STARTING") return { ok: false };
     state.status = "STARTING";
+    state.executionMode = mode;
     state.endedAt = null;
     state.startedAt = null;
     state.ticks = 0;
+    state.position = null;
     state.lastLeadLagTop = [];
     state.lastNoEntryReasons = [];
     pushLog("info", "Starting...");
@@ -167,7 +286,7 @@ export function createPaperTest({
     setTimeout(() => {
       state.startedAt = Date.now();
       state.status = "RUNNING";
-      pushLog("info", "RUNNING");
+      pushLog("info", `RUNNING mode=${mode}`);
       emitState();
     }, 10);
     emitState();
@@ -180,6 +299,7 @@ export function createPaperTest({
     emitState();
     setTimeout(() => {
       state.status = "STOPPED";
+      state.position = null;
       state.endedAt = Date.now();
       pushLog("info", `Stopped (${reason})`);
       emitState();
@@ -187,27 +307,16 @@ export function createPaperTest({
     return { ok: true };
   }
 
-  function getStats() {
-    const preset = getPreset();
-    return {
-      pnlUSDT: safeNum(preset?.stats?.pnlUsdt, 0),
-      trades: safeNum(preset?.stats?.trades, 0),
-      winRate: safeNum(preset?.stats?.winRate, 0),
-    };
-  }
-
   function getState({ includeHistory = true } = {}) {
     const base = {
       ...state,
       activePreset: presetsStore?.getPresetById(state.activePresetId) || null,
       sessionPreset: presetsStore?.getPresetById(state.sessionPresetId) || null,
-      position: null,
       pending: null,
-      stats: getStats(),
     };
     if (includeHistory) {
       base.tuneChanges = tuneChanges.slice(0, 10);
-      base.trades = [];
+      base.trades = trades.slice(0, 100);
       base.logs = logs.slice(0, 200);
     }
     return base;

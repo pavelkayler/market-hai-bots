@@ -5,6 +5,12 @@ import { mergeNonUndefined } from "../../shared/utils/merge.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
+const cleanPositions = (rows = []) => rows.filter((r) => Number(r?.size) !== 0);
+const cleanHistory = (rows = []) => rows
+  .filter((r) => Number.isFinite(Number(r?.closedPnl)))
+  .sort((a, b) => Number(b?.updatedTime || b?.createdTime || 0) - Number(a?.updatedTime || a?.createdTime || 0))
+  .slice(0, 100);
+
 const fmt = (x, d = 6) => (Number.isFinite(Number(x)) ? Number(x).toFixed(d) : "—");
 const fmtTs = (ts) => (Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : "—");
 
@@ -39,9 +45,9 @@ export default function RangeMetricsPage() {
     const hist = await histRes.json();
     setTradeState(state);
     setWarnings(pos.warnings || state.warnings || []);
-    if (Array.isArray(pos.positions)) setPositions(pos.positions);
+    if (Array.isArray(pos.positions)) setPositions(cleanPositions(pos.positions));
     if (Array.isArray(ord.orders)) setOrders(ord.orders);
-    if (Array.isArray(hist.history)) setHistory(hist.history.filter((x) => x && typeof x === "object"));
+    if (Array.isArray(hist.history)) setHistory(cleanHistory(hist.history));
   };
 
   const onMessage = useMemo(() => (ev) => {
@@ -66,7 +72,7 @@ export default function RangeMetricsPage() {
       return;
     }
     if (type === "trade.positions") {
-      if (Array.isArray(payload?.positions)) pendingRef.current.set("positions", payload.positions);
+      if (Array.isArray(payload?.positions)) pendingRef.current.set("positions", cleanPositions(payload.positions));
       return;
     }
     if (type === "trade.orders") {
@@ -82,7 +88,7 @@ export default function RangeMetricsPage() {
     }
   }, []);
 
-  const { wsUrl, status: wsStatus, sendJson } = useWsClient({ apiBase: API_BASE, onMessage, onOpen: () => sendJson({ type: "getRangeState" }) });
+  const { wsUrl, status: wsStatus, sendJson } = useWsClient({ onMessage, onOpen: () => sendJson({ type: "getRangeState" }) });
 
   useEffect(() => {
     const flushTimer = setInterval(() => {
@@ -115,7 +121,7 @@ export default function RangeMetricsPage() {
   };
   const stop = () => sendJson({ type: "stopRangeTest" });
   const realDisabled = tradeState?.tradeStatus && !tradeState.tradeStatus.realAllowed;
-  const paperMode = mode === "paper";
+  const paperMode = mode === "paper" || tradeState?.tradeStatus?.executionMode === "paper";
   const candidate = range?.scan?.lastCandidate;
 
   return <Row className="g-3">

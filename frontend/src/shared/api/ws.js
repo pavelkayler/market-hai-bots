@@ -1,91 +1,233 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, createElement, useContext, useEffect, useMemo, useRef, useState } from "react";
 
-export function toWsUrl(apiBase) {
+const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+const WsContext = createContext(null);
+
+export function toWsUrl(apiBase = DEFAULT_API_BASE) {
   const u = new URL(apiBase);
   const proto = u.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${u.host}/ws`;
 }
 
-export function createManagedWebSocket(wsUrl, handlers = {}, opts = {}) {
-  const ws = new WebSocket(wsUrl);
-  let shouldClose = false;
+function parseJsonSafe(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
-  ws.onopen = (event) => {
-    if (shouldClose) {
-      if (ws.readyState === WebSocket.OPEN) ws.close(1000, opts.reason || "cleanup");
+export function createWsManager(
+  wsUrl,
+  {
+    onMessage,
+    heartbeatMs = 18000,
+    initialBackoffMs = 500,
+    maxBackoffMs = 10000,
+  } = {},
+) {
+  let ws = null;
+  let manualClose = false;
+  let reconnectTimer = null;
+  let heartbeatTimer = null;
+  let lastPongAt = Date.now();
+  let backoffMs = initialBackoffMs;
+  let status = "idle";
+
+  const listeners = new Set();
+  const statusListeners = new Set();
+
+  const notifyStatus = (next) => {
+    status = next;
+    for (const fn of statusListeners) fn(next);
+  };
+
+  const cleanupSocket = () => {
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    ws = null;
+  };
+
+  const stopHeartbeat = () => {
+    if (!heartbeatTimer) return;
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  };
+
+  const scheduleReconnect = () => {
+    if (manualClose || reconnectTimer) return;
+    notifyStatus("reconnecting");
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, backoffMs);
+    backoffMs = Math.min(maxBackoffMs, Math.round(backoffMs * 1.8));
+  };
+
+  const handleMessage = (event) => {
+    const parsed = parseJsonSafe(event.data);
+    if (parsed?.type === "pong" || parsed?.topic === "pong") {
+      lastPongAt = Date.now();
       return;
     }
-    handlers.onOpen?.(event, ws);
+
+    onMessage?.(event, parsed);
+    for (const fn of listeners) fn(event, parsed);
   };
 
-  ws.onmessage = (event) => {
-    if (!shouldClose) handlers.onMessage?.(event, ws);
+  const startHeartbeat = () => {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastPongAt > heartbeatMs * 3) {
+        try {
+          ws.close(4000, "heartbeat timeout");
+        } catch {
+          // noop
+        }
+        return;
+      }
+      try {
+        ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+      } catch {
+        // noop
+      }
+    }, heartbeatMs);
   };
 
-  ws.onerror = (event) => {
-    if (!shouldClose) handlers.onError?.(event, ws);
+  const connect = () => {
+    if (manualClose) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+    notifyStatus("connecting");
+    const next = new WebSocket(wsUrl);
+    ws = next;
+
+    next.onopen = () => {
+      if (next !== ws) return;
+      backoffMs = initialBackoffMs;
+      lastPongAt = Date.now();
+      notifyStatus("connected");
+      startHeartbeat();
+    };
+
+    next.onmessage = handleMessage;
+
+    next.onerror = () => {
+      if (next !== ws) return;
+      notifyStatus("error");
+    };
+
+    next.onclose = () => {
+      if (next !== ws) return;
+      stopHeartbeat();
+      cleanupSocket();
+      if (!manualClose) scheduleReconnect();
+      else notifyStatus("closed");
+    };
   };
 
-  ws.onclose = (event) => {
-    handlers.onClose?.(event, ws);
+  const closeSocketSafely = (target, code = 1000, reason = "cleanup") => {
+    if (!target) return;
+    if (target.readyState === WebSocket.CLOSING || target.readyState === WebSocket.CLOSED) return;
+    try {
+      target.close(code, reason);
+    } catch {
+      // noop
+    }
   };
+
+  connect();
 
   return {
-    ws,
-    close() {
-      shouldClose = true;
-      if (ws.readyState === WebSocket.OPEN) ws.close(1000, opts.reason || "cleanup");
+    get wsUrl() {
+      return wsUrl;
     },
-    shouldClose: () => shouldClose,
+    getStatus() {
+      return status;
+    },
+    sendJson(payload) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify(payload));
+      return true;
+    },
+    subscribe(handler) {
+      listeners.add(handler);
+      return () => listeners.delete(handler);
+    },
+    subscribeStatus(handler) {
+      statusListeners.add(handler);
+      handler(status);
+      return () => statusListeners.delete(handler);
+    },
+    reconnect() {
+      if (manualClose) return;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      closeSocketSafely(ws, 4001, "manual reconnect");
+      scheduleReconnect();
+    },
+    close() {
+      manualClose = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      stopHeartbeat();
+      closeSocketSafely(ws, 1000, "app shutdown");
+      cleanupSocket();
+      notifyStatus("closed");
+    },
   };
 }
 
-export function useWsClient({ apiBase, onMessage, onOpen, onClose, onError } = {}) {
+export function WsProvider({ children, apiBase = DEFAULT_API_BASE }) {
   const wsUrl = useMemo(() => toWsUrl(apiBase), [apiBase]);
-  const managedRef = useRef(null);
-  const [status, setStatus] = useState("connecting");
+  const managerRef = useRef(null);
 
-  const callbacksRef = useRef({ onMessage, onOpen, onClose, onError });
-
-  useEffect(() => {
-    callbacksRef.current = { onMessage, onOpen, onClose, onError };
-  }, [onMessage, onOpen, onClose, onError]);
-
-  const connect = useCallback(() => {
-    managedRef.current?.close();
-    setStatus("connecting");
-    const managed = createManagedWebSocket(wsUrl, {
-      onOpen: (event, ws) => {
-        setStatus("connected");
-        callbacksRef.current.onOpen?.(event, ws);
-      },
-      onMessage: (event, ws) => {
-        callbacksRef.current.onMessage?.(event, ws);
-      },
-      onClose: (event, ws) => {
-        setStatus("disconnected");
-        callbacksRef.current.onClose?.(event, ws);
-      },
-      onError: (event, ws) => {
-        setStatus("error");
-        callbacksRef.current.onError?.(event, ws);
-      },
-    });
-    managedRef.current = managed;
-  }, [wsUrl]);
+  if (!managerRef.current) {
+    managerRef.current = createWsManager(wsUrl);
+  }
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    connect();
-    return () => managedRef.current?.close();
-  }, [connect]);
-
-  const sendJson = useCallback((obj) => {
-    const ws = managedRef.current?.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(JSON.stringify(obj));
-    return true;
+    const mgr = managerRef.current;
+    return () => mgr?.close();
   }, []);
 
-  return { wsUrl, status, sendJson, reconnect: connect };
+  return createElement(WsContext.Provider, { value: managerRef.current }, children);
+}
+
+export function useWs() {
+  const ctx = useContext(WsContext);
+  if (!ctx) throw new Error("useWs must be used inside WsProvider");
+  return ctx;
+}
+
+export function useWsClient({ onMessage, onOpen } = {}) {
+  const manager = useWs();
+  const [status, setStatus] = useState(() => manager.getStatus());
+
+  useEffect(() => manager.subscribeStatus(setStatus), [manager]);
+
+  useEffect(() => {
+    if (!onMessage) return undefined;
+    return manager.subscribe((event) => onMessage(event));
+  }, [manager, onMessage]);
+
+  useEffect(() => {
+    if (status === "connected") onOpen?.();
+  }, [status, onOpen]);
+
+  return {
+    wsUrl: manager.wsUrl,
+    status,
+    sendJson: manager.sendJson,
+    reconnect: manager.reconnect,
+    subscribe: manager.subscribe,
+  };
 }

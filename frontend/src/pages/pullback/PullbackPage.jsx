@@ -5,6 +5,12 @@ import { mergeNonUndefined } from "../../shared/utils/merge.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
+const cleanPositions = (rows = []) => rows.filter((r) => Number(r?.size) !== 0);
+const cleanHistory = (rows = []) => rows
+  .filter((r) => Number.isFinite(Number(r?.closedPnl)))
+  .sort((a, b) => Number(b?.updatedTime || b?.createdTime || 0) - Number(a?.updatedTime || a?.createdTime || 0))
+  .slice(0, 100);
+
 const fmtNum = (x, d = 6) => (Number.isFinite(Number(x)) ? Number(x).toFixed(d) : "—");
 const fmtTs = (ts) => (Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : "—");
 const modeBadge = (m) => (m === "real" ? "danger" : m === "demo" ? "warning" : "secondary");
@@ -51,9 +57,9 @@ export default function PullbackPage() {
     setTradeState(state);
     setTradeStatus(pos.tradeStatus || state.tradeStatus || null);
     setWarnings(pos.warnings || state.warnings || []);
-    if (Array.isArray(pos.positions)) setPositions(pos.positions);
+    if (Array.isArray(pos.positions)) setPositions(cleanPositions(pos.positions));
     if (Array.isArray(ord.orders)) setOrders(ord.orders);
-    if (Array.isArray(hist.history)) setHistory(hist.history.filter((x) => x && typeof x === "object"));
+    if (Array.isArray(hist.history)) setHistory(cleanHistory(hist.history));
   };
 
   const onMessage = useMemo(() => (ev) => {
@@ -83,7 +89,7 @@ export default function PullbackPage() {
     }
 
     if (type === "trade.positions") {
-      if (Array.isArray(payload?.positions)) pendingRef.current.set("positions", payload.positions);
+      if (Array.isArray(payload?.positions)) pendingRef.current.set("positions", cleanPositions(payload.positions));
       pendingRef.current.set("tradeStatus", payload?.tradeStatus || null);
       pendingRef.current.set("warnings", payload?.warnings || []);
       return;
@@ -108,7 +114,7 @@ export default function PullbackPage() {
     }
   }, []);
 
-  const { wsUrl, status: wsStatus, sendJson } = useWsClient({ apiBase: API_BASE, onMessage, onOpen: () => sendJson({ type: "getPullbackState" }) });
+  const { wsUrl, status: wsStatus, sendJson } = useWsClient({ onMessage, onOpen: () => sendJson({ type: "getPullbackState" }) });
 
   useEffect(() => {
     const flushTimer = setInterval(() => {
@@ -154,7 +160,7 @@ export default function PullbackPage() {
 
   const realDisabled = tradeStatus && !tradeStatus.realAllowed;
   const status = pb?.status || "STOPPED";
-  const paperMode = mode === "paper";
+  const paperMode = mode === "paper" || tradeStatus?.executionMode === "paper";
 
   return <Row className="g-3">
     <Col md={4}><Card><Card.Body className="d-grid gap-2">
@@ -166,7 +172,7 @@ export default function PullbackPage() {
       {warnings.map((w, i) => <Alert key={i} variant={w.severity === "error" ? "danger" : "warning"} className="py-2 mb-0">{w.code}: {w.message}</Alert>)}
       {ack ? <Alert variant={ack.variant} className="mb-0 py-2">{ack.text}</Alert> : null}
       <div className="d-flex gap-2"><Button onClick={start}>Start</Button><Button variant="outline-danger" onClick={stop}>Stop</Button></div>
-      {!paperMode ? <Button variant={tradeState?.killSwitch ? "danger" : "outline-danger"} onClick={() => setKillSwitch(!tradeState?.killSwitch)}>{tradeState?.killSwitch ? "Kill-switch ON" : "Kill-switch OFF"}</Button> : null}
+      {!paperMode && mode !== "real" ? <Button variant={tradeState?.killSwitch ? "danger" : "outline-danger"} onClick={() => setKillSwitch(!tradeState?.killSwitch)}>{tradeState?.killSwitch ? "Kill-switch ON" : "Kill-switch OFF"}</Button> : null}
       <div className="text-muted small">WS URL: {wsUrl}</div>
     </Card.Body></Card></Col>
     <Col md={8}><Card><Card.Body>

@@ -100,9 +100,7 @@ export default function BybitPage() {
     }
   }, []);
 
-  const { wsUrl, status: wsStatus, sendJson } = useWsClient({
-    apiBase: API_BASE,
-    onOpen: () => {
+  const { wsUrl, status: wsStatus, sendJson } = useWsClient({ onOpen: () => {
       sendJson({ type: "getSnapshot" });
       sendJson({ type: "getStatus" });
     },

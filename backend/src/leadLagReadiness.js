@@ -4,7 +4,7 @@ function n(v, fallback = 0) {
 }
 
 function hasFreshImpulse(leaderBars, impulseZ, windowMs) {
-  if (!Array.isArray(leaderBars) || leaderBars.length < 3) return { pass: false, value: 0, threshold: impulseZ, detail: "no leader bars" };
+  if (!Array.isArray(leaderBars) || leaderBars.length < 3) return { pass: false, value: 0, threshold: impulseZ, detail: "no leader bars", sign: 0 };
   const returns = [];
   for (let i = 1; i < leaderBars.length; i++) {
     const prev = n(leaderBars[i - 1]?.c, null);
@@ -12,21 +12,23 @@ function hasFreshImpulse(leaderBars, impulseZ, windowMs) {
     if (!Number.isFinite(prev) || !Number.isFinite(cur) || prev <= 0 || cur <= 0) continue;
     returns.push({ ts: n(leaderBars[i]?.ts, 0), r: Math.log(cur / prev) });
   }
-  if (returns.length < 3) return { pass: false, value: 0, threshold: impulseZ, detail: "insufficient returns" };
+  if (returns.length < 3) return { pass: false, value: 0, threshold: impulseZ, detail: "insufficient returns", sign: 0 };
   const vals = returns.map((x) => x.r);
   const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
   const variance = vals.reduce((a, b) => a + ((b - mean) ** 2), 0) / Math.max(1, vals.length - 1);
   const std = Math.sqrt(Math.max(variance, 0));
-  if (!std) return { pass: false, value: 0, threshold: impulseZ, detail: "zero volatility" };
+  if (!std) return { pass: false, value: 0, threshold: impulseZ, detail: "zero volatility", sign: 0 };
 
   const now = Date.now();
-  let bestZ = 0;
+  let best = null;
   for (const row of returns) {
     if (now - row.ts > windowMs) continue;
-    const z = Math.abs((row.r - mean) / std);
-    if (z > bestZ) bestZ = z;
+    const zRaw = (row.r - mean) / std;
+    const zAbs = Math.abs(zRaw);
+    if (!best || zAbs > best.zAbs) best = { zAbs, sign: Math.sign(zRaw) || 0 };
   }
-  return { pass: bestZ >= impulseZ, value: bestZ, threshold: impulseZ, detail: `leader impulse z=${bestZ.toFixed(2)}` };
+  if (!best) return { pass: false, value: 0, threshold: impulseZ, detail: "no fresh impulse", sign: 0 };
+  return { pass: best.zAbs >= impulseZ, value: best.zAbs, threshold: impulseZ, detail: `leader impulse z=${best.zAbs.toFixed(2)} sign=${best.sign >= 0 ? '+' : '-'}`, sign: best.sign };
 }
 
 export function evaluateTradeReady({
@@ -68,12 +70,11 @@ export function evaluateTradeReady({
   blockers.push({ key: "entryWindow", value: followerMove, threshold: maxMove, pass: followerMove <= maxMove, detail: `|ret|=${followerMove.toFixed(5)}` });
 
   const tradeReady = blockers.every((b) => b.pass);
-  const topBlockers = blockers
-    .filter((b) => !b.pass)
-    .slice(0, 3);
+  const topBlockers = blockers.filter((b) => !b.pass).slice(0, 3);
 
   return {
     tradeReady,
+    impulseSign: impulseInfo.sign,
     blockers: topBlockers.length ? topBlockers : blockers.slice(0, 3),
   };
 }
