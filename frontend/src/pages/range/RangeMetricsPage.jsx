@@ -161,8 +161,7 @@ export default function RangeMetricsPage() {
             <tr><td>Status</td><td>{range?.status || "—"}</td></tr><tr><td>Started</td><td>{fmtTs(range?.startedAt)}</td></tr><tr><td>Uptime</td><td>{range?.status === "RUNNING" ? fmtUptime(range?.startedAt) : "—"}</td></tr>
             <tr><td>Candidate</td><td>{candidate?.symbol || "—"} ({candidate?.side || "—"})</td></tr>
             <tr><td>Range hi/lo/mid</td><td>{fmt(candidate?.rangeHigh)} / {fmt(candidate?.rangeLow)} / {fmt(candidate?.mid)}</td></tr>
-            <tr><td>Near boundary</td><td>{candidate?.nearBoundary ? "yes" : "no"}</td></tr>
-            <tr><td>Gates</td><td>{Array.isArray(candidate?.gates) && candidate.gates.length ? candidate.gates.map((g) => `${g.key}:${g.pass ? "ok" : "no"}`).join(", ") : "—"}</td></tr>
+                        <tr><td>Gates</td><td>{Array.isArray(candidate?.gates) && candidate.gates.length ? candidate.gates.map((g) => `${g.key || g.name}:${g.pass ? "ok" : "no"}`).join(", ") : "—"}</td></tr>
           </tbody></Table></Tab.Pane>
           <Tab.Pane eventKey="detail"><Table size="sm"><tbody>{detailRows.length ? detailRows.map((t, i) => <tr key={i}><td>{fmtTs(t.ts || t.t)}</td><td>{t.symbol}</td><td>{t.side}</td><td>{fmt(t.pnlUSDT, 4)}</td></tr>) : <tr><td className="text-muted">No trades yet</td></tr>}</tbody></Table></Tab.Pane>
           <Tab.Pane eventKey="logs"><div style={{ maxHeight: 360, overflow: "auto" }}><Table size="sm"><tbody>{logs.length ? logs.map((l, i) => <tr key={`${l.t || i}-${i}`}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className="text-muted">No logs yet</td></tr>}</tbody></Table></div></Tab.Pane>

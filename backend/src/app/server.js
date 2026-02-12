@@ -423,7 +423,20 @@ function computeLeadLagTop() {
   broadcast({ type: "leadlag.top", payload: lastLeadLagTop });
   broadcastEvent("leadlag.top", { ts: Date.now(), source: "BNB", rows: lastLeadLagTop });
 }
-setInterval(() => { try { computeLeadLagTop(); } catch {} }, 1000);
+function shouldComputeLeadLagTop() {
+  if (leadLagSearchActive) return true;
+  const llState = paperTest.getState?.({ includeHistory: false }) || {};
+  const running = llState?.status === "RUNNING";
+  const manualTrading = Boolean(llState?.manual?.enabled);
+  const autoTopTrading = running && !manualTrading;
+  return autoTopTrading;
+}
+setInterval(() => {
+  try {
+    if (!shouldComputeLeadLagTop()) return;
+    computeLeadLagTop();
+  } catch {}
+}, 1000);
 setInterval(() => broadcast({ type: "universe.status", payload: universe.getStatus() }), 30000);
 setInterval(() => broadcastEvent("bots.overview", getBotsOverview()), 2000);
 setInterval(async () => {
@@ -580,13 +593,15 @@ app.get("/ws", { websocket: true }, (conn) => {
 
     if (msg.type === "startPaperTest" || msg.type === "startLeadLag") {
       const presetId = msg.presetId || presetsStore.getState().activePresetId;
+      const settings = msg?.settings && typeof msg.settings === "object" ? msg.settings : null;
       applyPresetGuardrails(presetsStore.getPresetById?.(presetId) || presetsStore.getActivePreset?.());
-      safeSend(ws, { type: "leadlag.start.ack", payload: { ok: true } });
-      safeSend(ws, { type: "paper.start.ack", payload: { ok: true } });
-      const leader = String(msg?.settings?.leaderSymbol || "BTCUSDT").toUpperCase();
-      const follower = String(msg?.settings?.followerSymbol || "ETHUSDT").toUpperCase();
+      const leader = String(settings?.leaderSymbol || "BTCUSDT").toUpperCase();
+      const follower = String(settings?.followerSymbol || "ETHUSDT").toUpperCase();
       subscriptions.requestFeed("leadlag-trading", { bybitSymbols: [leader, follower], binanceSymbols: [leader, follower], streams: ["ticker"] });
-      paperTest.start({ presetId, mode: msg.mode || "paper" });
+      const result = paperTest.start({ presetId, mode: msg.mode || "paper", settings });
+      const currentState = paperTest.getState();
+      safeSend(ws, { type: "leadlag.start.ack", payload: { ok: Boolean(result?.ok), state: currentState, settings: currentState?.settings || settings } });
+      safeSend(ws, { type: "paper.start.ack", payload: { ok: Boolean(result?.ok), state: currentState, settings: currentState?.settings || settings } });
       return;
     }
 

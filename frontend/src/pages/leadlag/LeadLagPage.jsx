@@ -3,6 +3,7 @@ import { Badge, Button, Card, Col, Form, Row, Tab, Table, Tabs } from 'react-boo
 import { useWsClient } from '../../shared/api/ws.js';
 
 function fmt(n, d = 3) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(d) : '—'; }
+function fmtTs(ts) { return Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : '—'; }
 function fmtUptime(startedAt) {
   const sec = Math.max(0, Math.floor((Date.now() - Number(startedAt || 0)) / 1000));
   const h = String(Math.floor(sec / 3600)).padStart(2, '0');
@@ -23,21 +24,45 @@ export default function LeadLagPage() {
   const [allowShort, setAllowShort] = useState(true);
   const [sort, setSort] = useState({ key: 'corr', dir: 'desc' });
 
-  function calcDivergencePct(row) {
-    const corr = Math.abs(Number(row?.corr));
-    if (!Number.isFinite(corr)) return null;
-    return Math.abs(1 - Math.min(1, corr)) * 100;
-  }
-
   const onMessage = useMemo(() => (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     const type = msg.type === 'event' ? msg.topic : msg.type;
-    if (type === 'snapshot' && msg.payload?.leadlagState) setState(msg.payload.leadlagState);
-    if (type === 'leadlag.state') setState(msg.payload || {});
-    if (type === 'leadlag.top' && searchActive) {
-      setRows(Array.isArray(msg.payload?.rows) ? msg.payload.rows : (Array.isArray(msg.payload) ? msg.payload : []));
+    const payload = msg.payload;
+
+    if (type === 'snapshot' && payload?.leadlagState) {
+      setState(payload.leadlagState);
+      return;
     }
-    if (type === 'leadlag.search.ack') setSearchActive(Boolean(msg.payload?.active));
+    if (type === 'leadlag.state') {
+      setState((prev) => ({
+        ...(prev || {}),
+        ...(payload || {}),
+        logs: Array.isArray(payload?.logs) ? payload.logs : (prev?.logs || []),
+        trades: Array.isArray(payload?.trades) ? payload.trades : (prev?.trades || []),
+      }));
+      return;
+    }
+    if (type === 'leadlag.log') {
+      setState((prev) => ({ ...(prev || {}), logs: [payload, ...(prev?.logs || [])].slice(0, 200) }));
+      return;
+    }
+    if (type === 'leadlag.trade') {
+      setState((prev) => ({ ...(prev || {}), trades: [payload, ...(prev?.trades || [])].slice(0, 200) }));
+      return;
+    }
+    if (type === 'leadlag.position') {
+      setState((prev) => ({ ...(prev || {}), position: payload || null }));
+      return;
+    }
+    if (type === 'leadlag.start.ack' && payload?.state) {
+      setState(payload.state);
+      return;
+    }
+    if (type === 'leadlag.top' && searchActive) {
+      setRows(Array.isArray(payload?.rows) ? payload.rows : (Array.isArray(payload) ? payload : []));
+      return;
+    }
+    if (type === 'leadlag.search.ack') setSearchActive(Boolean(payload?.active));
   }, [searchActive]);
 
   const { status, sendJson } = useWsClient({ onOpen: () => sendJson({ type: 'getLeadLagState' }), onMessage });
@@ -56,11 +81,6 @@ export default function LeadLagPage() {
     return list;
   }, [rows, sort]);
 
-  const tradingRows = useMemo(() => {
-    const list = Array.isArray(state?.lastLeadLagTop) ? state.lastLeadLagTop : [];
-    return list.slice(0, 10).map((r) => ({ ...r, divergencePct: calcDivergencePct(r) }));
-  }, [state]);
-
   const tradeStats = useMemo(() => {
     const stats = state?.stats || {};
     return {
@@ -72,6 +92,16 @@ export default function LeadLagPage() {
     };
   }, [state]);
 
+  const noEntryReasons = useMemo(() => {
+    if (Array.isArray(state?.lastNoEntryReasons) && state.lastNoEntryReasons.length) return state.lastNoEntryReasons.slice(0, 3);
+    return (state?.logs || [])
+      .filter((x) => /WAIT_LEADER_MOVE|SHORT_DISABLED|NO_FOLLOWER_PRICE|NO_LEADER_PRICE|NO ENTRY/i.test(String(x?.msg || '')))
+      .slice(0, 3)
+      .map((x) => ({ key: 'LOG', detail: x.msg, ts: x.ts }));
+  }, [state]);
+
+  const recentTrades = useMemo(() => (Array.isArray(state?.trades) ? state.trades.slice(0, 20) : []), [state]);
+
   function toggleSort(key) {
     setSort((prev) => ({ key, dir: prev.key === key && prev.dir === 'desc' ? 'asc' : 'desc' }));
   }
@@ -80,6 +110,9 @@ export default function LeadLagPage() {
     if (sort.key !== key) return '';
     return sort.dir === 'desc' ? ' ↓' : ' ↑';
   }
+
+  const manual = state?.manual || {};
+  const currentPosition = state?.position;
 
   return <Row className='g-3'>
     <Col md={4}><Card><Card.Body className='d-grid gap-2'>
@@ -126,16 +159,32 @@ export default function LeadLagPage() {
       </Tabs>
     </Card.Body></Card></Col>
     <Col md={8}><Card><Card.Body>
-      <div className='fw-semibold mb-2'>Results</div>
+      <div className='fw-semibold mb-2'>Trading diagnostics</div>
       <div className='small text-muted mb-2'>Trades: {tradeStats.trades} · Wins: {tradeStats.wins} · Losses: {tradeStats.losses} · Win rate: {fmt(tradeStats.winRate, 1)}% · PnL: {fmt(tradeStats.pnlUSDT, 3)} USDT</div>
-      <Table size='sm'><thead><tr><th>Leader</th><th>Follower</th><th>Corr</th><th>Lag(ms)</th><th>Divergence (%)</th></tr></thead><tbody>
-        {tradingRows.map((r, i) => <tr key={`${r.leader}-${r.follower}-${i}`}><td>{r.leader}</td><td>{r.follower}</td><td>{fmt(r.corr)}</td><td>{fmt(r.lagMs, 0)}</td><td>{fmt(r.divergencePct, 2)}</td></tr>)}
+      <Table size='sm'><tbody>
+        <tr><td>Leader/Follower</td><td>{manual.leaderSymbol || '—'} / {manual.followerSymbol || '—'}</td></tr>
+        <tr><td>Leader/Follower price</td><td>{fmt(manual.leaderPrice, 4)} / {fmt(manual.followerPrice, 4)}</td></tr>
+        <tr><td>Baseline</td><td>{fmt(manual.leaderBaseline, 4)}</td></tr>
+        <tr><td>Leader move now</td><td>{fmt(manual.leaderMovePctNow, 4)}%</td></tr>
+        <tr><td>Position</td><td>{currentPosition ? `${currentPosition.side} ${currentPosition.symbol} @ ${fmt(currentPosition.entryPrice, 4)} qty=${fmt(currentPosition.qty, 4)}` : 'No open position'}</td></tr>
       </tbody></Table>
+
+      <div className='fw-semibold mt-3 mb-2'>No entry reasons (top-3)</div>
+      <Table size='sm'><tbody>
+        {noEntryReasons.length ? noEntryReasons.map((r, i) => <tr key={`${r.key}-${i}`}><td>{r.key}</td><td>{r.detail || `${fmt(r.value, 4)} vs ${fmt(r.threshold, 4)}`}</td></tr>) : <tr><td className='text-muted'>No blockers</td></tr>}
+      </tbody></Table>
+
+      <div className='fw-semibold mt-3 mb-2'>Trade events (last 20)</div>
+      <div style={{ maxHeight: 250, overflow: 'auto' }}>
+        <Table size='sm'><thead><tr><th>Time</th><th>Event</th><th>Symbol</th><th>Side</th><th>Entry/Exit</th><th>PnL</th></tr></thead><tbody>
+          {recentTrades.length ? recentTrades.map((t, i) => <tr key={`${t.ts || i}-${i}`}><td>{fmtTs(t.ts)}</td><td>{t.event || '—'}</td><td>{t.symbol}</td><td>{t.side}</td><td>{fmt(t.entry || t.entryPrice || t.exitPrice, 4)}</td><td>{fmt(t.pnlUSDT, 4)}</td></tr>) : <tr><td colSpan={6} className='text-muted'>No trade events</td></tr>}
+        </tbody></Table>
+      </div>
 
       <div className='fw-semibold mt-4 mb-2'>Search (top 10, sortable)</div>
       <Table size='sm' style={{ tableLayout: 'fixed' }}><thead><tr><th style={{ width: '28%' }} role='button' onClick={() => toggleSort('leader')}>Leader{sortMark('leader')}</th><th style={{ width: '28%' }} role='button' onClick={() => toggleSort('follower')}>Follower{sortMark('follower')}</th><th style={{ width: '22%' }} role='button' onClick={() => toggleSort('corr')}>Corr{sortMark('corr')}</th><th style={{ width: '22%' }} role='button' onClick={() => toggleSort('lagMs')}>Lag(ms){sortMark('lagMs')}</th></tr></thead><tbody>
         {sortedRows.slice(0, 10).map((r, i) => <tr key={`${r.leader}-${r.follower}-${i}`}><td className='text-truncate'>{r.leader}</td><td className='text-truncate'>{r.follower}</td><td>{fmt(r.corr)}</td><td>{fmt(r.lagMs, 0)}</td></tr>)}
       </tbody></Table>
     </Card.Body></Card></Col>
-  </Row>
+  </Row>;
 }
