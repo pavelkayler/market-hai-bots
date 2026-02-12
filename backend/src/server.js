@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import cors from "@fastify/cors";
 import dotenv from "dotenv";
+import WebSocket from "ws";
 
 import { createBybitPublicWs } from "./bybitPublicWs.js";
 import { createBinanceSpotWs } from "./binanceSpotWs.js";
@@ -23,13 +24,34 @@ dotenv.config();
 const app = Fastify({ logger: true });
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
+const WS_OPEN = WebSocket.OPEN;
 
 await app.register(cors, { origin: ["http://localhost:5173", "http://127.0.0.1:5173"] });
 await app.register(websocket);
 
 const clients = new Set();
-function safeSend(ws, obj) { if (ws?.readyState === ws.OPEN) ws.send(JSON.stringify(obj)); }
-function broadcast(obj) { const msg = JSON.stringify(obj); for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(msg); }
+function safeSend(ws, obj) {
+  if (ws && ws.readyState === WS_OPEN) ws.send(JSON.stringify(obj));
+}
+function broadcast(obj) {
+  const msg = JSON.stringify(obj);
+  for (const ws of clients) {
+    if (ws && ws.readyState === WS_OPEN) ws.send(msg);
+  }
+}
+
+function normalizeSymbols(symbols) {
+  if (!Array.isArray(symbols)) return [];
+  const uniq = new Set();
+  for (const sym of symbols) {
+    if (typeof sym !== "string") continue;
+    const normalized = sym.trim().toUpperCase().replace(/[\/-]/g, "");
+    if (!normalized) continue;
+    uniq.add(normalized);
+    if (uniq.size >= 10) break;
+  }
+  return [...uniq];
+}
 
 function tradeStatus(tradeExecutor) {
   const baseUrl = process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com";
@@ -168,6 +190,49 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (!msg?.type) return;
     if (msg.type === "ping") return safeSend(ws, { type: "pong", payload: { now: Date.now() } });
     if (msg.type === "getSnapshot") return safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+
+    if (msg.type === "setSymbols") {
+      const next = normalizeSymbols(msg.symbols);
+      bybit.setSymbols(next);
+      binance.setSymbols(next);
+      safeSend(ws, { type: "setSymbols.ack", payload: { symbols: bybit.getSymbols() } });
+      safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+      return;
+    }
+
+    if (msg.type === "getBars") {
+      const symbol = String(msg.symbol || "").toUpperCase();
+      const source = msg.source === "binance" ? "binance" : "bybit";
+      const requestedN = Number(msg.n);
+      const n = Number.isFinite(requestedN) ? Math.max(1, Math.min(2000, Math.trunc(requestedN))) : 200;
+      const bars = source === "binance" ? binanceBars.getBars(symbol, n) : bybitBars.getBars(symbol, n);
+      safeSend(ws, { type: "bars", payload: { symbol, source, bars } });
+      return;
+    }
+
+    if (msg.type === "getLeadLagTop") {
+      const requestedN = Number(msg.n);
+      const n = Number.isFinite(requestedN) ? Math.max(1, Math.min(50, Math.trunc(requestedN))) : 10;
+      safeSend(ws, { type: "leadlag.top", payload: lastLeadLagTop.slice(0, n) });
+      return;
+    }
+
+    if (msg.type === "startPaperTest") {
+      safeSend(ws, { type: "paper.start.ack", payload: { ok: true } });
+      paperTest.start({ preset: msg.preset && typeof msg.preset === "object" ? msg.preset : null });
+      return;
+    }
+
+    if (msg.type === "stopPaperTest") {
+      safeSend(ws, { type: "paper.stop.ack", payload: { ok: true } });
+      paperTest.stop({ reason: "manual" });
+      return;
+    }
+
+    if (msg.type === "getPaperState") {
+      safeSend(ws, { type: "paper.state", payload: paperTest.getState() });
+      return;
+    }
 
     if (msg.type === "refreshUniverse") {
       safeSend(ws, { type: "universe.refresh.ack", payload: { ok: true } });
