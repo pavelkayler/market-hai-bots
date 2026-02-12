@@ -5,6 +5,7 @@ const MAX_POSITIONS = 5;
 const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
 const ENTRY_USD = 100;
 const LEVERAGE = 10;
+const AUTO_LAG_OPTIONS = [250, 500, 750, 1000];
 
 function now() { return Date.now(); }
 function runKeyFromSettings(settings) {
@@ -37,6 +38,64 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
   };
   let logs = [];
   let trades = [];
+  const autoLag = {
+    lastLeaderPx: null,
+    lastFollowerPx: null,
+    leaderReturns: new Map(),
+    lagScores: new Map(AUTO_LAG_OPTIONS.map((lag) => [lag, 0])),
+    lastEvalAt: 0,
+    lastSwitchAt: 0,
+    evalEveryMs: 10_000,
+    switchCooldownMs: 30_000,
+    minScoreDelta: 2,
+    minRelativeGain: 1.2,
+  };
+
+  function resetAutoLag() {
+    autoLag.lastLeaderPx = null;
+    autoLag.lastFollowerPx = null;
+    autoLag.leaderReturns.clear();
+    autoLag.lagScores = new Map(AUTO_LAG_OPTIONS.map((lag) => [lag, 0]));
+    autoLag.lastEvalAt = 0;
+    autoLag.lastSwitchAt = 0;
+  }
+
+  function pushLeaderReturn(ts, value) {
+    autoLag.leaderReturns.set(ts, value);
+    if (autoLag.leaderReturns.size <= 8000) return;
+    const entries = [...autoLag.leaderReturns.entries()].sort((a, b) => a[0] - b[0]);
+    autoLag.leaderReturns = new Map(entries.slice(-4000));
+  }
+
+  function maybeApplyAutoLag(ts, followerRet, thresholdPct) {
+    if (!Number.isFinite(followerRet)) return;
+    for (const lag of AUTO_LAG_OPTIONS) {
+      const leaderRet = autoLag.leaderReturns.get(ts - lag);
+      if (!Number.isFinite(leaderRet)) continue;
+      if (Math.abs(leaderRet) < thresholdPct || Math.abs(followerRet) < thresholdPct) continue;
+      if (Math.sign(leaderRet) !== Math.sign(followerRet)) continue;
+      autoLag.lagScores.set(lag, Number(autoLag.lagScores.get(lag) || 0) + 1);
+    }
+
+    if (ts - autoLag.lastEvalAt < autoLag.evalEveryMs) return;
+    autoLag.lastEvalAt = ts;
+    const currentLag = Number(state?.settings?.lagMs || 250);
+    const currentScore = Number(autoLag.lagScores.get(currentLag) || 0);
+    const ranked = [...autoLag.lagScores.entries()].sort((a, b) => b[1] - a[1]);
+    const [bestLag, bestScore] = ranked[0] || [currentLag, currentScore];
+    if (!AUTO_LAG_OPTIONS.includes(bestLag)) return;
+    if (bestLag === currentLag) return;
+    if (ts - autoLag.lastSwitchAt < autoLag.switchCooldownMs) return;
+    const absWin = bestScore - currentScore;
+    const relWin = currentScore > 0 ? bestScore / currentScore : (bestScore > 0 ? Infinity : 1);
+    if (absWin < autoLag.minScoreDelta && relWin < autoLag.minRelativeGain) return;
+
+    state.settings = { ...(state.settings || {}), lagMs: bestLag, lastAutoTuneAt: ts };
+    state.manual = { ...(state.manual || {}), lagMs: bestLag };
+    autoLag.lastSwitchAt = ts;
+    pushLog('info', `AUTO_LAG switched lag ${currentLag} -> ${bestLag}`, { reason: 'AUTO_LAG', currentScore, bestScore });
+    emitLeadLag('leadlag.settingsUpdated', { settings: state.settings, lagMs: bestLag, reason: 'AUTO_LAG' });
+  }
 
   function emit(type, payload) { try { onEvent({ type, payload }); } catch {} }
   function emitLeadLag(type, payload) { emit(type, payload); emit(type.replace('leadlag.', 'paper.'), payload); }
@@ -168,7 +227,18 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
       if (Number.isFinite(leaderPx) && leaderPx > 0) state.manual.leaderBaseline = leaderPx;
     }
 
-    const fr = safeNum(followerTicker?.fundingRate, 0);
+    const fr = safeNum(followerTicker?.funding, safeNum(followerTicker?.fundingRate, 0));
+
+    const retTs = Math.floor(now() / 250) * 250;
+    if (Number.isFinite(leaderPx) && Number.isFinite(autoLag.lastLeaderPx) && autoLag.lastLeaderPx > 0) {
+      pushLeaderReturn(retTs, (leaderPx - autoLag.lastLeaderPx) / autoLag.lastLeaderPx);
+    }
+    const followerRet = Number.isFinite(followerPx) && Number.isFinite(autoLag.lastFollowerPx) && autoLag.lastFollowerPx > 0
+      ? (followerPx - autoLag.lastFollowerPx) / autoLag.lastFollowerPx
+      : null;
+    if (Number.isFinite(followerRet)) maybeApplyAutoLag(retTs, followerRet, Math.max(0.0005, Number(s.leaderMovePct || 0.1) / 100));
+    autoLag.lastLeaderPx = Number.isFinite(leaderPx) ? leaderPx : autoLag.lastLeaderPx;
+    autoLag.lastFollowerPx = Number.isFinite(followerPx) ? followerPx : autoLag.lastFollowerPx;
     const remaining = [];
     for (const p of state.positions) {
       if (!Number.isFinite(followerPx)) { remaining.push(p); continue; }
@@ -183,7 +253,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
   const timer = setInterval(() => { try { step(); } catch (e) { logger?.warn?.({ err: e }, 'leadlag paper step failed'); } }, tickMs);
 
   function normalizeSettings(settings) {
-    const allowedLagMs = [250, 500, 750, 1000];
+    const allowedLagMs = AUTO_LAG_OPTIONS;
     const lagIn = Math.trunc(safeNum(settings?.lagMs, 250));
     const lagMs = allowedLagMs.includes(lagIn)
       ? lagIn
@@ -213,6 +283,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     state.positions = [];
     state.pendingSignal = null;
     state.lastNoEntryReasons = [];
+    resetAutoLag();
     state.settings = normalizeSettings(settings || {});
     state.autoTuneEnabled = autoTune.getAutoTuneConfig().enabled;
     state.manual = { ...state.manual, enabled: true, ...state.settings, leaderBaseline: null, leaderPrice: null, followerPrice: null, leaderMovePctNow: 0 };
@@ -232,7 +303,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
   function stop({ reason = 'manual' } = {}) {
     if (state.status === 'STOPPED' || state.status === 'STOPPING') return { ok: false };
     state.status = 'STOPPING';
-    setTimeout(() => { state.status = 'STOPPED'; state.endedAt = now(); state.pendingSignal = null; state.positions = []; pushLog('info', `Stopped (${reason})`); emitLeadLag('leadlag.state', getState()); }, 10);
+    setTimeout(() => { state.status = 'STOPPED'; state.endedAt = now(); state.pendingSignal = null; state.positions = []; resetAutoLag(); pushLog('info', `Stopped (${reason})`); emitLeadLag('leadlag.state', getState()); }, 10);
     return { ok: true };
   }
 
@@ -244,6 +315,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     state.currentConfigKey = null;
     state.lastEvaluation = null;
     state.tuningStatus = 'idle';
+    resetAutoLag();
     trades = []; logs = [];
     autoTune.reset();
     emitLeadLag('leadlag.state', getState());
