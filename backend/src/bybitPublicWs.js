@@ -88,6 +88,43 @@ export function createBybitPublicWs({
     } catch {}
   }
 
+
+  const TOPIC_CHUNK_SIZE = 150;
+  const CHUNK_DELAY_MS = 75;
+  const sendQueue = [];
+  let queueBusy = false;
+
+  function chunkArgs(args = []) {
+    const out = [];
+    for (let i = 0; i < args.length; i += TOPIC_CHUNK_SIZE) out.push(args.slice(i, i + TOPIC_CHUNK_SIZE));
+    return out;
+  }
+
+  function enqueueBatchedOp(op, args = []) {
+    for (const chunk of chunkArgs(args)) sendQueue.push({ op, args: chunk });
+    flushQueue();
+  }
+
+  function flushQueue() {
+    if (queueBusy) return;
+    queueBusy = true;
+    const run = () => {
+      if (!sendQueue.length) {
+        queueBusy = false;
+        return;
+      }
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        sendQueue.length = 0;
+        queueBusy = false;
+        return;
+      }
+      const item = sendQueue.shift();
+      safeSend(item);
+      setTimeout(run, CHUNK_DELAY_MS);
+    };
+    run();
+  }
+
   function topicFor(sym, kind) {
     if (kind === "ticker") return `tickers.${sym}`;
     if (kind === "liq") return `allLiquidation.${sym}`;
@@ -108,14 +145,14 @@ export function createBybitPublicWs({
   function subscribeTopics(topics) {
     const toSub = topics.filter((t) => t && !subscribedTopics.has(t));
     if (!toSub.length) return;
-    safeSend({ op: "subscribe", args: toSub });
+    enqueueBatchedOp('subscribe', toSub);
     for (const t of toSub) subscribedTopics.add(t);
   }
 
   function unsubscribeTopics(topics) {
     const toUn = topics.filter((t) => t && subscribedTopics.has(t));
     if (!toUn.length) return;
-    safeSend({ op: "unsubscribe", args: toUn });
+    enqueueBatchedOp('unsubscribe', toUn);
     for (const t of toUn) subscribedTopics.delete(t);
   }
 
@@ -134,6 +171,7 @@ export function createBybitPublicWs({
     ws.on("open", () => {
       backoffMs = 1000;
       subscribedTopics = new Set();
+      sendQueue.length = 0;
       setStatus("connected");
 
       resubscribe();

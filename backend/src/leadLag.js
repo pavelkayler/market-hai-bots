@@ -61,7 +61,7 @@ export function createLeadLag({ bucketMs = 250, maxLagMs = 5000, minSamples = 20
     const localMinImpulses = Number.isFinite(Number(params.minImpulses)) ? Math.max(1, Math.trunc(Number(params.minImpulses))) : minImpulses;
     const localImpulseZ = Number.isFinite(Number(params.impulseZ)) ? Number(params.impulseZ) : impulseZ;
     const localMinCorr = Number.isFinite(Number(params.minCorr)) ? Math.max(0, Math.abs(Number(params.minCorr))) : 0;
-    const leaderMoveTriggerPct = Number.isFinite(Number(params.leaderMoveTriggerPct)) ? Math.abs(Number(params.leaderMoveTriggerPct)) : 0.5;
+    const leaderMoveTriggerPct = Number.isFinite(Number(params.leaderMoveTriggerPct)) ? Math.abs(Number(params.leaderMoveTriggerPct)) : 0.1;
     const syms = (Array.isArray(symbols) ? symbols : []).map((s) => String(s).trim().toUpperCase()).filter(Boolean);
     const leaderSet = new Set((Array.isArray(leaders) ? leaders : syms).map((s) => String(s).trim().toUpperCase()).filter((s) => syms.includes(s)));
 
