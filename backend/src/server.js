@@ -18,6 +18,7 @@ import { createBybitPrivateRest } from "./bybitPrivateRest.js";
 import { createBybitInstrumentsCache } from "./bybitInstrumentsCache.js";
 import { createBybitTradeExecutor } from "./bybitTradeExecutor.js";
 import { createBybitRest } from "./bybitRest.js";
+import { createMarketDataStore, toLegacySource, toTickerSourceCode } from "./marketDataStore.js";
 
 dotenv.config();
 
@@ -95,8 +96,15 @@ const liqFeed = {
   },
 };
 
-const bybitBars = createMicroBarAggregator({ bucketMs: 250, keepMs: 120000, onBar: (bar) => broadcast({ type: "bybit.bar", payload: bar }) });
-const binanceBars = createMicroBarAggregator({ bucketMs: 250, keepMs: 120000, onBar: (bar) => broadcast({ type: "binance.bar", payload: bar }) });
+const marketData = createMarketDataStore();
+const marketBars = createMicroBarAggregator({
+  bucketMs: 250,
+  keepMs: 120000,
+  onBar: (bar) => {
+    const legacyType = bar.source === "BNB" ? "binance.bar" : "bybit.bar";
+    broadcast({ type: legacyType, payload: bar });
+  },
+});
 const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 5000, minSamples: 60, impulseZ: 2.0, minImpulses: 4 });
 let lastLeadLagTop = [];
 
@@ -105,10 +113,27 @@ const bybit = createBybitPublicWs({
   logger: app.log,
   enableLiquidations: true,
   onStatus: (s) => broadcast({ type: "bybit.status", payload: s }),
-  onTicker: (t) => { bybitBars.ingest(t); broadcast({ type: "bybit.ticker", payload: t }); },
+  onTicker: (t) => {
+    const normalized = marketData.upsertTicker({ ...t, source: "BT" });
+    if (!normalized) return;
+    marketBars.ingest(normalized);
+    broadcast({ type: "bybit.ticker", payload: normalized });
+    broadcast({ type: "market.ticker", payload: normalized });
+  },
   onLiquidation: (ev) => pushLiq(ev),
 });
-const binance = createBinanceSpotWs({ symbols: bybit.getSymbols(), logger: app.log, onStatus: (s) => broadcast({ type: "binance.status", payload: s }), onTicker: (t) => { binanceBars.ingest(t); broadcast({ type: "binance.ticker", payload: t }); } });
+const binance = createBinanceSpotWs({
+  symbols: bybit.getSymbols(),
+  logger: app.log,
+  onStatus: (s) => broadcast({ type: "binance.status", payload: s }),
+  onTicker: (t) => {
+    const normalized = marketData.upsertTicker({ ...t, source: "BNB" });
+    if (!normalized) return;
+    marketBars.ingest(normalized);
+    broadcast({ type: "binance.ticker", payload: normalized });
+    broadcast({ type: "market.ticker", payload: normalized });
+  },
+});
 
 const tradeBaseUrl = process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com";
 const privateRest = createBybitPrivateRest({
@@ -121,7 +146,13 @@ const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, private
 const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
 const bybitRest = createBybitRest({ logger: app.log });
 
-const paperTest = createPaperTest({ getLeadLagTop: () => lastLeadLagTop, getTicker: (sym) => bybit.getTickers()?.[sym] || null, getBars: (sym, n, source) => String(source || "bybit") === "binance" ? binanceBars.getBars(sym, n) : bybitBars.getBars(sym, n), logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
+const paperTest = createPaperTest({
+  getLeadLagTop: () => lastLeadLagTop,
+  getTicker: (sym) => marketData.getTicker(sym, "BT") || null,
+  getBars: (sym, n, source) => marketBars.getBars(sym, n, toTickerSourceCode(source) || "BT"),
+  logger: app.log,
+  onEvent: ({ type, payload }) => broadcast({ type, payload }),
+});
 const universe = createCmcBybitUniverse({ logger: app.log, minMarketCapUsd: 10_000_000, maxUniverse: 300 });
 universe.start();
 const klines = createBybitKlinesCache({ logger: app.log });
@@ -129,13 +160,16 @@ const pullbackTest = createPullbackTest({ universe, klines, trade: tradeExecutor
 const rangeTest = createRangeMetricsTest({ universe, klines, bybitRest, liqFeed, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => broadcast({ type, payload }) });
 
 function getSnapshotPayload() {
+  const bybitTickers = marketData.getTickersBySource("BT");
+  const binanceTickers = marketData.getTickersBySource("BNB");
   return {
     now: Date.now(),
     bybit: bybit.getStatus(),
     binance: binance.getStatus(),
     symbols: bybit.getSymbols(),
-    bybitTickers: bybit.getTickers(),
-    binanceTickers: binance.getTickers(),
+    bybitTickers,
+    binanceTickers,
+    marketTickers: marketData.getTickersArray(),
     leadLagTop: lastLeadLagTop,
     paperState: paperTest.getState(),
     universeStatus: universe.getStatus(),
@@ -148,14 +182,14 @@ function getSnapshotPayload() {
 
 function computeLeadLagTop() {
   const symbols = bybit.getSymbols();
-  const srcBySymbol = new Map();
-  const top = leadLag.computeTop({ symbols, getBars: (sym, n) => {
-    const bnb = binanceBars.getBars(sym, n);
-    if (bnb && bnb.length >= 70) { srcBySymbol.set(sym, "binance"); return bnb; }
-    srcBySymbol.set(sym, "bybit");
-    return bybitBars.getBars(sym, n);
-  }, topN: 10, windowBars: 480 });
-  lastLeadLagTop = top.map((r) => ({ ...r, leaderSrc: srcBySymbol.get(r.leader) || "bybit", followerSrc: srcBySymbol.get(r.follower) || "bybit" }));
+  const eligible = symbols.filter((sym) => marketBars.getBars(sym, 70, "BNB").length >= 70);
+  const top = leadLag.computeTop({
+    symbols: eligible,
+    getBars: (sym, n) => marketBars.getBars(sym, n, "BNB"),
+    topN: 10,
+    windowBars: 480,
+  });
+  lastLeadLagTop = top.map((r) => ({ ...r, leaderSrc: "binance", followerSrc: "binance", source: "BNB" }));
   broadcast({ type: "leadlag.top", payload: lastLeadLagTop });
 }
 setInterval(() => { try { computeLeadLagTop(); } catch {} }, 1000);
@@ -170,6 +204,8 @@ app.get("/api/bybit/tickers", async () => bybit.getTickers());
 app.get("/api/binance/status", async () => binance.getStatus());
 app.get("/api/binance/symbols", async () => ({ symbols: binance.getSymbols() }));
 app.get("/api/binance/tickers", async () => binance.getTickers());
+app.get("/api/market/tickers", async () => ({ ts: Date.now(), tickers: marketData.getTickersArray() }));
+app.get("/api/market/snapshot", async () => ({ ts: Date.now(), tickers: marketData.getTickersArray() }));
 app.get("/api/leadlag/top", async () => ({ bucketMs: 250, top: lastLeadLagTop }));
 
 app.get("/api/paper/state", async () => paperTest.getState());
@@ -184,12 +220,17 @@ app.get("/ws", { websocket: true }, (conn) => {
   const ws = conn.socket;
   clients.add(ws);
   safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+  safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
 
   ws.on("message", (raw) => {
     let msg; try { msg = JSON.parse(raw.toString("utf8")); } catch { return; }
     if (!msg?.type) return;
     if (msg.type === "ping") return safeSend(ws, { type: "pong", payload: { now: Date.now() } });
-    if (msg.type === "getSnapshot") return safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+    if (msg.type === "getSnapshot") {
+      safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+      safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
+      return;
+    }
 
     if (msg.type === "setSymbols") {
       const next = normalizeSymbols(msg.symbols);
@@ -197,15 +238,17 @@ app.get("/ws", { websocket: true }, (conn) => {
       binance.setSymbols(next);
       safeSend(ws, { type: "setSymbols.ack", payload: { symbols: bybit.getSymbols() } });
       safeSend(ws, { type: "snapshot", payload: getSnapshotPayload() });
+      safeSend(ws, { type: "market.snapshot", payload: { tickers: marketData.getTickersArray(), ts: Date.now() } });
       return;
     }
 
     if (msg.type === "getBars") {
       const symbol = String(msg.symbol || "").toUpperCase();
-      const source = msg.source === "binance" ? "binance" : "bybit";
+      const sourceCode = toTickerSourceCode(msg.source === "binance" ? "BNB" : msg.source);
+      const source = toLegacySource(sourceCode || "BT");
       const requestedN = Number(msg.n);
       const n = Number.isFinite(requestedN) ? Math.max(1, Math.min(2000, Math.trunc(requestedN))) : 200;
-      const bars = source === "binance" ? binanceBars.getBars(symbol, n) : bybitBars.getBars(symbol, n);
+      const bars = marketBars.getBars(symbol, n, sourceCode || "BT");
       safeSend(ws, { type: "bars", payload: { symbol, source, bars } });
       return;
     }

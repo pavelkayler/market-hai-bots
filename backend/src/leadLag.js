@@ -27,12 +27,12 @@ function pearsonFromSums(n, sumX, sumY, sumX2, sumY2, sumXY) {
 }
 
 function toReturnMap(bars) {
-  // bars: [{t,c,...}] sorted ascending
+  // bars: [{ts,c,...}] sorted ascending
   const map = new Map();
   const rets = [];
   let prevC = null;
   for (const b of bars) {
-    const t = Number(b?.t);
+    const t = Number(b?.ts ?? b?.t);
     const c = Number(b?.c);
     if (!Number.isFinite(t) || !Number.isFinite(c) || c <= 0) continue;
 
@@ -64,7 +64,7 @@ export function createLeadLag({
     const per = new Map();
     for (const s of syms) {
       const bars = getBars(s, windowBars) || [];
-      const sorted = [...bars].sort((a, b) => (a.t || 0) - (b.t || 0));
+      const sorted = [...bars].sort((a, b) => (a.ts || a.t || 0) - (b.ts || b.t || 0));
       const { map, rets } = toReturnMap(sorted);
       const { std } = meanStd(rets);
       per.set(s, { map, std: std || 0 });
