@@ -6,13 +6,9 @@ import { sourceTag } from "../priceFormat.js";
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
 function toWsUrl(apiBase) {
-  try {
-    const u = new URL(apiBase);
-    const proto = u.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${u.host}/ws`;
-  } catch {
-    return "ws://localhost:8080/ws";
-  }
+  const u = new URL(apiBase);
+  const proto = u.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${u.host}/ws`;
 }
 
 function toSymbolList(text) {
@@ -69,9 +65,10 @@ export default function BybitPage() {
     selectedRef.current = selected;
   }, [selected]);
 
-  const wsUrl = useMemo(() => toWsUrl(API_BASE), []);
+  const wsUrl = useMemo(() => toWsUrl(API_BASE), [API_BASE]);
 
   useEffect(() => {
+    let shouldClose = false;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -81,9 +78,21 @@ export default function BybitPage() {
       for (const [key, t] of pendingTickersRef.current.entries()) updates[key] = t;
       pendingTickersRef.current.clear();
       setMarketTickers((prev) => ({ ...prev, ...updates }));
-    }, 300);
+    }, 250);
 
-    ws.onopen = () => setWsStatus("connected");
+    ws.onopen = () => {
+      if (shouldClose) {
+        try { ws.close(1000, "cleanup"); } catch { /* ignore */ }
+        return;
+      }
+      setWsStatus("connected");
+      try {
+        ws.send(JSON.stringify({ type: "getSnapshot" }));
+        ws.send(JSON.stringify({ type: "getStatus" }));
+      } catch {
+        // ignore
+      }
+    };
     ws.onclose = () => setWsStatus("disconnected");
     ws.onerror = () => setWsStatus("error");
 
@@ -162,11 +171,15 @@ export default function BybitPage() {
     };
 
     return () => {
+      shouldClose = true;
       clearInterval(flushTimer);
-      try {
-        ws.close();
-      } catch {
-        // ignore
+      pendingTickersRef.current.clear();
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.close(1000, "cleanup");
+        } catch {
+          // ignore
+        }
       }
     };
   }, [wsUrl]);
