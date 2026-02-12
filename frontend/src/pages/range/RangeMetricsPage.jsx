@@ -13,6 +13,11 @@ const cleanHistory = (rows = []) => rows
 
 const fmt = (x, d = 6) => (Number.isFinite(Number(x)) ? Number(x).toFixed(d) : "—");
 const fmtTs = (ts) => (Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : "—");
+const applyArrayPatch = (prev, next, { allowEmptyReplace = false } = {}) => {
+  if (!Array.isArray(next)) return prev;
+  if (!next.length && Array.isArray(prev) && prev.length && !allowEmptyReplace) return prev;
+  return next;
+};
 
 export default function RangeMetricsPage() {
   const pendingRef = useRef(new Map());
@@ -57,12 +62,17 @@ export default function RangeMetricsPage() {
     const payload = msg?.payload;
 
     if (type === "snapshot") {
-      if (payload?.rangeState) setRange(payload.rangeState);
+      if (payload?.rangeState) setRange((prev) => mergeNonUndefined(prev, payload.rangeState));
       return;
     }
     if (type === "range.status" || type === "range.state") {
       if (!payload || typeof payload !== "object") return;
-      setRange((prev) => mergeNonUndefined(prev, payload));
+      setRange((prev) => {
+        const merged = mergeNonUndefined(prev, payload);
+        if (Array.isArray(payload.logs)) merged.logs = applyArrayPatch(prev?.logs, payload.logs, { allowEmptyReplace: payload?.clear === true });
+        if (Array.isArray(payload.trades)) merged.trades = applyArrayPatch(prev?.trades, payload.trades, { allowEmptyReplace: payload?.clear === true });
+        return merged;
+      });
       return;
     }
     if (type === "range.log") {
@@ -123,6 +133,9 @@ export default function RangeMetricsPage() {
   const realDisabled = tradeState?.tradeStatus && !tradeState.tradeStatus.realAllowed;
   const paperMode = mode === "paper" || tradeState?.tradeStatus?.executionMode === "paper";
   const candidate = range?.scan?.lastCandidate;
+  const detailRows = Array.isArray(range?.trades) ? range.trades : [];
+  const logs = Array.isArray(range?.logs) ? range.logs : [];
+  const processLogs = logs.filter((l) => /scan|candidate|no entry|cooldown|wait|blocked/i.test(String(l?.msg || "")));
 
   return <Row className="g-3">
     <Col md={4}><Card><Card.Body className="d-grid gap-2">
@@ -137,18 +150,23 @@ export default function RangeMetricsPage() {
     </Card.Body></Card></Col>
     <Col md={8}><Card><Card.Body>
       {paperMode ? (
-        <div className="d-grid gap-3">
-          <div><strong>Strategy summary</strong></div>
-          <Table size="sm"><tbody>
-            <tr><td>Status</td><td>{range?.status || "—"}</td></tr>
-            <tr><td>Started</td><td>{fmtTs(range?.startedAt)}</td></tr>
+        <Tab.Container defaultActiveKey="summary"><Nav variant="tabs" className="mb-3">
+          <Nav.Item><Nav.Link eventKey="summary">Кратко</Nav.Link></Nav.Item>
+          <Nav.Item><Nav.Link eventKey="detail">Детально ({detailRows.length})</Nav.Link></Nav.Item>
+          <Nav.Item><Nav.Link eventKey="logs">Логи ({logs.length})</Nav.Link></Nav.Item>
+          <Nav.Item><Nav.Link eventKey="process">Process / Scanner ({processLogs.length})</Nav.Link></Nav.Item>
+        </Nav><Tab.Content>
+          <Tab.Pane eventKey="summary"><Table size="sm"><tbody>
+            <tr><td>Status</td><td>{range?.status || "—"}</td></tr><tr><td>Started</td><td>{fmtTs(range?.startedAt)}</td></tr>
             <tr><td>Candidate</td><td>{candidate?.symbol || "—"} ({candidate?.side || "—"})</td></tr>
             <tr><td>Range hi/lo/mid</td><td>{fmt(candidate?.rangeHigh)} / {fmt(candidate?.rangeLow)} / {fmt(candidate?.mid)}</td></tr>
             <tr><td>Near boundary</td><td>{candidate?.nearBoundary ? "yes" : "no"}</td></tr>
             <tr><td>Gates</td><td>{Array.isArray(candidate?.gates) && candidate.gates.length ? candidate.gates.map((g) => `${g.key}:${g.pass ? "ok" : "no"}`).join(", ") : "—"}</td></tr>
-          </tbody></Table>
-          <div><strong>Logs</strong><div style={{ maxHeight: 360, overflow: "auto" }}><Table size="sm"><tbody>{Array.isArray(range?.logs) && range.logs.length ? range.logs.map((l, i) => <tr key={`${l.t || i}-${i}`}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className="text-muted">No logs yet</td></tr>}</tbody></Table></div></div>
-        </div>
+          </tbody></Table></Tab.Pane>
+          <Tab.Pane eventKey="detail"><Table size="sm"><tbody>{detailRows.length ? detailRows.map((t, i) => <tr key={i}><td>{fmtTs(t.ts || t.t)}</td><td>{t.symbol}</td><td>{t.side}</td><td>{fmt(t.pnlUSDT, 4)}</td></tr>) : <tr><td className="text-muted">No trades yet</td></tr>}</tbody></Table></Tab.Pane>
+          <Tab.Pane eventKey="logs"><div style={{ maxHeight: 360, overflow: "auto" }}><Table size="sm"><tbody>{logs.length ? logs.map((l, i) => <tr key={`${l.t || i}-${i}`}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className="text-muted">No logs yet</td></tr>}</tbody></Table></div></Tab.Pane>
+          <Tab.Pane eventKey="process"><div style={{ maxHeight: 360, overflow: "auto" }}><Table size="sm"><tbody>{processLogs.length ? processLogs.map((l, i) => <tr key={`${l.t || i}-${i}`}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className="text-muted">No scanner logs yet</td></tr>}</tbody></Table></div></Tab.Pane>
+        </Tab.Content></Tab.Container>
       ) : (
         <Tab.Container defaultActiveKey="orders"><Nav variant="tabs" className="mb-3">
           <Nav.Item><Nav.Link eventKey="orders">Orders ({orders.length})</Nav.Link></Nav.Item>

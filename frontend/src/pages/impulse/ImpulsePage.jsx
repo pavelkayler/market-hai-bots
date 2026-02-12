@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Badge, Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
+import { Badge, Button, Card, Col, Form, Nav, Row, Tab, Table } from 'react-bootstrap';
 import { useWsClient } from '../../shared/api/ws.js';
 
 const fmtTs = (ts) => Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : '—';
@@ -16,6 +16,12 @@ function windowLabel(sec) {
   return '15m';
 }
 
+const applyArrayPatch = (prev, next, { allowEmptyReplace = false } = {}) => {
+  if (!Array.isArray(next)) return prev;
+  if (!next.length && Array.isArray(prev) && prev.length && !allowEmptyReplace) return prev;
+  return next;
+};
+
 export default function ImpulsePage() {
   const [state, setState] = useState(null);
   const [mode, setMode] = useState('paper');
@@ -26,7 +32,13 @@ export default function ImpulsePage() {
     const type = msg?.type === 'event' ? msg.topic : msg.type;
     const payload = msg?.payload;
     if (type === 'snapshot' && payload?.impulseState) {
-      setState(payload.impulseState);
+      setState((prev) => {
+        const next = { ...(prev || {}), ...(payload.impulseState || {}) };
+        if (Array.isArray(payload.impulseState?.logs)) next.logs = applyArrayPatch(prev?.logs, payload.impulseState.logs);
+        if (Array.isArray(payload.impulseState?.signals)) next.signals = applyArrayPatch(prev?.signals, payload.impulseState.signals);
+        if (Array.isArray(payload.impulseState?.trades)) next.trades = applyArrayPatch(prev?.trades, payload.impulseState.trades);
+        return next;
+      });
       setSettings((prev) => ({
         ...prev,
         directionMode: payload.impulseState?.settings?.directionMode || prev.directionMode,
@@ -36,7 +48,13 @@ export default function ImpulsePage() {
       }));
     }
     if (type === 'impulse.state' || type === 'impulse.status') {
-      setState(payload);
+      setState((prev) => {
+        const next = { ...(prev || {}), ...(payload || {}) };
+        if (Array.isArray(payload?.logs)) next.logs = applyArrayPatch(prev?.logs, payload.logs, { allowEmptyReplace: payload?.clear === true });
+        if (Array.isArray(payload?.signals)) next.signals = applyArrayPatch(prev?.signals, payload.signals, { allowEmptyReplace: payload?.clear === true });
+        if (Array.isArray(payload?.trades)) next.trades = applyArrayPatch(prev?.trades, payload.trades, { allowEmptyReplace: payload?.clear === true });
+        return next;
+      });
       setSettings((prev) => ({
         ...prev,
         directionMode: payload?.settings?.directionMode || prev.directionMode,
@@ -55,6 +73,10 @@ export default function ImpulsePage() {
 
   const activeWindowSec = Number(state?.settings?.windowSec || settings.windowSec || 900);
   const activeWindowLabel = windowLabel(activeWindowSec);
+  const signals = state?.signals || [];
+  const logs = state?.logs || [];
+  const trades = state?.trades || [];
+  const processLogs = logs.filter((l) => /signal|no_trade|cooldown|confirm|scan|wait/i.test(String(l?.msg || '')));
 
   return <Row className='g-3'>
     <Col md={4}><Card><Card.Body className='d-grid gap-2'>
@@ -76,11 +98,22 @@ export default function ImpulsePage() {
       <div className='d-flex gap-2'><Button onClick={() => sendJson({ type: 'startImpulseBot', mode, settings })}>Start</Button><Button variant='outline-danger' onClick={() => sendJson({ type: 'stopImpulseBot' })}>Stop</Button></div>
     </Card.Body></Card></Col>
     <Col md={8}><Card><Card.Body>
-      <div className='mb-2'><b>Summary</b>: signals {state?.signals?.length || 0} | active {state?.activePositions?.length || 0} | cooldown {Object.keys(state?.cooldownsBySymbol || {}).length}</div>
-      <Table size='sm'><thead><tr><th>Symbol</th><th>Side</th><th>{`Δ${activeWindowLabel}`}</th><th>{`OI Δ${activeWindowLabel}`}</th><th>Time</th></tr></thead><tbody>
-        {(state?.signals || []).slice(0, 30).map((s, i) => <tr key={i}><td>{s.symbol}</td><td>{s.side}</td><td>{fmtPct(s.priceDeltaPct ?? s.priceDelta15m)}</td><td>{fmtPct(s.oiDeltaPct ?? s.oiDelta15m)}</td><td>{fmtTs(s.ts)}</td></tr>)}
-      </tbody></Table>
-      <div style={{ maxHeight: 320, overflow: 'auto' }}><Table size='sm'><tbody>{(state?.logs || []).slice(0, 120).map((l, i) => <tr key={i}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>)}</tbody></Table></div>
+      <Tab.Container defaultActiveKey='summary'><Nav variant='tabs' className='mb-3'>
+        <Nav.Item><Nav.Link eventKey='summary'>Кратко</Nav.Link></Nav.Item>
+        <Nav.Item><Nav.Link eventKey='detail'>Детально ({trades.length})</Nav.Link></Nav.Item>
+        <Nav.Item><Nav.Link eventKey='logs'>Логи ({logs.length})</Nav.Link></Nav.Item>
+        <Nav.Item><Nav.Link eventKey='process'>Process / Scanner ({processLogs.length})</Nav.Link></Nav.Item>
+      </Nav><Tab.Content>
+        <Tab.Pane eventKey='summary'>
+          <div className='mb-2'><b>Summary</b>: signals {signals.length} | active {state?.activePositions?.length || 0} | cooldown {Object.keys(state?.cooldownsBySymbol || {}).length}</div>
+          <Table size='sm'><thead><tr><th>Symbol</th><th>Side</th><th>{`Δ${activeWindowLabel}`}</th><th>{`OI Δ${activeWindowLabel}`}</th><th>Time</th></tr></thead><tbody>
+            {signals.slice(0, 30).map((s, i) => <tr key={i}><td>{s.symbol}</td><td>{s.side}</td><td>{fmtPct(s.priceDeltaPct ?? s.priceDelta15m)}</td><td>{fmtPct(s.oiDeltaPct ?? s.oiDelta15m)}</td><td>{fmtTs(s.ts)}</td></tr>)}
+          </tbody></Table>
+        </Tab.Pane>
+        <Tab.Pane eventKey='detail'><Table size='sm'><tbody>{trades.length ? trades.map((t, i) => <tr key={i}><td>{fmtTs(t.ts)}</td><td>{t.symbol}</td><td>{t.side}</td><td>{t.event}</td><td>{fmtPct((Number(t.roiPct) || 0) / 100)}</td></tr>) : <tr><td className='text-muted'>No trades yet</td></tr>}</tbody></Table></Tab.Pane>
+        <Tab.Pane eventKey='logs'><div style={{ maxHeight: 320, overflow: 'auto' }}><Table size='sm'><tbody>{logs.slice(0, 120).map((l, i) => <tr key={i}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>)}</tbody></Table></div></Tab.Pane>
+        <Tab.Pane eventKey='process'><div style={{ maxHeight: 320, overflow: 'auto' }}><Table size='sm'><tbody>{processLogs.length ? processLogs.map((l, i) => <tr key={i}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className='text-muted'>No scanner logs yet</td></tr>}</tbody></Table></div></Tab.Pane>
+      </Tab.Content></Tab.Container>
     </Card.Body></Card></Col>
   </Row>;
 }

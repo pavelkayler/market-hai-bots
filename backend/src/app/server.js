@@ -281,6 +281,7 @@ function getSnapshotPayload() {
     pullbackState: pullbackTest.getState(),
     rangeState: rangeTest.getState(),
     impulseState: impulseBot.getState(),
+    botsOverview: getBotsOverview(),
     watchlists: {
       leadlag: bybit.getSymbols().slice(0, 100),
       pullback: pickMostVolatileSymbols(100),
@@ -293,6 +294,33 @@ function getSnapshotPayload() {
     presets: presetsStore.getState(),
     tradePositions: [],
     tradeOrders: [],
+  };
+}
+
+function toBotPnl(state) {
+  if (!state || typeof state !== "object") return 0;
+  if (Number.isFinite(Number(state?.stats?.pnlUSDT))) return Number(state.stats.pnlUSDT);
+  const trades = Array.isArray(state?.trades) ? state.trades : [];
+  const closeTrades = trades.filter((t) => String(t?.event || "").toUpperCase() === "CLOSE");
+  const sum = closeTrades.reduce((acc, t) => acc + (Number(t?.pnlUSDT) || 0), 0);
+  return Number.isFinite(sum) ? sum : 0;
+}
+
+function getBotsOverview() {
+  const leadlagState = paperTest.getState?.({ includeHistory: false }) || paperTest.getState?.() || {};
+  const pullbackState = pullbackTest.getState?.() || {};
+  const rangeState = rangeTest.getState?.() || {};
+  const impulseState = impulseBot.getState?.() || {};
+  const paperBalance = Number(process.env.PAPER_WALLET_BALANCE || 10000);
+  return {
+    ts: Date.now(),
+    paperBalance,
+    bots: [
+      { name: "LeadLag", status: leadlagState.status || "STOPPED", pnl: toBotPnl(leadlagState) },
+      { name: "Pullback", status: pullbackState.status || "STOPPED", pnl: toBotPnl(pullbackState) },
+      { name: "RangeMetrics", status: rangeState.status || "STOPPED", pnl: toBotPnl(rangeState) },
+      { name: "Impulse", status: impulseState.status || "STOPPED", pnl: toBotPnl(impulseState) },
+    ],
   };
 }
 
@@ -338,6 +366,7 @@ function computeLeadLagTop() {
 }
 setInterval(() => { try { computeLeadLagTop(); } catch {} }, 1000);
 setInterval(() => broadcast({ type: "universe.status", payload: universe.getStatus() }), 30000);
+setInterval(() => broadcastEvent("bots.overview", getBotsOverview()), 2000);
 setInterval(async () => {
   try {
     const ts = tradeStatus(tradeExecutor);

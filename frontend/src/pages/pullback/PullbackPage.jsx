@@ -14,6 +14,11 @@ const cleanHistory = (rows = []) => rows
 const fmtNum = (x, d = 6) => (Number.isFinite(Number(x)) ? Number(x).toFixed(d) : "—");
 const fmtTs = (ts) => (Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : "—");
 const modeBadge = (m) => (m === "real" ? "danger" : m === "demo" ? "warning" : "secondary");
+const applyArrayPatch = (prev, next, { allowEmptyReplace = false } = {}) => {
+  if (!Array.isArray(next)) return prev;
+  if (!next.length && Array.isArray(prev) && prev.length && !allowEmptyReplace) return prev;
+  return next;
+};
 
 export default function PullbackPage() {
   const ackTimerRef = useRef(null);
@@ -69,7 +74,7 @@ export default function PullbackPage() {
     const payload = msg?.payload;
 
     if (type === "snapshot") {
-      if (payload?.pullbackState) setPb(payload.pullbackState);
+      if (payload?.pullbackState) setPb((prev) => mergeNonUndefined(prev, payload.pullbackState));
       setTradeStatus(payload?.tradeStatus || null);
       setWarnings(payload?.warnings || []);
       return;
@@ -77,7 +82,12 @@ export default function PullbackPage() {
 
     if (type === "pullback.status" || type === "pullback.state") {
       if (!payload || typeof payload !== "object") return;
-      setPb((prev) => mergeNonUndefined(prev, payload));
+      setPb((prev) => {
+        const merged = mergeNonUndefined(prev, payload);
+        if (Array.isArray(payload.logs)) merged.logs = applyArrayPatch(prev?.logs, payload.logs, { allowEmptyReplace: payload?.clear === true });
+        if (Array.isArray(payload.trades)) merged.trades = applyArrayPatch(prev?.trades, payload.trades, { allowEmptyReplace: payload?.clear === true });
+        return merged;
+      });
       return;
     }
 
@@ -161,6 +171,9 @@ export default function PullbackPage() {
   const realDisabled = tradeStatus && !tradeStatus.realAllowed;
   const status = pb?.status || "STOPPED";
   const paperMode = mode === "paper" || tradeStatus?.executionMode === "paper";
+  const detailRows = Array.isArray(pb?.trades) ? pb.trades : [];
+  const logs = Array.isArray(pb?.logs) ? pb.logs : [];
+  const processLogs = logs.filter((l) => /scan|candidate|no entry|cooldown|wait/i.test(String(l?.msg || "")));
 
   return <Row className="g-3">
     <Col md={4}><Card><Card.Body className="d-grid gap-2">
@@ -177,16 +190,21 @@ export default function PullbackPage() {
     </Card.Body></Card></Col>
     <Col md={8}><Card><Card.Body>
       {paperMode ? (
-        <div className="d-grid gap-3">
-          <div><strong>Strategy summary</strong><div className="text-muted">Started: {fmtTs(pb?.startedAt)} | Last scan: {fmtTs(pb?.scan?.lastScanAt)}</div></div>
-          <Table size="sm" className="mb-0"><tbody>
-            <tr><td>Status</td><td>{pb?.status || "—"}</td></tr>
-            <tr><td>Candidate</td><td>{pb?.scan?.lastCandidate?.symbol || "—"} ({pb?.scan?.lastCandidate?.side || "—"})</td></tr>
-            <tr><td>Reason</td><td>{pb?.scan?.lastCandidate?.reason || "—"}</td></tr>
-            <tr><td>Trades</td><td>{pb?.stats?.trades ?? 0}</td></tr>
-          </tbody></Table>
-          <div><strong>Logs</strong><div style={{ maxHeight: 360, overflow: "auto" }}><Table size="sm"><tbody>{Array.isArray(pb?.logs) && pb.logs.length ? pb.logs.map((l, i) => <tr key={`${l.t || i}-${i}`}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className="text-muted">No logs yet</td></tr>}</tbody></Table></div></div>
-        </div>
+        <Tab.Container defaultActiveKey="summary"><Nav variant="tabs" className="mb-3">
+          <Nav.Item><Nav.Link eventKey="summary">Кратко</Nav.Link></Nav.Item>
+          <Nav.Item><Nav.Link eventKey="detail">Детально ({detailRows.length})</Nav.Link></Nav.Item>
+          <Nav.Item><Nav.Link eventKey="logs">Логи ({logs.length})</Nav.Link></Nav.Item>
+          <Nav.Item><Nav.Link eventKey="process">Process / Scanner ({processLogs.length})</Nav.Link></Nav.Item>
+        </Nav><Tab.Content>
+          <Tab.Pane eventKey="summary"><div><strong>Strategy summary</strong><div className="text-muted">Started: {fmtTs(pb?.startedAt)} | Last scan: {fmtTs(pb?.scan?.lastScanAt)}</div></div>
+            <Table size="sm" className="mb-0"><tbody>
+              <tr><td>Status</td><td>{pb?.status || "—"}</td></tr><tr><td>Candidate</td><td>{pb?.scan?.lastCandidate?.symbol || "—"} ({pb?.scan?.lastCandidate?.side || "—"})</td></tr>
+              <tr><td>Reason</td><td>{pb?.scan?.lastCandidate?.reason || "—"}</td></tr><tr><td>Trades</td><td>{pb?.stats?.trades ?? 0}</td></tr>
+            </tbody></Table></Tab.Pane>
+          <Tab.Pane eventKey="detail"><Table size="sm"><tbody>{detailRows.length ? detailRows.map((t, i) => <tr key={i}><td>{fmtTs(t.ts || t.t)}</td><td>{t.symbol}</td><td>{t.side}</td><td>{fmtNum(t.pnlUSDT, 4)}</td></tr>) : <tr><td className="text-muted">No trades yet</td></tr>}</tbody></Table></Tab.Pane>
+          <Tab.Pane eventKey="logs"><div style={{ maxHeight: 360, overflow: "auto" }}><Table size="sm"><tbody>{logs.length ? logs.map((l, i) => <tr key={`${l.t || i}-${i}`}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className="text-muted">No logs yet</td></tr>}</tbody></Table></div></Tab.Pane>
+          <Tab.Pane eventKey="process"><div style={{ maxHeight: 360, overflow: "auto" }}><Table size="sm"><tbody>{processLogs.length ? processLogs.map((l, i) => <tr key={`${l.t || i}-${i}`}><td>{fmtTs(l.t)}</td><td>{l.level}</td><td>{l.msg}</td></tr>) : <tr><td className="text-muted">No scanner logs yet</td></tr>}</tbody></Table></div></Tab.Pane>
+        </Tab.Content></Tab.Container>
       ) : (
         <Tab.Container defaultActiveKey="orders"><Nav variant="tabs" className="mb-3">
           <Nav.Item><Nav.Link eventKey="orders">Orders ({orders.length})</Nav.Link></Nav.Item>
