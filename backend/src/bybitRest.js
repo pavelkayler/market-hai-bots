@@ -90,9 +90,53 @@ export function createBybitRest({ baseUrl = DEFAULT_BASE, logger = console } = {
     return candles;
   }
 
+
+
+  async function getOpenInterest({ symbol, interval = "15", limit = 50 } = {}) {
+    const url = new URL(`${baseUrl}/v5/market/open-interest`);
+    url.searchParams.set("category", "linear");
+    url.searchParams.set("symbol", symbol);
+    url.searchParams.set("intervalTime", String(interval));
+    url.searchParams.set("limit", String(limit));
+
+    const j = await fetchJsonWithTimeout(url.toString(), { timeoutMs: 15000 });
+    if (j?.retCode !== 0) {
+      const err = new Error(`Bybit retCode ${j?.retCode}`);
+      err.payload = j;
+      throw err;
+    }
+
+    const rows = j?.result?.list || [];
+    return rows
+      .map((r) => ({ t: Number(r.timestamp), oi: Number(r.openInterest) }))
+      .filter((x) => Number.isFinite(x.t) && Number.isFinite(x.oi))
+      .sort((a, b) => a.t - b.t);
+  }
+
+  async function getFundingHistory({ symbol, limit = 50 } = {}) {
+    const url = new URL(`${baseUrl}/v5/market/funding/history`);
+    url.searchParams.set("category", "linear");
+    url.searchParams.set("symbol", symbol);
+    url.searchParams.set("limit", String(limit));
+
+    const j = await fetchJsonWithTimeout(url.toString(), { timeoutMs: 15000 });
+    if (j?.retCode !== 0) {
+      const err = new Error(`Bybit retCode ${j?.retCode}`);
+      err.payload = j;
+      throw err;
+    }
+
+    const rows = j?.result?.list || [];
+    return rows
+      .map((r) => ({ t: Number(r.fundingRateTimestamp), rate: Number(r.fundingRate) }))
+      .filter((x) => Number.isFinite(x.t) && Number.isFinite(x.rate))
+      .sort((a, b) => a.t - b.t);
+  }
   return {
     getInstrumentsLinearAll,
     getKlines,
+    getOpenInterest,
+    getFundingHistory,
     _fetchJsonWithTimeout: fetchJsonWithTimeout,
   };
 }
