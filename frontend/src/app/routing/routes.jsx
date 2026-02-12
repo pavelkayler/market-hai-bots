@@ -1,0 +1,22 @@
+import { Route, Routes } from 'react-router-dom';
+import StatusPage from '../../pages/status/StatusPage.jsx';
+import BybitPage from '../../pages/bybit/BybitPage.jsx';
+import LeadLagPage from '../../pages/leadlag/LeadLagPage.jsx';
+import PullbackPage from '../../pages/pullback/PullbackPage.jsx';
+import RangeMetricsPage from '../../pages/range/RangeMetricsPage.jsx';
+import PresetsPage from '../../pages/presets/PresetsPage.jsx';
+
+export default function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/" element={<StatusPage />} />
+      <Route path="/status" element={<StatusPage />} />
+      <Route path="/bybit" element={<BybitPage />} />
+      <Route path="/leadlag" element={<LeadLagPage />} />
+      <Route path="/pullback" element={<PullbackPage />} />
+      <Route path="/range" element={<RangeMetricsPage />} />
+      <Route path="/presets" element={<PresetsPage />} />
+      <Route path="*" element={<StatusPage />} />
+    </Routes>
+  );
+}

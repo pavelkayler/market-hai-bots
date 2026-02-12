@@ -52,7 +52,9 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     executionMode: "paper",
     killSwitch: false,
     activeSymbol: null,
-    maxNotional: Number(process.env.TRADE_MAX_NOTIONAL || 1000),
+    maxNotional: Number(process.env.TRADE_MAX_NOTIONAL || 100),
+    maxLeverage: Number(process.env.TRADE_MAX_LEVERAGE || 10),
+    maxActivePositions: Number(process.env.TRADE_MAX_ACTIVE_POSITIONS || 1),
   };
 
   function enabled() {
@@ -118,10 +120,10 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     const reasons = [];
     if (state.executionMode === "paper") return { ok: true, reasons };
     if (state.killSwitch && !reduceOnly) reasons.push("KILL_SWITCH_ENABLED");
-    if (state.executionMode === "real") {
+    if (state.executionMode === "demo" || state.executionMode === "real") {
       const rows = await getPositions({});
       const active = rows.filter((r) => Number(r?.size || 0) > 0);
-      if (active.length > 1 || (active.length === 1 && active[0].symbol !== symbol)) reasons.push("MAX_ONE_POSITION_GLOBAL");
+      if (active.length >= state.maxActivePositions && !active.some((r) => r.symbol === symbol)) reasons.push("MAX_ONE_POSITION_GLOBAL");
       const notional = Math.abs(Number(qty || 0) * Number(priceHint || 0));
       if (Number.isFinite(notional) && notional > state.maxNotional) reasons.push(`NOTIONAL_LIMIT_EXCEEDED:${notional.toFixed(2)}>${state.maxNotional}`);
       if (active.some((r) => Number(r?.tradeMode) !== 1)) reasons.push("ISOLATED_MARGIN_REQUIRED");
@@ -172,12 +174,14 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     }
 
     if (Number.isFinite(num(leverage)) && privateRest.setLeverage) {
+      const safeLeverage = Math.max(1, Math.min(state.maxLeverage, Number(leverage)));
+      if (safeLeverage !== Number(leverage)) logger?.warn?.({ leverageRaw: leverage, leverageRounded: safeLeverage }, "LEVERAGE_GUARDRAIL_APPLIED");
       try {
         await privateRest.setLeverage({
           category: "linear",
           symbol,
-          buyLeverage: String(leverage),
-          sellLeverage: String(leverage),
+          buyLeverage: String(safeLeverage),
+          sellLeverage: String(safeLeverage),
         });
       } catch (e) {
         logger?.warn?.({ err: e, symbol, leverage }, "set leverage failed, continuing");
@@ -303,6 +307,13 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     return ack;
   }
 
+  function setGuardrails({ maxNotional, maxLeverage, maxActivePositions } = {}) {
+    if (Number.isFinite(Number(maxNotional))) state.maxNotional = Number(maxNotional);
+    if (Number.isFinite(Number(maxLeverage))) state.maxLeverage = Number(maxLeverage);
+    if (Number.isFinite(Number(maxActivePositions))) state.maxActivePositions = Number(maxActivePositions);
+    return { maxNotional: state.maxNotional, maxLeverage: state.maxLeverage, maxActivePositions: state.maxActivePositions };
+  }
+
   return {
     enabled,
     getStatus,
@@ -311,6 +322,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     setKillSwitch,
     getKillSwitch,
     setActiveSymbol,
+    setGuardrails,
     normalizeQtyPrice,
     openPosition,
     sync,
