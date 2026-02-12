@@ -1,5 +1,4 @@
 // backend/src/bybitInstrumentsCache.js
-// Fetch & cache instrument filters for Bybit linear perpetual contracts.
 
 import { createBybitRest } from "./bybitRest.js";
 
@@ -10,40 +9,41 @@ function num(x) {
 
 function isPerpInstrument(it) {
   const sym = String(it?.symbol || "");
-  if (!sym) return false;
-  // Dated futures look like DOGEUSDT-13FEB26
-  if (sym.includes("-")) return false;
-  // Prefer explicit contractType if present
+  if (!sym || sym.includes("-")) return false;
   const ct = String(it?.contractType || it?.contract_type || "").toLowerCase();
   if (ct && !ct.includes("perpetual")) return false;
   return true;
 }
 
-export function createBybitInstrumentsCache({ baseUrl, logger = console, ttlMs = 6 * 60 * 60 * 1000 } = {}) {
-  const rest = createBybitRest({ baseUrl, logger });
-
+export function createBybitInstrumentsCache({ baseUrl, privateRest = null, logger = console, ttlMs = 30 * 60 * 1000 } = {}) {
+  const publicRest = createBybitRest({ baseUrl, logger });
   let cachedAt = 0;
-  let map = new Map(); // symbol -> filters
+  let map = new Map();
+
+  async function fetchAllLinear() {
+    if (privateRest?.enabled && privateRest.getInstrumentsInfo) {
+      const res = await privateRest.getInstrumentsInfo({ category: "linear", limit: 1000 });
+      return res?.result?.list || [];
+    }
+    return publicRest.getInstrumentsLinearAll();
+  }
 
   async function refresh() {
-    const list = await rest.getInstrumentsLinearAll();
+    const list = await fetchAllLinear();
     const next = new Map();
 
     for (const it of list) {
       if (!isPerpInstrument(it)) continue;
       const sym = String(it.symbol || "").toUpperCase();
-
-      const tickSize = num(it?.priceFilter?.tickSize ?? it?.priceFilter?.tick_size);
-      const qtyStep = num(it?.lotSizeFilter?.qtyStep ?? it?.lotSizeFilter?.qty_step);
-      const minQty = num(it?.lotSizeFilter?.minOrderQty ?? it?.lotSizeFilter?.min_order_qty);
-      const minNotional = num(it?.lotSizeFilter?.minNotionalValue ?? it?.lotSizeFilter?.min_notional_value);
+      const tickSize = num(it?.priceFilter?.tickSize);
+      const qtyStep = num(it?.lotSizeFilter?.qtyStep);
+      const minQty = num(it?.lotSizeFilter?.minOrderQty);
 
       next.set(sym, {
         symbol: sym,
         tickSize: tickSize || null,
         qtyStep: qtyStep || null,
         minQty: minQty || null,
-        minNotional: minNotional || null,
       });
     }
 
@@ -53,8 +53,7 @@ export function createBybitInstrumentsCache({ baseUrl, logger = console, ttlMs =
   }
 
   async function ensure() {
-    const age = Date.now() - cachedAt;
-    if (map.size && age < ttlMs) return;
+    if (map.size && Date.now() - cachedAt < ttlMs) return;
     await refresh();
   }
 
@@ -63,23 +62,9 @@ export function createBybitInstrumentsCache({ baseUrl, logger = console, ttlMs =
     return map.get(String(symbol || "").toUpperCase()) || null;
   }
 
-  async function getAll() {
-    await ensure();
-    return Array.from(map.values());
-  }
-
-  function getStatus() {
-    return {
-      cachedAt: cachedAt || null,
-      ageMs: cachedAt ? Date.now() - cachedAt : null,
-      count: map.size,
-    };
-  }
-
   return {
     refresh,
     get,
-    getAll,
-    getStatus,
+    getStatus: () => ({ cachedAt: cachedAt || null, count: map.size, ageMs: cachedAt ? Date.now() - cachedAt : null }),
   };
 }
