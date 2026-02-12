@@ -74,6 +74,7 @@ function computeWindowMetrics(trades = []) {
 
 export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
   const defaults = {
+    allowedParams: ['tpPct'],
     enabled: true,
     minTradesToStart: 10,
     evalWindowTrades: 20,
@@ -100,6 +101,7 @@ export function createLeadLagAutoTune({ maxLogEntries = 200 } = {}) {
 
   function normalizeConfig(next = {}, prev = defaults) {
     return {
+      allowedParams: ['tpPct'],
       enabled: next.enabled === undefined ? prev.enabled : Boolean(next.enabled),
       minTradesToStart: Math.max(1, Math.trunc(safeNum(next.minTradesToStart, prev.minTradesToStart))),
       evalWindowTrades: Math.max(2, Math.trunc(safeNum(next.evalWindowTrades, prev.evalWindowTrades))),
