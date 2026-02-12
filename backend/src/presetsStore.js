@@ -14,6 +14,9 @@ const PARAM_KEYS = [
   "edgeMult",
   "confirmZ",
   "riskQtyMultiplier",
+  "maxNotionalUsd",
+  "maxLeverage",
+  "maxActivePositions",
 ];
 
 function now() {
@@ -36,6 +39,9 @@ function defaultBounds() {
     edgeMult: { min: 0.5, max: 5 },
     confirmZ: { min: 0.2, max: 5 },
     riskQtyMultiplier: { min: 0.1, max: 5 },
+    maxNotionalUsd: { min: 10, max: 100000 },
+    maxLeverage: { min: 1, max: 50 },
+    maxActivePositions: { min: 1, max: 5 },
   };
 }
 
@@ -50,6 +56,9 @@ function defaultParams() {
     edgeMult: 1,
     confirmZ: 1,
     riskQtyMultiplier: 1,
+    maxNotionalUsd: 100,
+    maxLeverage: 10,
+    maxActivePositions: 1,
   };
 }
 
@@ -125,7 +134,7 @@ function sanitizePreset(input, fallback = defaultPreset()) {
   const safe = { ...fallback, ...(input && typeof input === "object" ? input : {}) };
   safe.id = String(safe.id || crypto.randomUUID());
   safe.name = String(safe.name || "Preset").trim() || "Preset";
-  safe.shortlistMax = Math.min(300, Math.max(1, Math.trunc(clampNum(safe.shortlistMax, 10))));
+  safe.shortlistMax = Math.min(300, Math.max(1, Math.trunc(clampNum(safe.shortlistMax, 50))));
   safe.excludedCoins = sanitizeExcluded(safe.excludedCoins);
   safe.bounds = normalizeBounds(safe, fallback.bounds);
   safe.params = applyBounds(normalizeParams(safe, fallback.params), safe.bounds);
