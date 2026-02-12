@@ -197,17 +197,20 @@ export function createPaperTest({
   }
 
   function getState({ includeHistory = true } = {}) {
-    return {
+    const base = {
       ...state,
       activePreset: presetsStore?.getPresetById(state.activePresetId) || null,
       sessionPreset: presetsStore?.getPresetById(state.sessionPresetId) || null,
       position: null,
       pending: null,
       stats: getStats(),
-      tuneChanges: includeHistory ? tuneChanges.slice(0, 10) : [],
-      trades: [],
-      logs: includeHistory ? logs.slice(0, 200) : [],
     };
+    if (includeHistory) {
+      base.tuneChanges = tuneChanges.slice(0, 10);
+      base.trades = [];
+      base.logs = logs.slice(0, 200);
+    }
+    return base;
   }
 
   return { start, stop, getState, dispose: () => clearInterval(timer) };

@@ -47,6 +47,15 @@ function normalizeOrder(row) {
   };
 }
 
+function isMeaningfulPosition(row) {
+  return Math.abs(Number(row?.size || 0)) > 0.0000001;
+}
+
+function isActiveOrder(row) {
+  const status = String(row?.status || "");
+  return status === "New" || status === "PartiallyFilled" || status === "Created";
+}
+
 export function createBybitTradeExecutor({ privateRest, instruments, logger = console } = {}) {
   const state = {
     executionMode: "paper",
@@ -274,13 +283,13 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   async function getPositions({ symbol } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const res = await privateRest.getPositions({ category: "linear", symbol });
-    return (res?.result?.list || []).map(normalizePosition);
+    return (res?.result?.list || []).map(normalizePosition).filter(isMeaningfulPosition);
   }
 
   async function getOpenOrders({ symbol } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const res = await privateRest.getOrdersRealtime({ category: "linear", symbol });
-    return (res?.result?.list || []).map(normalizeOrder);
+    return (res?.result?.list || []).map(normalizeOrder).filter(isActiveOrder);
   }
 
   async function getClosedPnl({ symbol, limit = 20 } = {}) {
