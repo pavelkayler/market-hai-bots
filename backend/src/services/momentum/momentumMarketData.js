@@ -62,7 +62,13 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
         if (row?.contractType === 'LinearPerpetual' && row?.status === 'Trading' && row?.symbol?.endsWith('USDT')) {
           instruments.add(row.symbol);
           const tickSize = Number(row?.priceFilter?.tickSize);
-          if (Number.isFinite(tickSize) && tickSize > 0) instrumentMeta.set(row.symbol, { tickSize });
+          const contractMultiplier = Number(row?.contractSize);
+          if (Number.isFinite(tickSize) && tickSize > 0) {
+            instrumentMeta.set(row.symbol, {
+              tickSize,
+              contractMultiplier: Number.isFinite(contractMultiplier) && contractMultiplier > 0 ? contractMultiplier : null,
+            });
+          }
         }
       }
       cursor = data?.result?.nextPageCursor || '';
@@ -123,16 +129,30 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
           const symbol = msg.topic.slice(8);
           const d = msg?.data || {};
           const meta = instrumentMeta.get(symbol) || {};
-          if (d.openInterest !== undefined) oiLastUpdateTsMs.set(symbol, Number(msg.ts || Date.now()));
+          const tsMs = Number(msg.ts || Date.now());
+          const markPrice = Number(d.markPrice);
+          const lastPrice = Number(d.lastPrice ?? d.last);
+          const openInterestQty = Number(d.openInterest);
+          const oiValueFromTicker = Number(d.openInterestValue ?? d.openInterestValueUSDT ?? d.open_interest_value);
+          const canDeriveOiValue = Number.isFinite(openInterestQty) && openInterestQty > 0
+            && Number.isFinite(lastPrice) && lastPrice > 0
+            && Number.isFinite(meta.contractMultiplier) && meta.contractMultiplier > 0;
+          const oiValue = Number.isFinite(oiValueFromTicker) && oiValueFromTicker > 0
+            ? oiValueFromTicker
+            : (canDeriveOiValue ? (openInterestQty * lastPrice * meta.contractMultiplier) : null);
+          if (Number.isFinite(oiValue) && oiValue > 0) oiLastUpdateTsMs.set(symbol, tsMs);
           pending.set(symbol, {
-            markPrice: Number(d.markPrice),
-            openInterest: Number(d.openInterest),
+            markPrice,
+            lastPrice,
+            openInterestQty,
+            oiValue,
             turnover24h: Number(d.turnover24h),
             highPrice24h: Number(d.highPrice24h),
             lowPrice24h: Number(d.lowPrice24h),
             price24hPcnt: Number(d.price24hPcnt),
-            ts: Number(msg.ts || Date.now()),
+            ts: tsMs,
             tickSize: Number(meta.tickSize) || null,
+            contractMultiplier: Number(meta.contractMultiplier) || null,
             oiLastUpdateTsMs: oiLastUpdateTsMs.get(symbol) || null,
           });
           return;
@@ -152,7 +172,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
       let bucket = ring.get(symbol);
       if (!bucket) bucket = { rows: [], secToIndex: new Map() };
       const rows = bucket.rows;
-      rows.push({ tsSec: sec, markPrice: snap.markPrice, openInterest: snap.openInterest });
+      rows.push({ tsSec: sec, markPrice: snap.markPrice, lastPrice: snap.lastPrice, oiValue: snap.oiValue, openInterestQty: snap.openInterestQty });
       bucket.secToIndex.set(sec, rows.length - 1);
       if (rows.length > 1000) {
         const first = rows.shift();
@@ -179,8 +199,8 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     const rows = bucket.rows.slice(-(count + 1));
     const out = [];
     for (let i = 1; i < rows.length; i += 1) {
-      const prev = Number(rows[i - 1].markPrice);
-      const cur = Number(rows[i].markPrice);
+      const prev = Number(rows[i - 1].lastPrice);
+      const cur = Number(rows[i].lastPrice);
       if (!(prev > 0) || !(cur > 0)) return [];
       out.push((cur / prev) - 1);
     }
@@ -263,7 +283,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   }
 
   function getOiValue(symbol) {
-    return Number(current.get(symbol)?.openInterest || 0);
+    return Number(current.get(symbol)?.oiValue || 0);
   }
 
   async function start() {

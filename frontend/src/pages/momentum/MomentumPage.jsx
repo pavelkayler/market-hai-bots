@@ -107,6 +107,11 @@ export default function MomentumPage() {
         {(detail.openPositions || []).map((p) => <tr key={`pos_${p.symbol}`}><td>{p.symbol}</td><td>IN_POSITION</td><td>{p.side}</td><td>{p.entryPrice}</td><td>-</td><td>-</td><td>-</td></tr>)}
       </tbody></Table></>}
 
+
+      {detail?.signalView?.length > 0 && <><h6>Signal view (last price / OI value)</h6><Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>Last</th><th>Mark</th><th>Price Δ(W)</th><th>OI Value</th><th>OI Δ(W)</th><th>Time</th></tr></thead><tbody>
+        {detail.signalView.map((row) => <tr key={`sv_${row.symbol}`}><td>{row.symbol}</td><td>{Number(row.lastPrice || 0).toFixed(6)}</td><td>{Number(row.markPrice || 0).toFixed(6)}</td><td>{(Number(row.priceChange || 0) * 100).toFixed(3)}%</td><td>{Number(row.oiValueNow || 0).toFixed(2)}</td><td>{(Number(row.oiChange || 0) * 100).toFixed(3)}%</td><td>{new Date(row.ts).toLocaleTimeString()}</td></tr>)}
+      </tbody></Table></>}
+
       {detail?.logs?.length > 0 && <Table size="sm"><thead><tr><th>Time</th><th>Message</th></tr></thead><tbody>
         {detail.logs.map((l, idx) => <tr key={`${l.ts}_${idx}`}><td>{new Date(l.ts).toLocaleTimeString()}</td><td>{`${l.msg}${l.symbol ? `: ${l.symbol}` : ''}`}</td></tr>)}
       </tbody></Table>}

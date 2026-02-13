@@ -6,6 +6,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
   const symbols = new Map();
   const logs = [];
   const stats = { trades: 0, wins: 0, losses: 0, pnl: 0, fees: 0, signals1m: 0, signals5m: 0 };
+  const signalViewBySymbol = new Map();
   let status = MOMENTUM_STATUS.RUNNING;
   const startedAt = Date.now();
 
@@ -29,20 +30,22 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
     return symbols.get(symbol);
   }
 
-  function getTriggerPrice({ side, markPrice, tickSize }) {
+  function getTriggerPrice({ side, signalPrice, tickSize }) {
     const offsetFactor = 1 + (Number(cfg.entryOffsetPct || 0) / 100);
-    const rawPrice = Number(markPrice) * offsetFactor;
+    const rawPrice = Number(signalPrice) * offsetFactor;
     return roundByTickForSide(rawPrice, tickSize, side);
   }
 
   function createTrigger(symbol, side, snap, nowMs, st) {
-    const triggerPrice = getTriggerPrice({ side, markPrice: snap.markPrice, tickSize: snap.tickSize });
+    const entrySource = String(cfg.entryPriceSource || 'MARK').toUpperCase();
+    const sourcePrice = entrySource === 'LAST' ? snap.lastPrice : snap.markPrice;
+    const triggerPrice = getTriggerPrice({ side, signalPrice: sourcePrice, tickSize: snap.tickSize });
     if (!(triggerPrice > 0)) return false;
     st.state = SYMBOL_STATE.TRIGGER_PENDING;
-    st.pending = { side, triggerPrice, createdAtMs: nowMs, holdProgress: cfg.holdSeconds, trendProgress: cfg.trendConfirmSeconds, entryOffsetPct: cfg.entryOffsetPct };
+    st.pending = { side, triggerPrice, createdAtMs: nowMs, holdProgress: cfg.holdSeconds, trendProgress: cfg.trendConfirmSeconds, entryOffsetPct: cfg.entryOffsetPct, lastPriceAtTrigger: snap.lastPrice, markPriceAtTrigger: snap.markPrice };
     st.holdCount.LONG = 0;
     st.holdCount.SHORT = 0;
-    log('trigger created', { symbol, side, triggerPrice, markPrice: snap.markPrice });
+    log('trigger created', { symbol, side, triggerPrice, markPrice: snap.markPrice, lastPrice: snap.lastPrice, entryPriceSource: entrySource });
     return true;
   }
 
@@ -90,6 +93,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
       holdSeconds: cfg.holdSeconds,
       trendConfirmSeconds: cfg.trendConfirmSeconds,
       oiMaxAgeSec: cfg.oiMaxAgeSec,
+      lastPriceAtTrigger: pending.lastPriceAtTrigger ?? null,
+      markPriceAtTrigger: pending.markPriceAtTrigger ?? null,
     });
   }
 
@@ -133,7 +138,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
     let entries = 0;
     for (const symbol of eligibleSymbols) {
       const snap = marketData.getSnapshot(symbol);
-      if (!snap || !(snap.markPrice > 0 && snap.openInterest > 0)) continue;
+      if (!snap || !(snap.markPrice > 0 && snap.lastPrice > 0 && snap.oiValue > 0)) continue;
       const prev = marketData.getAtWindow(symbol, sec - windowSec);
       if (!prev) continue;
       const st = stateFor(symbol);
@@ -159,7 +164,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
           stats.pnl += net;
           stats.fees += fees;
           if (net >= 0) stats.wins += 1; else stats.losses += 1;
-          sqlite.saveTrade({ instanceId: id, mode: cfg.mode, symbol, side: p.side, windowMinutes: cfg.windowMinutes, priceThresholdPct: cfg.priceThresholdPct, oiThresholdPct: cfg.oiThresholdPct, turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin, leverage: cfg.leverage, marginUsd: cfg.marginUsd, entryTs: p.createdAtMs, triggerPrice: p.triggerPrice, entryPrice: p.entryPrice, actualEntryPrice: p.actualEntryPrice, exitTs: ts, exitPrice, outcome: tpHit ? 'TP' : 'SL', pnlUsd: net, feesUsd: fees, durationSec: Math.round((ts - p.openedAt) / 1000), entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, baselineFloorUSDT: cfg.baselineFloorUSDT, holdSeconds: cfg.holdSeconds, trendConfirmSeconds: cfg.trendConfirmSeconds, oiMaxAgeSec: cfg.oiMaxAgeSec });
+          sqlite.saveTrade({ instanceId: id, mode: cfg.mode, symbol, side: p.side, windowMinutes: cfg.windowMinutes, priceThresholdPct: cfg.priceThresholdPct, oiThresholdPct: cfg.oiThresholdPct, turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin, leverage: cfg.leverage, marginUsd: cfg.marginUsd, entryTs: p.createdAtMs, triggerPrice: p.triggerPrice, entryPrice: p.entryPrice, actualEntryPrice: p.actualEntryPrice, exitTs: ts, exitPrice, outcome: tpHit ? 'TP' : 'SL', pnlUsd: net, feesUsd: fees, durationSec: Math.round((ts - p.openedAt) / 1000), entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, baselineFloorUSDT: cfg.baselineFloorUSDT, holdSeconds: cfg.holdSeconds, trendConfirmSeconds: cfg.trendConfirmSeconds, oiMaxAgeSec: cfg.oiMaxAgeSec, lastPriceAtTrigger: p.lastPriceAtTrigger ?? null, markPriceAtTrigger: p.markPriceAtTrigger ?? null });
           st.state = SYMBOL_STATE.COOLDOWN;
           st.cooldownUntil = ts + cfg.cooldownMinutes * 60_000;
           st.pos = null;
@@ -168,16 +173,17 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
 
       if (st.state === SYMBOL_STATE.COOLDOWN && ts >= st.cooldownUntil) st.state = SYMBOL_STATE.IDLE;
       if (st.state === SYMBOL_STATE.TRIGGER_PENDING || st.state === SYMBOL_STATE.IN_POSITION) {
-        saveSignalBase({ instanceId: id, symbol, side: st.pending?.side || st.pos?.side || null, ts, windowMinutes: cfg.windowMinutes, priceChange: null, oiChange: null, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SYMBOL_BUSY' });
+        saveSignalBase({ instanceId: id, symbol, side: st.pending?.side || st.pos?.side || null, ts, windowMinutes: cfg.windowMinutes, priceChange: null, oiChange: null, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SYMBOL_BUSY' });
         continue;
       }
       if (entries >= cfg.maxNewEntriesPerTick) continue;
 
-      const priceChange = calcChange(snap.markPrice, prev.markPrice);
-      const oiChange = calcChange(snap.openInterest, prev.openInterest);
+      const priceChange = calcChange(snap.lastPrice, prev.lastPrice);
+      const oiChange = calcChange(snap.oiValue, prev.oiValue);
       if (priceChange === null || oiChange === null) continue;
       const oiAgeSec = Number(marketData.getOiAgeSec?.(symbol));
       const oiFresh = oiAgeSec <= cfg.oiMaxAgeSec;
+      signalViewBySymbol.set(symbol, { symbol, ts, markPrice: snap.markPrice, lastPrice: snap.lastPrice, priceChange, oiValueNow: snap.oiValue, oiChange });
 
       const sideCandidates = [];
       if (cfg.directionMode === 'LONG' || cfg.directionMode === 'BOTH') sideCandidates.push(SIDE.LONG);
@@ -191,12 +197,12 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
         if (!oiFresh) {
           st.holdCount[side] = 0;
           log('SKIP_OI_STALE', { symbol, side, oiAgeSec });
-          saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_OI_STALE', oiAgeSec });
+          saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_OI_STALE', oiAgeSec });
           continue;
         }
         if (!trendOk) {
           st.holdCount[side] = 0;
-          saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_TREND_FAIL' });
+          saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_TREND_FAIL' });
           continue;
         }
 
@@ -207,7 +213,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
           turnoverOk = turnover.passed;
           if (!turnoverOk) {
             st.holdCount[side] = 0;
-            saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_TURNOVER_GATE', prevTurnoverUSDT: turnover.prev, curTurnoverUSDT: turnover.cur, medianTurnoverUSDT: turnover.median, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: 0 });
+            saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_TURNOVER_GATE', prevTurnoverUSDT: turnover.prev, curTurnoverUSDT: turnover.cur, medianTurnoverUSDT: turnover.median, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: 0 });
             continue;
           }
         }
@@ -233,7 +239,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
       if (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) pendingOrders.push({ symbol, ...st.pending, ageSec: Math.floor((Date.now() - st.pending.createdAtMs) / 1000) });
       if (st.state === SYMBOL_STATE.COOLDOWN) cooldownCount += 1;
     }
-    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50) };
+    const signalView = [...signalViewBySymbol.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);
+    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView };
   }
 
   return {

@@ -36,13 +36,14 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
       outcome TEXT, pnlUsd REAL, feesUsd REAL, durationSec INTEGER,
       entryOffsetPct REAL DEFAULT 0, turnoverSpikePct REAL DEFAULT 100,
       baselineFloorUSDT REAL DEFAULT 100000, holdSeconds INTEGER DEFAULT 3,
-      trendConfirmSeconds INTEGER DEFAULT 3, oiMaxAgeSec REAL DEFAULT 10
+      trendConfirmSeconds INTEGER DEFAULT 3, oiMaxAgeSec REAL DEFAULT 10,
+      lastPriceAtTrigger REAL, markPriceAtTrigger REAL
     )`);
     await run(`CREATE TABLE IF NOT EXISTS momentum_signals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       instanceId TEXT, symbol TEXT, side TEXT, ts INTEGER,
       windowMinutes INTEGER, priceChange REAL, oiChange REAL,
-      markNow REAL, markPrev REAL, oiNow REAL, oiPrev REAL,
+      markNow REAL, markPrev REAL, lastNow REAL, lastPrev REAL, oiNow REAL, oiPrev REAL,
       turnover24h REAL, vol24h REAL, action TEXT,
       entryOffsetPct REAL DEFAULT 0,
       prevTurnoverUSDT REAL, medianTurnoverUSDT REAL, curTurnoverUSDT REAL, turnoverBaselineUSDT REAL, turnoverGatePassed INTEGER, turnoverSpikePct REAL DEFAULT 100,
@@ -57,6 +58,8 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
     await ensureColumn('momentum_trades', 'holdSeconds', 'INTEGER DEFAULT 3');
     await ensureColumn('momentum_trades', 'trendConfirmSeconds', 'INTEGER DEFAULT 3');
     await ensureColumn('momentum_trades', 'oiMaxAgeSec', 'REAL DEFAULT 10');
+    await ensureColumn('momentum_trades', 'lastPriceAtTrigger', 'REAL');
+    await ensureColumn('momentum_trades', 'markPriceAtTrigger', 'REAL');
 
     await ensureColumn('momentum_signals', 'entryOffsetPct', 'REAL DEFAULT 0');
     await ensureColumn('momentum_signals', 'prevTurnoverUSDT', 'REAL');
@@ -69,6 +72,8 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
     await ensureColumn('momentum_signals', 'holdSeconds', 'INTEGER DEFAULT 3');
     await ensureColumn('momentum_signals', 'trendConfirmSeconds', 'INTEGER DEFAULT 3');
     await ensureColumn('momentum_signals', 'oiMaxAgeSec', 'REAL DEFAULT 10');
+    await ensureColumn('momentum_signals', 'lastNow', 'REAL');
+    await ensureColumn('momentum_signals', 'lastPrev', 'REAL');
     await ensureColumn('momentum_signals', 'oiAgeSec', 'REAL');
     await run('CREATE INDEX IF NOT EXISTS idx_momentum_trades_instance_entry ON momentum_trades(instanceId, entryTs)');
     await run('CREATE INDEX IF NOT EXISTS idx_momentum_trades_symbol_entry ON momentum_trades(symbol, entryTs)');
@@ -91,13 +96,13 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
   }
 
   function saveSignal(row) {
-    enqueueWrite(() => run(`INSERT INTO momentum_signals(instanceId, symbol, side, ts, windowMinutes, priceChange, oiChange, markNow, markPrev, oiNow, oiPrev, turnover24h, vol24h, action, entryOffsetPct, prevTurnoverUSDT, medianTurnoverUSDT, curTurnoverUSDT, turnoverBaselineUSDT, turnoverGatePassed, turnoverSpikePct, baselineFloorUSDT, holdSeconds, trendConfirmSeconds, oiMaxAgeSec, oiAgeSec)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.symbol, row.side, row.ts, row.windowMinutes, row.priceChange, row.oiChange, row.markNow, row.markPrev, row.oiNow, row.oiPrev, row.turnover24h, row.vol24h, row.action, row.entryOffsetPct ?? 0, row.prevTurnoverUSDT ?? null, row.medianTurnoverUSDT ?? null, row.curTurnoverUSDT ?? null, row.turnoverBaselineUSDT ?? null, row.turnoverGatePassed ?? null, row.turnoverSpikePct ?? 100, row.baselineFloorUSDT ?? 100000, row.holdSeconds ?? 3, row.trendConfirmSeconds ?? 3, row.oiMaxAgeSec ?? 10, row.oiAgeSec ?? null]));
+    enqueueWrite(() => run(`INSERT INTO momentum_signals(instanceId, symbol, side, ts, windowMinutes, priceChange, oiChange, markNow, markPrev, lastNow, lastPrev, oiNow, oiPrev, turnover24h, vol24h, action, entryOffsetPct, prevTurnoverUSDT, medianTurnoverUSDT, curTurnoverUSDT, turnoverBaselineUSDT, turnoverGatePassed, turnoverSpikePct, baselineFloorUSDT, holdSeconds, trendConfirmSeconds, oiMaxAgeSec, oiAgeSec)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.symbol, row.side, row.ts, row.windowMinutes, row.priceChange, row.oiChange, row.markNow, row.markPrev, row.lastNow, row.lastPrev, row.oiNow, row.oiPrev, row.turnover24h, row.vol24h, row.action, row.entryOffsetPct ?? 0, row.prevTurnoverUSDT ?? null, row.medianTurnoverUSDT ?? null, row.curTurnoverUSDT ?? null, row.turnoverBaselineUSDT ?? null, row.turnoverGatePassed ?? null, row.turnoverSpikePct ?? 100, row.baselineFloorUSDT ?? 100000, row.holdSeconds ?? 3, row.trendConfirmSeconds ?? 3, row.oiMaxAgeSec ?? 10, row.oiAgeSec ?? null]));
   }
 
   function saveTrade(row) {
-    enqueueWrite(() => run(`INSERT INTO momentum_trades(instanceId, mode, symbol, side, windowMinutes, priceThresholdPct, oiThresholdPct, turnover24hMin, vol24hMin, leverage, marginUsd, entryTs, triggerPrice, entryPrice, actualEntryPrice, exitTs, exitPrice, outcome, pnlUsd, feesUsd, durationSec, entryOffsetPct, turnoverSpikePct, baselineFloorUSDT, holdSeconds, trendConfirmSeconds, oiMaxAgeSec)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.mode, row.symbol, row.side, row.windowMinutes, row.priceThresholdPct, row.oiThresholdPct, row.turnover24hMin, row.vol24hMin, row.leverage, row.marginUsd, row.entryTs, row.triggerPrice ?? null, row.entryPrice, row.actualEntryPrice ?? null, row.exitTs, row.exitPrice, row.outcome, row.pnlUsd, row.feesUsd, row.durationSec, row.entryOffsetPct ?? 0, row.turnoverSpikePct ?? 100, row.baselineFloorUSDT ?? 100000, row.holdSeconds ?? 3, row.trendConfirmSeconds ?? 3, row.oiMaxAgeSec ?? 10]));
+    enqueueWrite(() => run(`INSERT INTO momentum_trades(instanceId, mode, symbol, side, windowMinutes, priceThresholdPct, oiThresholdPct, turnover24hMin, vol24hMin, leverage, marginUsd, entryTs, triggerPrice, entryPrice, actualEntryPrice, exitTs, exitPrice, outcome, pnlUsd, feesUsd, durationSec, entryOffsetPct, turnoverSpikePct, baselineFloorUSDT, holdSeconds, trendConfirmSeconds, oiMaxAgeSec, lastPriceAtTrigger, markPriceAtTrigger)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.mode, row.symbol, row.side, row.windowMinutes, row.priceThresholdPct, row.oiThresholdPct, row.turnover24hMin, row.vol24hMin, row.leverage, row.marginUsd, row.entryTs, row.triggerPrice ?? null, row.entryPrice, row.actualEntryPrice ?? null, row.exitTs, row.exitPrice, row.outcome, row.pnlUsd, row.feesUsd, row.durationSec, row.entryOffsetPct ?? 0, row.turnoverSpikePct ?? 100, row.baselineFloorUSDT ?? 100000, row.holdSeconds ?? 3, row.trendConfirmSeconds ?? 3, row.oiMaxAgeSec ?? 10, row.lastPriceAtTrigger ?? null, row.markPriceAtTrigger ?? null]));
   }
 
   async function getTrades(instanceId, limit = 50, offset = 0) {
