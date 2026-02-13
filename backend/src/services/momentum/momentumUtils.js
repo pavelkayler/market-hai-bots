@@ -52,8 +52,20 @@ export function normalizeMomentumConfig(raw = {}) {
   c.marginUsd = Math.max(1, parseFloatSafe(c.marginUsd, 100));
   c.tpRoiPct = Math.max(0.1, parseFloatSafe(c.tpRoiPct, 10));
   c.slRoiPct = Math.max(0.1, parseFloatSafe(c.slRoiPct, 10));
+  c.entryOffsetPct = parseFloatSafe(c.entryOffsetPct, 0);
   c.cooldownMinutes = Math.max(1, Math.trunc(parseFloatSafe(c.cooldownMinutes, 60)));
   c.maxNewEntriesPerTick = Math.max(1, Math.trunc(parseFloatSafe(c.maxNewEntriesPerTick, 5)));
   c.globalSymbolLock = Boolean(c.globalSymbolLock);
   return c;
+}
+
+export function roundByTickForSide(price, tickSize, side) {
+  const p = parseFloatSafe(price);
+  const tick = parseFloatSafe(tickSize);
+  if (!(p > 0) || !(tick > 0)) return p;
+  const units = p / tick;
+  const roundedUnits = side === 'LONG' ? Math.floor(units) : (side === 'SHORT' ? Math.ceil(units) : Math.round(units));
+  const out = roundedUnits * tick;
+  const precision = Math.max(0, ((String(tick).split('.')[1] || '').length));
+  return Number(out.toFixed(precision));
 }

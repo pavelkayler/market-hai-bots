@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calcChange, calcTpSl, calcVol24h } from '../src/services/momentum/momentumUtils.js';
+import { calcChange, calcTpSl, calcVol24h, roundByTickForSide } from '../src/services/momentum/momentumUtils.js';
 import { createMomentumInstance } from '../src/services/momentum/momentumInstance.js';
 
 test('calc change', () => {
@@ -48,4 +48,54 @@ test('pending order has no ttl cancel and can be manually cancelled', async () =
   assert.equal(cancel.ok, true);
   st = inst.getSnapshot();
   assert.equal(st.pendingOrders.length, 0);
+});
+
+
+test('entry offset applies to pending entry price and paper fill behavior', () => {
+  const snaps = new Map();
+  const prev = { tsSec: 0, markPrice: 100, openInterest: 1000 };
+  const sqlite = { saveTrade() {}, saveSignal() {} };
+  const md = { getSnapshot: (s) => snaps.get(s), getAtWindow: () => prev };
+
+  const inst = createMomentumInstance({
+    id: 'offset_long',
+    config: { windowMinutes: 1, cooldownMinutes: 60, priceThresholdPct: 1, oiThresholdPct: 1, entryOffsetPct: -0.5 },
+    marketData: md,
+    sqlite,
+  });
+
+  snaps.set('X', { markPrice: 102, openInterest: 1020, turnover24h: 1, vol24h: 0.1, tickSize: 0.1 });
+  inst.onTick({ ts: 0, sec: 60 }, ['X']);
+  let st = inst.getSnapshot();
+  assert.equal(st.pendingOrders.length, 1);
+  assert.equal(st.pendingOrders[0].entryPrice, 101.4);
+
+  snaps.set('X', { markPrice: 101.5, openInterest: 1025, turnover24h: 1, vol24h: 0.1, tickSize: 0.1 });
+  inst.onTick({ ts: 1_000, sec: 61 }, ['X']);
+  st = inst.getSnapshot();
+  assert.equal(st.pendingOrders.length, 1);
+
+  snaps.set('X', { markPrice: 101.4, openInterest: 1030, turnover24h: 1, vol24h: 0.1, tickSize: 0.1 });
+  inst.onTick({ ts: 2_000, sec: 62 }, ['X']);
+  st = inst.getSnapshot();
+  assert.equal(st.openPositions.length, 1);
+
+  const shortInst = createMomentumInstance({
+    id: 'offset_short',
+    config: { windowMinutes: 1, cooldownMinutes: 60, priceThresholdPct: 1, oiThresholdPct: 1, directionMode: 'SHORT', entryOffsetPct: -0.1 },
+    marketData: md,
+    sqlite,
+  });
+  snaps.set('Y', { markPrice: 98, openInterest: 980, turnover24h: 1, vol24h: 0.1, tickSize: 0.1 });
+  shortInst.onTick({ ts: 0, sec: 60 }, ['Y']);
+  let shortState = shortInst.getSnapshot();
+  assert.equal(shortState.pendingOrders.length, 1);
+  shortInst.onTick({ ts: 1_000, sec: 61 }, ['Y']);
+  shortState = shortInst.getSnapshot();
+  assert.equal(shortState.openPositions.length, 1);
+});
+
+test('tick rounding floors long and ceils short', () => {
+  assert.equal(roundByTickForSide(100.09, 0.05, 'LONG'), 100.05);
+  assert.equal(roundByTickForSide(100.01, 0.05, 'SHORT'), 100.05);
 });
