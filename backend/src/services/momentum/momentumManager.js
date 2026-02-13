@@ -1,12 +1,39 @@
 import { EventEmitter } from 'events';
 import { createMomentumInstance } from './momentumInstance.js';
 
-export function createMomentumManager({ marketData, sqlite, logger = console }) {
+export function createMomentumManager({ marketData, sqlite, tradeExecutor = null, logger = console }) {
   const emitter = new EventEmitter();
   const instances = new Map();
 
+  function withPreflight(light) {
+    const pre = tradeExecutor?.getPreflightStatus?.() || {};
+    return {
+      ...light,
+      marginMode: pre.marginMode || 'UNKNOWN',
+      lastMarginModeCheckTs: pre.lastMarginModeCheckTs || null,
+      lastMarginModeError: pre.lastMarginModeError || null,
+      hedgeMode: pre.hedgeMode || 'UNKNOWN',
+      lastHedgeModeCheckTs: pre.lastHedgeModeCheckTs || null,
+      lastHedgeModeError: pre.lastHedgeModeError || null,
+    };
+  }
+
+  function getMarketStatus() {
+    const base = marketData.getStatus();
+    const pre = tradeExecutor?.getPreflightStatus?.() || {};
+    return {
+      ...base,
+      marginMode: pre.marginMode || 'UNKNOWN',
+      lastMarginModeCheckTs: pre.lastMarginModeCheckTs || null,
+      lastMarginModeError: pre.lastMarginModeError || null,
+      hedgeMode: pre.hedgeMode || 'UNKNOWN',
+      lastHedgeModeCheckTs: pre.lastHedgeModeCheckTs || null,
+      lastHedgeModeError: pre.lastHedgeModeError || null,
+    };
+  }
+
   function emitState() {
-    emitter.emit('state', { market: marketData.getStatus(), instances: [...instances.values()].map((x) => x.getLight()) });
+    emitter.emit('state', { market: getMarketStatus(), instances: [...instances.values()].map((x) => withPreflight(x.getLight())) });
   }
 
   function syncActiveIntervals() {
@@ -20,11 +47,20 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
     emitState();
   });
 
-  function start(config) {
+  async function start(config) {
     const id = `mom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const windowMinutes = Number(config?.windowMinutes);
     if (![1, 3, 5].includes(windowMinutes)) {
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
+    }
+    const mode = String(config?.mode || 'paper').toLowerCase();
+    if ((mode === 'demo' || mode === 'real') && tradeExecutor?.enabled?.()) {
+      const hedge = await tradeExecutor.ensureHedgeMode({});
+      if (!hedge?.ok) {
+        const message = hedge?.error || 'HEDGE MODE REQUIRED: enable Hedge (dual-side) in Bybit account settings, then restart.';
+        logger?.warn?.({ mode, error: message }, 'momentum start refused: hedge mode requirement not met');
+        return { ok: false, error: 'HEDGE_MODE_REQUIRED', message };
+      }
     }
     const inst = createMomentumInstance({ id, config, marketData, sqlite, logger });
     instances.set(id, inst);
@@ -52,11 +88,11 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
   return {
     start,
     stop,
-    list: () => ({ ok: true, instances: [...instances.values()].map((x) => x.getLight()) }),
+    list: () => ({ ok: true, instances: [...instances.values()].map((x) => withPreflight(x.getLight())) }),
     getState: (instanceId) => {
       const inst = instances.get(instanceId);
       if (!inst) return { ok: false, reason: 'NOT_FOUND' };
-      return { ok: true, stateSnapshot: inst.getSnapshot() };
+      return { ok: true, stateSnapshot: { ...inst.getSnapshot(), ...withPreflight({}) } };
     },
     getPositions: (instanceId) => {
       const inst = instances.get(instanceId);
@@ -64,7 +100,7 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
       return { ok: true, positions: inst.getSnapshot().openPositions };
     },
     getTrades: async (instanceId, limit, offset) => ({ ok: true, ...(await sqlite.getTrades(instanceId, limit, offset)) }),
-    getMarketStatus: () => ({ ok: true, ...marketData.getStatus() }),
+    getMarketStatus: () => ({ ok: true, ...getMarketStatus() }),
     cancelEntry,
     onState: (fn) => emitter.on('state', fn),
   };

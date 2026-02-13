@@ -329,7 +329,7 @@ const momentumSqlite = createMomentumSqlite({ logger: app.log });
 await momentumSqlite.init();
 const momentumMarketData = createMomentumMarketData({ logger: app.log });
 await momentumMarketData.start();
-const momentumManager = createMomentumManager({ marketData: momentumMarketData, sqlite: momentumSqlite, logger: app.log });
+const momentumManager = createMomentumManager({ marketData: momentumMarketData, sqlite: momentumSqlite, tradeExecutor, logger: app.log });
 momentumManager.onState((payload) => broadcastEvent('momentum.state', payload));
 function handleLeadLagEngineEvent({ type, payload }) {
   if (type === 'leadlag.state') {
@@ -1334,7 +1334,7 @@ app.get("/ws", { websocket: true }, (conn) => {
       const rpcOk = (result) => safeSend(ws, { id: rpcId, result });
       if (rpcMethod === 'leadlag.getState') { rpcOk(safeLeadLagSnapshot({ bumpSeq: false, where: 'rpc.leadlag.getState' })); return; }
       if (rpcMethod === 'trade.getState') { rpcOk(getTradeStatePayload()); return; }
-      if (rpcMethod === 'momentum.start') { rpcOk(momentumManager.start(params?.config || {})); return; }
+      if (rpcMethod === 'momentum.start') { rpcOk(await momentumManager.start(params?.config || {})); return; }
       if (rpcMethod === 'momentum.stop') { rpcOk(momentumManager.stop(params?.instanceId)); return; }
       if (rpcMethod === 'momentum.list') { rpcOk(momentumManager.list()); return; }
       if (rpcMethod === 'momentum.getState') { rpcOk(momentumManager.getState(params?.instanceId)); return; }

@@ -121,6 +121,8 @@ export function createBybitPrivateRest({
     getClosedPnl: (query) => request("GET", "/v5/position/closed-pnl", { query }),
     setLeverage: (body) => request("POST", "/v5/position/set-leverage", { body }),
     switchIsolated: (body) => request("POST", "/v5/position/switch-isolated", { body }),
+    switchPositionMode: (body) => request("POST", "/v5/position/switch-mode", { body }),
+    getAccountInfo: (query) => request("GET", "/v5/account/info", { query }),
     getInstrumentsInfo: (query) => request("GET", "/v5/market/instruments-info", { query }),
   };
 

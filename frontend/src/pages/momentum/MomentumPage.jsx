@@ -73,7 +73,9 @@ export default function MomentumPage() {
   return <Row className="g-3">
     <Col md={12}><Card><Card.Body><Card.Title>Market status</Card.Title>
       {!market && <Alert variant="secondary">Loading...</Alert>}
-      {market && <div>WS: {String(market.wsConnected)} | Universe: {market.universeCount} | Eligible: {market.eligibleCount} | Subscribed: {market.subscribedCount}/{market.cap} | Kline topics: {market.klineSubscribedCount || 0} | Active intervals: {(market.activeIntervals || []).join(', ') || '-'} | Drift: {market.tickDriftMs}ms</div>}
+      {market?.lastHedgeModeError && <Alert variant="danger" className="mb-2">{market.lastHedgeModeError}</Alert>}
+      {market?.lastMarginModeError && <Alert variant="warning" className="mb-2">{market.lastMarginModeError}</Alert>}
+      {market && <div>WS: {String(market.wsConnected)} | Universe: {market.universeCount} | Eligible: {market.eligibleCount} | Subscribed: {market.subscribedCount}/{market.cap} | Kline topics: {market.klineSubscribedCount || 0} | Active intervals: {(market.activeIntervals || []).join(', ') || '-'} | Drift: {market.tickDriftMs}ms | Hedge: {market.hedgeMode || 'UNKNOWN'} | Margin: {market.marginMode || 'UNKNOWN'}</div>}
     </Card.Body></Card></Col>
     <Col md={4}><Card><Card.Body><Card.Title>Create new bot instance</Card.Title>
       <Form onSubmit={onStart}>
@@ -92,13 +94,13 @@ export default function MomentumPage() {
       </Form>
     </Card.Body></Card></Col>
     <Col md={8}><Card><Card.Body><Card.Title>Running bots</Card.Title>
-      <Table size="sm"><thead><tr><th>ID</th><th>Mode</th><th>Direction</th><th>W</th><th>Offset</th><th>Turnover gate</th><th>Uptime</th><th>Trades</th><th>PNL</th><th /></tr></thead><tbody>
-        {instances.map((i) => <tr key={i.id}><td>{i.id.slice(0, 12)}</td><td>{i.mode}</td><td>{i.direction}</td><td>{i.windowMinutes}m</td><td>{Number(i.entryOffsetPct || 0)}%</td><td>{Number(i.turnoverSpikePct || 100)}%</td><td>{i.uptimeSec}s</td><td>{i.trades}</td><td>{Number(i.pnl || 0).toFixed(2)}</td><td><Button size="sm" variant="outline-danger" onClick={() => ws.request('momentum.stop', { instanceId: i.id })}>Stop</Button></td></tr>)}
+      <Table size="sm"><thead><tr><th>ID</th><th>Mode</th><th>Direction</th><th>W</th><th>Offset</th><th>Turnover gate</th><th>Hedge</th><th>Margin</th><th>Uptime</th><th>Trades</th><th>PNL</th><th /></tr></thead><tbody>
+        {instances.map((i) => <tr key={i.id}><td>{i.id.slice(0, 12)}</td><td>{i.mode}</td><td>{i.direction}</td><td>{i.windowMinutes}m</td><td>{Number(i.entryOffsetPct || 0)}%</td><td>{Number(i.turnoverSpikePct || 100)}%</td><td>{i.hedgeMode || 'UNKNOWN'}</td><td>{i.marginMode || 'UNKNOWN'}</td><td>{i.uptimeSec}s</td><td>{i.trades}</td><td>{Number(i.pnl || 0).toFixed(2)}</td><td><Button size="sm" variant="outline-danger" onClick={() => ws.request('momentum.stop', { instanceId: i.id })}>Stop</Button></td></tr>)}
       </tbody></Table>
     </Card.Body></Card></Col>
     <Col md={12}><Card><Card.Body><Card.Title>Selected instance details</Card.Title>
       <Form.Select className="mb-2" value={selectedId} onChange={(e) => setSelectedId(e.target.value)}><option value="">Select...</option>{options}</Form.Select>
-      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending triggers: {detail.pendingOrders?.length || 0} | W: {detail?.config?.windowMinutes}m</div>}
+      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending triggers: {detail.pendingOrders?.length || 0} | W: {detail?.config?.windowMinutes}m | Hedge: {detail?.hedgeMode || 'UNKNOWN'} | Margin: {detail?.marginMode || 'UNKNOWN'}</div>}
 
       {detail && <><h6>Open Orders / Pending Triggers</h6><Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>State</th><th>Side</th><th>Trigger</th><th>Created</th><th>Age</th><th>Actions</th></tr></thead><tbody>
         {(detail.pendingOrders || []).map((p) => <tr key={`pending_${p.symbol}`}><td>{p.symbol}</td><td>TRIGGER_PENDING</td><td>{p.side}</td><td>{p.triggerPrice}</td><td>{new Date(p.createdAtMs).toLocaleTimeString()}</td><td>{p.ageSec}s</td><td><Button size="sm" variant="outline-warning" onClick={() => onCancelEntry(p.symbol)}>Cancel entry</Button></td></tr>)}
