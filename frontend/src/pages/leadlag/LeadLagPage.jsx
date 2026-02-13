@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Card, Col, Form, ProgressBar, Row, Table } from 'react-bootstrap';
 import { useWsClient } from '../../shared/api/ws.js';
 
@@ -30,6 +30,14 @@ export default function LeadLagPage() {
   const [serverNow, setServerNow] = useState(0);
   const lastTopUpdateAtRef = useRef(0);
 
+  const applySnapshot = useCallback((payload = null) => {
+    if (!payload || typeof payload !== 'object') return;
+    setState((prev) => ({ ...(prev || {}), ...(payload || {}) }));
+    const nextRows = payload?.search?.results?.top || payload?.search?.topRows || payload?.legacy?.search?.topRows || [];
+    if (Array.isArray(nextRows)) setRows((prevRows) => nextRows.slice(0, 50).map((r, idx) => ({ ...prevRows[idx], ...r })));
+    if (payload?.legacy?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.legacy.autoTuneConfig }));
+  }, []);
+
   const onMessage = useMemo(() => (_ev, msg) => {
     if (!msg) return;
     setServerNow(Date.now());
@@ -37,10 +45,7 @@ export default function LeadLagPage() {
     const payload = msg.payload;
 
     if (type === 'leadlag.state') {
-      setState((prev) => ({ ...(prev || {}), ...(payload || {}) }));
-      const nextRows = payload?.search?.results?.top || payload?.search?.topRows || payload?.legacy?.search?.topRows || [];
-      if (Array.isArray(nextRows)) setRows((prevRows) => nextRows.slice(0, 50).map((r, idx) => ({ ...prevRows[idx], ...r })));
-      if (payload?.legacy?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.legacy.autoTuneConfig }));
+      applySnapshot(payload);
       return;
     }
 
@@ -83,7 +88,7 @@ export default function LeadLagPage() {
     }
 
     if (type === 'leadlag.learningLog') setState((prev) => ({ ...(prev || {}), learningLog: Array.isArray(payload) ? payload : [] }));
-  }, []);
+  }, [applySnapshot]);
 
   const { status, sendJson, request, subscribeTopics, unsubscribeTopics } = useWsClient({
     onMessage,
@@ -91,11 +96,18 @@ export default function LeadLagPage() {
 
   useEffect(() => {
     if (status !== 'connected') return;
+    let active = true;
     subscribeTopics?.(['leadlag.*']);
-    request('leadlag.getState');
+    request('leadlag.getState').then((snapshot) => {
+      if (!active) return;
+      applySnapshot(snapshot);
+    });
     sendJson({ type: 'leadlag.getLearningLog' });
-    return () => unsubscribeTopics?.(['leadlag.*']);
-  }, [status, subscribeTopics, unsubscribeTopics, request, sendJson]);
+    return () => {
+      active = false;
+      unsubscribeTopics?.(['leadlag.*']);
+    };
+  }, [status, subscribeTopics, unsubscribeTopics, request, sendJson, applySnapshot]);
 
   const canStart = status === 'connected' && String(formSettings.leaderSymbol || '').trim().length > 0 && String(formSettings.followerSymbol || '').trim().length > 0;
   const trading = state?.trading || {};
@@ -107,10 +119,16 @@ export default function LeadLagPage() {
   const progressTotalRaw = Number(search?.progress?.total || 0);
   const progressTotal = isSearchRunning && progressTotalRaw <= 0 ? Math.max(1, Number(search?.symbolsTotal || 1)) : progressTotalRaw;
   const progressPct = Number(search?.progress?.pct || calcSearchProgress(search));
-  const positions = Array.isArray(legacy?.positions) ? legacy.positions : [];
-  const followerPx = Number(legacy?.manual?.followerPrice);
-  const currentTradeEvents = Array.isArray(legacy?.currentTradeEvents) ? legacy.currentTradeEvents : [];
-  const currentClosedTrades = Array.isArray(legacy?.currentClosedTrades) ? legacy.currentClosedTrades : [];
+  const pairLeader = trading?.pair?.leader || legacy?.settings?.leaderSymbol || formSettings.leaderSymbol || '—';
+  const pairFollower = trading?.pair?.follower || legacy?.settings?.followerSymbol || formSettings.followerSymbol || '—';
+  const leaderPx = Number(trading?.prices?.leader?.mark ?? trading?.prices?.leader?.last ?? legacy?.manual?.leaderPrice);
+  const followerPx = Number(trading?.prices?.follower?.mark ?? trading?.prices?.follower?.last ?? legacy?.manual?.followerPrice);
+  const leaderBaseline = Number(trading?.baseline?.leader0 ?? legacy?.manual?.leaderBaseline);
+  const leaderMoveNow = Number(trading?.telemetry?.leaderMovePct ?? legacy?.manual?.leaderMovePctNow);
+  const positions = Array.isArray(trading?.positions) ? trading.positions : (Array.isArray(legacy?.positions) ? legacy.positions : []);
+  const feeRateMaker = Number.isFinite(Number(trading?.stats?.line2?.feeRateBps)) ? Number(trading.stats.line2.feeRateBps) / 10000 : legacy?.stats?.feeRateMaker;
+  const currentTradeEvents = Array.isArray(trading?.tradeEvents) ? trading.tradeEvents : (Array.isArray(legacy?.currentTradeEvents) ? legacy.currentTradeEvents : []);
+  const currentClosedTrades = Array.isArray(trading?.history) ? trading.history : (Array.isArray(legacy?.currentClosedTrades) ? legacy.currentClosedTrades : []);
   const learningLog = Array.isArray(legacy?.learningLog) ? legacy.learningLog : [];
   const runSummary = Array.isArray(legacy?.runSummary) ? legacy.runSummary : [];
   const lastEvaluation = legacy?.lastEvaluation || {};
@@ -147,10 +165,10 @@ export default function LeadLagPage() {
       <Col lg={6}>
         <Card><Card.Body className='d-grid gap-3'>
           <div className='fw-semibold'>Trading diagnostics</div>
-          <div className='small'>Pair: {(legacy?.settings?.leaderSymbol || formSettings.leaderSymbol || '—')} / {(legacy?.settings?.followerSymbol || formSettings.followerSymbol || '—')}</div>
-          <div className='small'>Leader px {fmt(legacy?.manual?.leaderPrice)} · Follower px {fmt(legacy?.manual?.followerPrice)} · Baseline {fmt(legacy?.manual?.leaderBaseline)} · Leader move now {fmt(legacy?.manual?.leaderMovePctNow, 2)}%</div>
+          <div className='small'>Pair: {pairLeader} / {pairFollower}</div>
+          <div className='small'>Leader px {fmt(leaderPx)} · Follower px {fmt(followerPx)} · Baseline {fmt(leaderBaseline)} · Leader move now {fmt(leaderMoveNow, 2)}%</div>
           <div className='small'>Positions: {positions.length}/5</div>
-          <div className='small'>Fees {fmt(legacy?.stats?.feesUSDT)} · Funding {fmt(legacy?.stats?.fundingUSDT)} · Slippage {fmt(legacy?.stats?.slippageUSDT)}<br />feeRateMaker {fmt(legacy?.stats?.feeRateMaker, 6)}</div>
+          <div className='small'>Fees {fmt(trading?.stats?.line2?.fees ?? legacy?.stats?.feesUSDT)} · Funding {fmt(trading?.stats?.line2?.funding ?? legacy?.stats?.fundingUSDT)} · Slippage {fmt(trading?.stats?.line2?.slippage ?? legacy?.stats?.slippageUSDT)}<br />feeRateMaker {fmt(feeRateMaker, 6)}</div>
           <div style={{ maxHeight: 160, overflow: 'auto' }}>
             <Table size='sm'>
               <thead><tr><th>Side</th><th>Entry</th><th>Qty</th><th>TP/SL</th><th>Unrealized</th><th>Age</th></tr></thead>

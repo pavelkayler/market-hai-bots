@@ -406,6 +406,7 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
   const followerTicker = marketData.getTicker(follower, 'BT') || {};
   const topRows = Array.isArray(search?.results?.top) ? search.results.top : Array.isArray(search?.topRows) ? search.topRows : [];
 
+  const lastTs = Number(trading?.currentTradeEvents?.[0]?.ts);
   const payload = {
     schemaVersion: 1,
     snapshotSeq: leadLagSnapshotSeq,
@@ -436,7 +437,7 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
         leaderMovePct: Number(trading?.manual?.leaderMovePctNow || 0) || 0,
         followerMovePct: 0,
         lastUpdateMs: Date.now(),
-        lastEventAgeMs: Number.isFinite(Number(trading?.currentTradeEvents?.[0]?.ts || 0)) ? Math.max(0, Date.now() - Number(trading.currentTradeEvents[0].ts)) : null,
+        lastEventAgeMs: Number.isFinite(lastTs) ? Math.max(0, Date.now() - lastTs) : null,
       },
       positions: (Array.isArray(trading?.positions) ? trading.positions : []).slice(0, 5).map((p) => ({
         posId: p?.id || p?.posId || `${p?.side || 'POS'}:${p?.openedAt || Date.now()}`,
@@ -485,8 +486,57 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
   return payload;
 }
 
+function createFallbackLeadLagSnapshot({ where = 'snapshot', err = null, bumpSeq = false } = {}) {
+  if (bumpSeq) leadLagSnapshotSeq += 1;
+  const now = Date.now();
+  return {
+    schemaVersion: 1,
+    snapshotSeq: leadLagSnapshotSeq,
+    serverTimeMs: now,
+    trading: {
+      status: 'STOPPED',
+      runId: null,
+      startedAtMs: null,
+      stoppedAtMs: null,
+      pair: { leader: 'BTCUSDT', follower: 'ETHUSDT' },
+      params: {},
+      baseline: { leader0: null, follower0: null },
+      prices: {
+        leader: { mark: null, last: null, tsMs: null },
+        follower: { mark: null, last: null, tsMs: null },
+      },
+      telemetry: { leaderMovePct: 0, followerMovePct: 0, lastUpdateMs: now, lastEventAgeMs: null },
+      positions: [],
+      tradeEvents: [],
+      history: [],
+      stats: { line1: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnl: 0 }, line2: { fees: 0, funding: 0, slippage: 0, feeRateBps: 0 } },
+    },
+    search: {
+      status: 'ERROR',
+      jobId: null,
+      startedAtMs: null,
+      updatedAtMs: now,
+      params: createIdleSearchState().params,
+      progress: { phase: 'ERROR', done: 0, total: 0, pct: 0, message: 'snapshot error', lastTickMs: now },
+      load: { subscribedSymbols: 0, reducedSymbols: 0, cpuMsPerSec: 0, backlog: 0 },
+      results: { updatedAtMs: now, top: [] },
+      error: null,
+    },
+    error: { message: String(err?.message || err || 'snapshot build failed'), where },
+  };
+}
+
+function safeLeadLagSnapshot({ bumpSeq = true, where = 'snapshot' } = {}) {
+  try {
+    return toLeadLagStateSnapshot({ bumpSeq });
+  } catch (err) {
+    app.log.error({ err, where }, 'leadlag snapshot build failed');
+    return createFallbackLeadLagSnapshot({ where, err, bumpSeq });
+  }
+}
+
 function emitLeadLagState({ force = false, bumpSeq = true } = {}) {
-  const snapshot = toLeadLagStateSnapshot({ bumpSeq });
+  const snapshot = safeLeadLagSnapshot({ bumpSeq, where: 'emitLeadLagState' });
   broadcastLeadLagManaged({ topic: 'leadlag.state', payload: snapshot, bucket: 'leadlagState', intervalMs: LEADLAG_EMIT_LIMITS.stateMs, force });
   return snapshot;
 }
@@ -499,7 +549,7 @@ function getSnapshotPayload({ full = false } = {}) {
     bybit: bybit.getStatus(),
     symbols: bybit.getSymbols(),
     symbolLimit: DEFAULT_SYMBOL_LIMIT,
-    leadlagState: toLeadLagStateSnapshot({ bumpSeq: false }),
+    leadlagState: safeLeadLagSnapshot({ bumpSeq: false, where: 'getSnapshotPayload' }),
     botsOverview: getBotsOverview(),
     tradeStatus: tradeStatus(tradeExecutor),
     warnings: tradeWarnings(tradeExecutor),
@@ -586,13 +636,19 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
     ...createIdleSearchState().params,
     ...((inputParams && typeof inputParams === 'object') ? inputParams : {}),
   };
-  if (!normalized.length) {
+  const requestedUniverseSize = Number(params.universeSize);
+  const universeLimit = Number.isFinite(requestedUniverseSize)
+    ? Math.max(30, Math.min(500, Math.trunc(requestedUniverseSize)))
+    : 300;
+  params.universeSize = universeLimit;
+  const cappedSymbols = normalized.slice(0, universeLimit);
+  if (!cappedSymbols.length) {
     leadLagSearchState = { ...createIdleSearchState(), message: 'universe empty', status: 'ERROR', phase: 'ERROR', error: { code: 'UNIVERSE_EMPTY', message: 'universe empty' } };
     emitLeadLagState({ force: true, bumpSeq: true });
     return { ok: false, reason: 'UNIVERSE_EMPTY', state: leadLagSearchState };
   }
 
-  subscriptions.replaceIntent('leadlag-search', { symbols: normalized, streamType: 'ticker' });
+  subscriptions.replaceIntent('leadlag-search', { symbols: cappedSymbols, streamType: 'ticker' });
   const startedAt = Date.now();
   const runner = { active: true, startedAt, jobId: `${startedAt}-${Math.random().toString(36).slice(2, 8)}`, warmupTimer: null, handle: null, cancel: false, cpuMs: 0 };
   leadLagSearchRunner = runner;
@@ -638,6 +694,8 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
     runner.cancel = true;
     if (runner.warmupTimer) clearTimeout(runner.warmupTimer);
     if (runner.handle) clearImmediate(runner.handle);
+    runner.warmupTimer = null;
+    runner.handle = null;
     leadLagSearchRunner = null;
     leadLagSearchActive = false;
     subscriptions.removeIntent('leadlag-search');
@@ -665,10 +723,10 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
     message: 'warming up',
     startedAt,
     updatedAtMs: startedAt,
-    symbolsTotal: normalized.length,
-    subscribedSymbols: normalized.length,
+    symbolsTotal: cappedSymbols.length,
+    subscribedSymbols: cappedSymbols.length,
     params,
-    progress: { phase: 'WARMUP', done: 0, total: Math.max(1, normalized.length), pct: 0, message: 'warming up', lastTickMs: startedAt },
+    progress: { phase: 'WARMUP', done: 0, total: Math.max(1, cappedSymbols.length), pct: 0, message: 'warming up', lastTickMs: startedAt },
   };
   pushProgress(true);
 
@@ -715,9 +773,11 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
         finish({ status: 'FINISHED', message: 'finished' });
         return;
       }
+      if (!runner.active || runner.cancel) return;
       runner.handle = setImmediate(confTick);
     };
 
+    if (!runner.active || runner.cancel) return;
     runner.handle = setImmediate(confTick);
   };
 
@@ -766,6 +826,7 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
         runPairsScreening();
         return;
       }
+      if (!runner.active || runner.cancel) return;
       runner.handle = setImmediate(buildFeaturesTick);
     };
 
@@ -804,25 +865,28 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
           runConfirmations(candidates.slice(0, 1500), features);
           return;
         }
+        if (!runner.active || runner.cancel) return;
         runner.handle = setImmediate(screeningTick);
       };
 
+      if (!runner.active || runner.cancel) return;
       runner.handle = setImmediate(screeningTick);
     };
 
+    if (!runner.active || runner.cancel) return;
     runner.handle = setImmediate(buildFeaturesTick);
   };
 
   const warmupTick = () => {
     if (!runner.active || runner.cancel) return;
     const ready = [];
-    for (const sym of normalized) {
+    for (const sym of cappedSymbols) {
       const t = marketData.getTicker(sym, 'BT');
       if (!t || (Date.now() - Number(t.ts || 0)) > 15_000) continue;
       if ((marketBars.getBars(sym, 200, 'BT') || []).length >= minBars) ready.push(sym);
     }
-    updateState({ symbolsReady: ready.length, progress: { done: ready.length, total: Math.max(1, normalized.length), message: 'warming up' } });
-    if ((Date.now() - warmupStartedAt) < warmupMaxMs && ready.length < normalized.length) {
+    updateState({ symbolsReady: ready.length, progress: { done: ready.length, total: Math.max(1, cappedSymbols.length), message: 'warming up' } });
+    if ((Date.now() - warmupStartedAt) < warmupMaxMs && ready.length < cappedSymbols.length) {
       runner.warmupTimer = setTimeout(warmupTick, 300);
       return;
     }
@@ -830,6 +894,8 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       finish({ status: 'ERROR', message: 'Not enough symbols ready for search', error: { code: 'WARMUP_NOT_READY', message: 'Not enough symbols ready for search' } });
       return;
     }
+    subscriptions.replaceIntent('leadlag-search', { symbols: ready, streamType: 'ticker' });
+    updateState({ subscribedSymbols: ready.length });
     runScreening(ready);
   };
 
@@ -844,6 +910,8 @@ function stopLeadLagSearch({ reason = 'stopped', preserveRows = false, releaseFe
     runner.cancel = true;
     if (runner.warmupTimer) clearTimeout(runner.warmupTimer);
     if (runner.handle) clearImmediate(runner.handle);
+    runner.warmupTimer = null;
+    runner.handle = null;
   }
   leadLagSearchRunner = null;
   leadLagSearchActive = false;
@@ -1084,10 +1152,11 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (meta) meta.lastSeenAt = Date.now();
     const rpcId = msg?.id ?? null;
     const rpcMethod = typeof msg?.method === 'string' ? msg.method : null;
-    if (rpcMethod) {
+    try {
+      if (rpcMethod) {
       const params = msg?.params && typeof msg.params === 'object' ? msg.params : {};
       const rpcOk = (result) => safeSend(ws, { id: rpcId, result });
-      if (rpcMethod === 'leadlag.getState') { rpcOk(toLeadLagStateSnapshot({ bumpSeq: false })); return; }
+      if (rpcMethod === 'leadlag.getState') { rpcOk(safeLeadLagSnapshot({ bumpSeq: false, where: 'rpc.leadlag.getState' })); return; }
       if (rpcMethod === 'leadlag.trading.start') {
         const presetId = presetsStore.getState().activePresetId;
         const settings = { ...(params || {}), leaderSymbol: params?.leader, followerSymbol: params?.follower };
@@ -1227,7 +1296,7 @@ app.get("/ws", { websocket: true }, (conn) => {
 
     if (msg.type === "getPaperState" || msg.type === "getLeadLagState") {
       const state = paperTest.getState();
-      sendLeadLagEventNow(ws, 'leadlag.state', toLeadLagStateSnapshot({ bumpSeq: false }));
+      sendLeadLagEventNow(ws, 'leadlag.state', safeLeadLagSnapshot({ bumpSeq: false, where: 'ws.leadlag.state' }));
       safeSend(ws, { type: "paper.state", payload: state });
       return;
     }
@@ -1235,14 +1304,14 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "leadlag.setAutoTuneConfig") {
       const payload = paperTest.setAutoTuneConfig(msg?.payload && typeof msg.payload === 'object' ? msg.payload : msg?.settings && typeof msg.settings === 'object' ? msg.settings : {});
       safeSend(ws, { type: "leadlag.autotune.ack", payload: { ok: true, config: payload?.autoTuneConfig || null } });
-      sendLeadLagEventNow(ws, 'leadlag.state', toLeadLagStateSnapshot({ bumpSeq: false }));
+      sendLeadLagEventNow(ws, 'leadlag.state', safeLeadLagSnapshot({ bumpSeq: false, where: 'ws.leadlag.state' }));
       return;
     }
 
     if (msg.type === "leadlag.clearLearningLog") {
       const payload = paperTest.clearLearningLog();
       safeSend(ws, { type: "leadlag.learningLog.cleared", payload: { ok: true } });
-      sendLeadLagEventNow(ws, 'leadlag.state', toLeadLagStateSnapshot({ bumpSeq: false }));
+      sendLeadLagEventNow(ws, 'leadlag.state', safeLeadLagSnapshot({ bumpSeq: false, where: 'ws.leadlag.state' }));
       return;
     }
 
@@ -1271,6 +1340,14 @@ app.get("/ws", { websocket: true }, (conn) => {
       return;
     }
 
+    } catch (err) {
+      app.log.error({ err, msgType: msg?.type || null, method: rpcMethod }, 'ws message handling failed');
+      if (rpcId !== null && rpcId !== undefined) {
+        safeSend(ws, { id: rpcId, error: { code: 'INTERNAL_ERROR', message: String(err?.message || err || 'Internal server error') } });
+      } else {
+        sendEvent(ws, 'server.error', { message: String(err?.message || err || 'Internal server error'), msgType: msg?.type || null, method: rpcMethod || null, ts: Date.now() });
+      }
+    }
 
   });
 
