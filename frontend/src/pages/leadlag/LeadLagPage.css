@@ -1,0 +1,15 @@
+.leadlag-search-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.leadlag-search-table th,
+.leadlag-search-table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.leadlag-search-table td.num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
