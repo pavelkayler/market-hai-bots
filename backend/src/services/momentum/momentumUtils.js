@@ -61,7 +61,7 @@ export function normalizeMomentumConfig(raw = {}) {
   c.oiMaxAgeSec = Math.max(1, parseFloatSafe(c.oiMaxAgeSec, 10));
   c.cooldownMinutes = Math.max(1, Math.trunc(parseFloatSafe(c.cooldownMinutes, 60)));
   c.maxNewEntriesPerTick = Math.max(1, Math.trunc(parseFloatSafe(c.maxNewEntriesPerTick, 5)));
-  c.entryPriceSource = ['MARK', 'LAST'].includes(String(c.entryPriceSource).toUpperCase()) ? String(c.entryPriceSource).toUpperCase() : 'MARK';
+  c.entryPriceSource = ['MARK', 'LAST'].includes(String(c.entryPriceSource).toUpperCase()) ? String(c.entryPriceSource).toUpperCase() : 'LAST';
   c.globalSymbolLock = Boolean(c.globalSymbolLock);
   return c;
 }

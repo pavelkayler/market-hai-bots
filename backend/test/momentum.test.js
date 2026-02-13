@@ -104,7 +104,7 @@ test('oi stale blocks entries', () => {
   snaps.set('X', { markPrice: 110, lastPrice: 110, oiValue: 1200, tickSize: 0.1 });
   inst.onTick({ ts: 1000, sec: 60 }, ['X']);
   assert.equal(inst.getSnapshot().pendingOrders.length, 0);
-  assert.ok(actions.includes('SKIP_OI_STALE'));
+  assert.ok(actions.includes('OI_STALE'));
 });
 
 test('tick rounding floors long and ceils short', () => {
