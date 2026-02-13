@@ -36,6 +36,8 @@ export function createWsManager(
   let backoffMs = initialBackoffMs;
   let status = "idle";
   const outbox = [];
+  const rpcPending = new Map();
+  let rpcSeq = 1;
 
   const listeners = new Set();
   const statusListeners = new Set();
@@ -74,6 +76,13 @@ export function createWsManager(
     const parsed = parseJsonSafe(event.data);
     if (parsed?.type === "pong" || parsed?.topic === "pong") {
       lastPongAt = Date.now();
+      return;
+    }
+
+    if (parsed && Object.prototype.hasOwnProperty.call(parsed, "id") && rpcPending.has(parsed.id)) {
+      const resolver = rpcPending.get(parsed.id);
+      rpcPending.delete(parsed.id);
+      resolver(parsed);
       return;
     }
 
@@ -182,6 +191,17 @@ export function createWsManager(
     return true;
   };
 
+  const request = (method, params = {}) => new Promise((resolve) => {
+    const id = `rpc_${Date.now()}_${rpcSeq++}`;
+    rpcPending.set(id, (payload) => resolve(payload?.result));
+    sendJson({ id, method, params });
+    setTimeout(() => {
+      if (!rpcPending.has(id)) return;
+      rpcPending.delete(id);
+      resolve(null);
+    }, 10000);
+  });
+
   return {
     get wsUrl() {
       return wsUrl;
@@ -194,6 +214,7 @@ export function createWsManager(
       listeners.add(handler);
       return () => listeners.delete(handler);
     },
+    request,
     subscribeStatus(handler) {
       statusListeners.add(handler);
       handler(status);
@@ -295,5 +316,6 @@ export function useWsClient({ onMessage, onOpen } = {}) {
     sendJson: manager.sendJson,
     reconnect: manager.reconnect,
     subscribe: manager.subscribe,
+    request: manager.request,
   };
 }
