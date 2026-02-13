@@ -28,6 +28,7 @@ export const DEFAULT_MOMENTUM_CONFIG = {
   marginUsd: 100,
   tpRoiPct: 10,
   slRoiPct: 10,
+  entryOffsetPct: 0,
   cooldownMinutes: 60,
   globalSymbolLock: false,
   maxNewEntriesPerTick: 5,

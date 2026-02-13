@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
 import { useWs } from '../../shared/api/ws.js';
 
-const DEFAULT_FORM = { mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, priceThresholdPct: 5, oiThresholdPct: 1, turnover24hMin: 5000000, vol24hMin: 0.1, leverage: 10, marginUsd: 100, tpRoiPct: 10, slRoiPct: 10, globalSymbolLock: false };
+const DEFAULT_FORM = { mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, priceThresholdPct: 5, oiThresholdPct: 1, turnover24hMin: 5000000, vol24hMin: 0.1, leverage: 10, marginUsd: 100, tpRoiPct: 10, slRoiPct: 10, entryOffsetPct: 0, globalSymbolLock: false };
 
 export default function MomentumPage() {
   const ws = useWs();
@@ -12,6 +12,7 @@ export default function MomentumPage() {
   const [detail, setDetail] = useState(null);
   const [trades, setTrades] = useState([]);
   const [form, setForm] = useState(DEFAULT_FORM);
+  const [errors, setErrors] = useState({});
 
   useEffect(() => {
     const unsub = ws.subscribe((_, parsed) => {
@@ -45,7 +46,14 @@ export default function MomentumPage() {
 
   async function onStart(e) {
     e.preventDefault();
-    const out = await ws.request('momentum.start', { config: form });
+    const nextErrors = {};
+    let entryOffsetPct = form.entryOffsetPct;
+    if (entryOffsetPct === '' || entryOffsetPct === null || entryOffsetPct === undefined) entryOffsetPct = 0;
+    const parsedOffset = Number(entryOffsetPct);
+    if (!Number.isFinite(parsedOffset)) nextErrors.entryOffsetPct = 'Entry offset must be a valid number.';
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) return;
+    const out = await ws.request('momentum.start', { config: { ...form, entryOffsetPct: parsedOffset } });
     if (out?.ok && out.instanceId) setSelectedId(out.instanceId);
   }
 
@@ -65,18 +73,28 @@ export default function MomentumPage() {
         <Form.Select className="mb-2" value={form.directionMode} onChange={(e) => setForm({ ...form, directionMode: e.target.value })}><option value="BOTH">BOTH</option><option value="LONG">LONG</option><option value="SHORT">SHORT</option></Form.Select>
         <Form.Control className="mb-2" value={form.windowMinutes} onChange={(e) => setForm({ ...form, windowMinutes: e.target.value })} placeholder="windowMinutes (signal lookback)" />
         {['priceThresholdPct', 'oiThresholdPct', 'turnover24hMin', 'vol24hMin'].map((k) => <Form.Control key={k} className="mb-2" value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} placeholder={k} />)}
+        <Form.Group className="mb-2">
+          <Form.Label>Entry offset (%) from Mark Price</Form.Label>
+          <Form.Control
+            value={form.entryOffsetPct}
+            onChange={(e) => setForm({ ...form, entryOffsetPct: e.target.value })}
+            placeholder="0"
+            isInvalid={Boolean(errors.entryOffsetPct)}
+          />
+          <Form.Control.Feedback type="invalid">{errors.entryOffsetPct}</Form.Control.Feedback>
+        </Form.Group>
         <Form.Check className="mb-2" checked={form.globalSymbolLock} onChange={(e) => setForm({ ...form, globalSymbolLock: e.target.checked })} label="Global symbol lock" />
         <Button type="submit">Start</Button>
       </Form>
     </Card.Body></Card></Col>
     <Col md={8}><Card><Card.Body><Card.Title>Running bots</Card.Title>
-      <Table size="sm"><thead><tr><th>ID</th><th>Mode</th><th>Direction</th><th>Uptime</th><th>Trades</th><th>PNL</th><th /></tr></thead><tbody>
-        {instances.map((i) => <tr key={i.id}><td>{i.id.slice(0, 12)}</td><td>{i.mode}</td><td>{i.direction}</td><td>{i.uptimeSec}s</td><td>{i.trades}</td><td>{Number(i.pnl || 0).toFixed(2)}</td><td><Button size="sm" variant="outline-danger" onClick={() => ws.request('momentum.stop', { instanceId: i.id })}>Stop</Button></td></tr>)}
+      <Table size="sm"><thead><tr><th>ID</th><th>Mode</th><th>Direction</th><th>Offset</th><th>Uptime</th><th>Trades</th><th>PNL</th><th /></tr></thead><tbody>
+        {instances.map((i) => <tr key={i.id}><td>{i.id.slice(0, 12)}</td><td>{i.mode}</td><td>{i.direction}</td><td>{Number(i.entryOffsetPct || 0)}%</td><td>{i.uptimeSec}s</td><td>{i.trades}</td><td>{Number(i.pnl || 0).toFixed(2)}</td><td><Button size="sm" variant="outline-danger" onClick={() => ws.request('momentum.stop', { instanceId: i.id })}>Stop</Button></td></tr>)}
       </tbody></Table>
     </Card.Body></Card></Col>
     <Col md={12}><Card><Card.Body><Card.Title>Selected instance details</Card.Title>
       <Form.Select className="mb-2" value={selectedId} onChange={(e) => setSelectedId(e.target.value)}><option value="">Select...</option>{options}</Form.Select>
-      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending: {detail.pendingOrders?.length || 0}</div>}
+      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending: {detail.pendingOrders?.length || 0} | Offset: {Number(detail?.config?.entryOffsetPct || 0)}%</div>}
 
       {detail && <Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>State</th><th>Side</th><th>Entry</th><th>Actions</th></tr></thead><tbody>
         {(detail.pendingOrders || []).map((p) => <tr key={`pending_${p.symbol}`}><td>{p.symbol}</td><td>ORDER_PENDING</td><td>{p.side}</td><td>{p.entryPrice}</td><td><Button size="sm" variant="outline-warning" onClick={() => onCancelEntry(p.symbol)}>Cancel entry</Button></td></tr>)}
@@ -87,7 +105,7 @@ export default function MomentumPage() {
         {detail.logs.map((l, idx) => <tr key={`${l.ts}_${idx}`}><td>{new Date(l.ts).toLocaleTimeString()}</td><td>{l.msg === 'SKIP SYMBOL_BUSY' ? `SKIP SYMBOL_BUSY: ${l.symbol} has ORDER_PENDING/IN_POSITION` : `${l.msg}${l.symbol ? `: ${l.symbol}` : ''}`}</td></tr>)}
       </tbody></Table>}
 
-      <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Outcome</th><th>PNL</th></tr></thead><tbody>{trades.map((t) => <tr key={t.id}><td>{t.symbol}</td><td>{t.side}</td><td>{t.entryPrice}</td><td>{t.exitPrice}</td><td>{t.outcome}</td><td>{Number(t.pnlUsd || 0).toFixed(3)}</td></tr>)}</tbody></Table>
+      <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Offset</th><th>Outcome</th><th>PNL</th></tr></thead><tbody>{trades.map((t) => <tr key={t.id}><td>{t.symbol}</td><td>{t.side}</td><td>{t.entryPrice}</td><td>{t.exitPrice}</td><td>{Number(t.entryOffsetPct || 0)}%</td><td>{t.outcome}</td><td>{Number(t.pnlUsd || 0).toFixed(3)}</td></tr>)}</tbody></Table>
     </Card.Body></Card></Col>
   </Row>;
 }

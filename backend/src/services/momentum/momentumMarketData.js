@@ -21,6 +21,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   const ring = new Map();
   const instruments = new Set();
   const subscribed = new Set();
+  const instrumentMeta = new Map();
 
   async function fetchUniverse() {
     let cursor = '';
@@ -33,7 +34,11 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
       const data = await res.json();
       const list = data?.result?.list || [];
       for (const row of list) {
-        if (row?.contractType === 'LinearPerpetual' && row?.status === 'Trading' && row?.symbol?.endsWith('USDT')) instruments.add(row.symbol);
+        if (row?.contractType === 'LinearPerpetual' && row?.status === 'Trading' && row?.symbol?.endsWith('USDT')) {
+          instruments.add(row.symbol);
+          const tickSize = Number(row?.priceFilter?.tickSize);
+          if (Number.isFinite(tickSize) && tickSize > 0) instrumentMeta.set(row.symbol, { tickSize });
+        }
       }
       cursor = data?.result?.nextPageCursor || '';
     } while (cursor);
@@ -50,6 +55,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
         if (!msg?.topic?.startsWith('tickers.')) return;
         const symbol = msg.topic.slice(8);
         const d = msg?.data || {};
+        const meta = instrumentMeta.get(symbol) || {};
         pending.set(symbol, {
           markPrice: Number(d.markPrice),
           openInterest: Number(d.openInterest),
@@ -58,6 +64,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
           lowPrice24h: Number(d.lowPrice24h),
           price24hPcnt: Number(d.price24hPcnt),
           ts: Number(msg.ts || Date.now()),
+          tickSize: Number(meta.tickSize) || null,
         });
       } catch {}
     });

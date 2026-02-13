@@ -20,6 +20,12 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
     return new Promise((resolve, reject) => db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows || []))));
   }
 
+  async function ensureColumn(table, column, typeAndDefault) {
+    const cols = await all(`PRAGMA table_info(${table})`);
+    const hasColumn = (cols || []).some((c) => String(c?.name || '').toLowerCase() === String(column).toLowerCase());
+    if (!hasColumn) await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${typeAndDefault}`);
+  }
+
   async function init() {
     await run(`CREATE TABLE IF NOT EXISTS momentum_trades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,15 +33,19 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
       windowMinutes INTEGER, priceThresholdPct REAL, oiThresholdPct REAL,
       turnover24hMin REAL, vol24hMin REAL, leverage REAL, marginUsd REAL,
       entryTs INTEGER, entryPrice REAL, exitTs INTEGER, exitPrice REAL,
-      outcome TEXT, pnlUsd REAL, feesUsd REAL, durationSec INTEGER
+      outcome TEXT, pnlUsd REAL, feesUsd REAL, durationSec INTEGER,
+      entryOffsetPct REAL DEFAULT 0
     )`);
     await run(`CREATE TABLE IF NOT EXISTS momentum_signals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       instanceId TEXT, symbol TEXT, side TEXT, ts INTEGER,
       windowMinutes INTEGER, priceChange REAL, oiChange REAL,
       markNow REAL, markPrev REAL, oiNow REAL, oiPrev REAL,
-      turnover24h REAL, vol24h REAL, action TEXT
+      turnover24h REAL, vol24h REAL, action TEXT,
+      entryOffsetPct REAL DEFAULT 0
     )`);
+    await ensureColumn('momentum_trades', 'entryOffsetPct', 'REAL DEFAULT 0');
+    await ensureColumn('momentum_signals', 'entryOffsetPct', 'REAL DEFAULT 0');
     await run('CREATE INDEX IF NOT EXISTS idx_momentum_trades_instance_entry ON momentum_trades(instanceId, entryTs)');
     await run('CREATE INDEX IF NOT EXISTS idx_momentum_trades_symbol_entry ON momentum_trades(symbol, entryTs)');
   }
@@ -57,13 +67,13 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
   }
 
   function saveSignal(row) {
-    enqueueWrite(() => run(`INSERT INTO momentum_signals(instanceId, symbol, side, ts, windowMinutes, priceChange, oiChange, markNow, markPrev, oiNow, oiPrev, turnover24h, vol24h, action)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.symbol, row.side, row.ts, row.windowMinutes, row.priceChange, row.oiChange, row.markNow, row.markPrev, row.oiNow, row.oiPrev, row.turnover24h, row.vol24h, row.action]));
+    enqueueWrite(() => run(`INSERT INTO momentum_signals(instanceId, symbol, side, ts, windowMinutes, priceChange, oiChange, markNow, markPrev, oiNow, oiPrev, turnover24h, vol24h, action, entryOffsetPct)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.symbol, row.side, row.ts, row.windowMinutes, row.priceChange, row.oiChange, row.markNow, row.markPrev, row.oiNow, row.oiPrev, row.turnover24h, row.vol24h, row.action, row.entryOffsetPct ?? 0]));
   }
 
   function saveTrade(row) {
-    enqueueWrite(() => run(`INSERT INTO momentum_trades(instanceId, mode, symbol, side, windowMinutes, priceThresholdPct, oiThresholdPct, turnover24hMin, vol24hMin, leverage, marginUsd, entryTs, entryPrice, exitTs, exitPrice, outcome, pnlUsd, feesUsd, durationSec)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.mode, row.symbol, row.side, row.windowMinutes, row.priceThresholdPct, row.oiThresholdPct, row.turnover24hMin, row.vol24hMin, row.leverage, row.marginUsd, row.entryTs, row.entryPrice, row.exitTs, row.exitPrice, row.outcome, row.pnlUsd, row.feesUsd, row.durationSec]));
+    enqueueWrite(() => run(`INSERT INTO momentum_trades(instanceId, mode, symbol, side, windowMinutes, priceThresholdPct, oiThresholdPct, turnover24hMin, vol24hMin, leverage, marginUsd, entryTs, entryPrice, exitTs, exitPrice, outcome, pnlUsd, feesUsd, durationSec, entryOffsetPct)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.mode, row.symbol, row.side, row.windowMinutes, row.priceThresholdPct, row.oiThresholdPct, row.turnover24hMin, row.vol24hMin, row.leverage, row.marginUsd, row.entryTs, row.entryPrice, row.exitTs, row.exitPrice, row.outcome, row.pnlUsd, row.feesUsd, row.durationSec, row.entryOffsetPct ?? 0]));
   }
 
   async function getTrades(instanceId, limit = 50, offset = 0) {
