@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Card, Col, Form, ProgressBar, Row, Table } from 'react-bootstrap';
 import { useWsClient } from '../../shared/api/ws.js';
 
@@ -30,25 +30,34 @@ export default function LeadLagPage() {
   const [serverNow, setServerNow] = useState(0);
   const lastTopUpdateAtRef = useRef(0);
 
-  const onMessage = useMemo(() => (ev) => {
-    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+  const onMessage = useMemo(() => (_ev, msg) => {
+    if (!msg) return;
     setServerNow(Date.now());
     const type = msg.type === 'event' ? msg.topic : msg.type;
     const payload = msg.payload;
-
-    if (type === 'snapshot') {
-      if (payload?.leadlagState) {
-        setState((prev) => ({ ...(prev || {}), ...(payload.leadlagState || {}) }));
-        if (payload.leadlagState?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.leadlagState.autoTuneConfig }));
-      }
-      return;
-    }
 
     if (type === 'leadlag.state') {
       setState((prev) => ({ ...(prev || {}), ...(payload || {}) }));
       const nextRows = payload?.search?.results?.top || payload?.search?.topRows || payload?.legacy?.search?.topRows || [];
       if (Array.isArray(nextRows)) setRows((prevRows) => nextRows.slice(0, 50).map((r, idx) => ({ ...prevRows[idx], ...r })));
       if (payload?.legacy?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.legacy.autoTuneConfig }));
+      return;
+    }
+
+    if (type === 'leadlag.searchProgress') {
+      setState((prev) => ({ ...(prev || {}), search: { ...(prev?.search || {}), progress: { ...(prev?.search?.progress || {}), ...(payload || {}) } } }));
+      return;
+    }
+
+    if (type === 'leadlag.searchResults') {
+      const topRows = Array.isArray(payload?.top) ? payload.top : [];
+      setRows(topRows.slice(0, 50));
+      setState((prev) => ({ ...(prev || {}), search: { ...(prev?.search || {}), results: { ...(prev?.search?.results || {}), ...(payload || {}) } } }));
+      return;
+    }
+
+    if (type === 'leadlag.tradeEvent' || type === 'leadlag.log') {
+      setState((prev) => ({ ...(prev || {}), legacy: { ...(prev?.legacy || {}), currentTradeEvents: [payload, ...((prev?.legacy?.currentTradeEvents || []).slice(0, 49))] } }));
       return;
     }
 
@@ -76,10 +85,17 @@ export default function LeadLagPage() {
     if (type === 'leadlag.learningLog') setState((prev) => ({ ...(prev || {}), learningLog: Array.isArray(payload) ? payload : [] }));
   }, []);
 
-  const { status, sendJson, request } = useWsClient({
-    onOpen: () => { request('leadlag.getState'); sendJson({ type: 'getSnapshot' }); sendJson({ type: 'leadlag.getLearningLog' }); },
+  const { status, sendJson, request, subscribeTopics, unsubscribeTopics } = useWsClient({
     onMessage,
   });
+
+  useEffect(() => {
+    if (status !== 'connected') return;
+    subscribeTopics?.(['leadlag.*']);
+    request('leadlag.getState');
+    sendJson({ type: 'leadlag.getLearningLog' });
+    return () => unsubscribeTopics?.(['leadlag.*']);
+  }, [status, subscribeTopics, unsubscribeTopics, request, sendJson]);
 
   const canStart = status === 'connected' && String(formSettings.leaderSymbol || '').trim().length > 0 && String(formSettings.followerSymbol || '').trim().length > 0;
   const trading = state?.trading || {};
@@ -87,6 +103,9 @@ export default function LeadLagPage() {
   const legacy = state?.legacy || {};
   const searchStatus = String(search?.status || search?.phase || 'IDLE').toUpperCase();
   const isSearchRunning = ['WARMUP', 'SCREENING', 'CONFIRMATIONS'].includes(searchStatus);
+  const progressDone = Number(search?.progress?.done || 0);
+  const progressTotalRaw = Number(search?.progress?.total || 0);
+  const progressTotal = isSearchRunning && progressTotalRaw <= 0 ? Math.max(1, Number(search?.symbolsTotal || 1)) : progressTotalRaw;
   const progressPct = Number(search?.progress?.pct || calcSearchProgress(search));
   const positions = Array.isArray(legacy?.positions) ? legacy.positions : [];
   const followerPx = Number(legacy?.manual?.followerPrice);
@@ -177,7 +196,7 @@ export default function LeadLagPage() {
           <Button size='sm' variant='outline-danger' disabled={!isSearchRunning || status !== 'connected'} onClick={() => request('leadlag.search.stop', {})}>Stop search</Button>
         </div>
       </div>
-      <div className='small mb-1'>Phase: {searchStatus} · {search?.progress?.done || 0}/{search?.progress?.total || 0} · Last update age: {Math.max(0, Math.floor((Date.now() - Number(state?.serverTimeMs || Date.now())) / 1000))}s</div>
+      <div className='small mb-1'>Phase: {searchStatus} · {progressDone}/{progressTotal} · Last update age: {Math.max(0, Math.floor((Date.now() - Number(search?.progress?.lastTickMs || search?.updatedAtMs || Date.now())) / 1000))}s</div>
       <ProgressBar now={progressPct} label={`${Math.round(progressPct)}%`} className='mb-2' />
       <Table size='sm' style={{ tableLayout: 'fixed' }}>
         <colgroup><col style={{ width: '25%' }} /><col style={{ width: '25%' }} /><col style={{ width: '15%' }} /><col style={{ width: '15%' }} /><col style={{ width: '20%' }} /></colgroup>
