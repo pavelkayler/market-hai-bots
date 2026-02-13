@@ -21,11 +21,11 @@ function pickPx(t) {
   return Number.isFinite(last) && last > 0 ? last : null;
 }
 
-export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, getUniverseSymbols = () => [], presetsStore, logger = console, onEvent = () => {}, tickMs = 250 } = {}) {
+export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, getUniverseSymbols = () => [], logger = console, onEvent = () => {}, tickMs = 250 } = {}) {
   const autoTune = createLeadLagAutoTune({ maxLogEntries: 200 });
   const state = {
     status: 'STOPPED', startedAt: null, endedAt: null, ticks: 0,
-    activePresetId: null, sessionPresetId: null, lastLeadLagTop: [], lastNoEntryReasons: [],
+    lastLeadLagTop: [], lastNoEntryReasons: [],
     settings: null, executionMode: 'paper',
     autoTuneEnabled: true,
     pendingSignal: null, positions: [],
@@ -280,7 +280,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     };
   }
 
-  function start({ presetId, mode = 'paper', settings = null } = {}) {
+  function start({ mode = 'paper', settings = null } = {}) {
     if (state.status === 'RUNNING' || state.status === 'STARTING') return { ok: false };
     state.status = 'STARTING';
     state.executionMode = mode;
@@ -300,9 +300,6 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     state.tuningStatus = 'idle';
     state.currentTradeEvents = [];
     upsertHistory(state.currentRunKey);
-    state.activePresetId = presetId || presetsStore?.getState()?.activePresetId || null;
-    const clone = presetsStore?.clonePresetAsSession?.(state.activePresetId);
-    state.sessionPresetId = clone?.id || null;
     if (tickTimer) clearInterval(tickTimer);
     setTimeout(() => {
       state.status = 'RUNNING';
@@ -365,7 +362,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
   }
 
   function getState({ includeHistory = true } = {}) {
-    const base = { ...state, position: state.positions[0] || null, activePreset: presetsStore?.getPresetById(state.activePresetId) || null, sessionPreset: presetsStore?.getPresetById(state.sessionPresetId) || null };
+    const base = { ...state, position: state.positions[0] || null };
     base.autoTuneEnabled = autoTune.getAutoTuneConfig().enabled;
     base.autoTuneConfig = autoTune.getAutoTuneConfig();
     base.learningLog = autoTune.getLearningLog();

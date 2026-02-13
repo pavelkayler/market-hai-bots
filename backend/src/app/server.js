@@ -15,8 +15,6 @@ import { createBybitPrivateRest } from "../bybitPrivateRest.js";
 import { createBybitInstrumentsCache } from "../bybitInstrumentsCache.js";
 import { createBybitTradeExecutor } from "../bybitTradeExecutor.js";
 import { createMarketDataStore } from "../marketDataStore.js";
-import { createPresetsStore } from "../presetsStore.js";
-import { createJournalStore } from "../journalStore.js";
 import { createSubscriptionManager } from "../subscriptionManager.js";
 
 dotenv.config();
@@ -200,14 +198,6 @@ function tradeWarnings(tradeExecutor) {
 }
 
 
-function applyPresetGuardrails(preset) {
-  const params = preset?.params || {};
-  tradeExecutor.setGuardrails?.({
-    maxNotional: Number(params.maxNotionalUsd || 100),
-    maxLeverage: Number(params.maxLeverage || 10),
-    maxActivePositions: Number(params.maxActivePositions || 1),
-  });
-}
 const marketData = createMarketDataStore();
 const marketBars = createMicroBarAggregator({
   bucketMs: 250,
@@ -302,56 +292,10 @@ const privateRest = createBybitPrivateRest({
 });
 const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, privateRest, logger: app.log });
 const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
-const presetsStore = createPresetsStore({ logger: app.log });
-const journalStore = createJournalStore({ logger: app.log });
-
-const openByBotSymbol = new Map();
-function rememberOpenTrade(botName, trade) {
-  if (!trade?.symbol) return;
-  openByBotSymbol.set(`${botName}:${String(trade.symbol).toUpperCase()}`, trade);
-}
-
-function emitJournalFromClose(botName, trade) {
-  if (!trade?.symbol) return;
-  const symbol = String(trade.symbol).toUpperCase();
-  const key = `${botName}:${symbol}`;
-  const opened = openByBotSymbol.get(key) || {};
-  openByBotSymbol.delete(key);
-  const entryPrice = Number(opened.entry || trade.entry || trade.entryPrice || 0);
-  const exitPrice = Number(trade.exit || trade.exitPrice || entryPrice);
-  const qty = Number(opened.qty || trade.qty || (entryPrice > 0 ? 100 / entryPrice : 0));
-  const pnlUsdt = Number(trade.pnlUSDT || trade.pnlUsdt || 0);
-  const roiPct = Number(trade.roiPct || (entryPrice > 0 ? (pnlUsdt / Math.max(1, qty * entryPrice)) * 100 : 0));
-  journalStore.append({
-    botName,
-    symbol,
-    side: trade.side || opened.side || "",
-    mode: trade.mode || opened.mode || "paper",
-    openedAt: Number(opened.ts || opened.openedAt || trade.ts || Date.now()),
-    closedAt: Number(trade.ts || Date.now()),
-    entryPrice,
-    exitPrice,
-    tpLevels: opened.tp ? [opened.tp] : opened.tpPrices || [],
-    slLevel: Number(opened.sl || opened.slPrice || 0),
-    qty,
-    notionalUsd: Number(opened.notionalUsd || qty * entryPrice || 0),
-    leverage: Number(opened.leverage || 1),
-    pnlUsdt,
-    roiPct,
-    reasonOpen: opened.reasonOpen || "signal",
-    reasonClose: trade.reason || trade.exitReason || "close",
-    snapshot: {
-      priceDelta: trade.priceDeltaPct,
-      oiDelta: trade.oiDeltaPct,
-    },
-  });
-}
-
 const paperTest = createPaperTest({
   getLeadLagTop: () => lastLeadLagTop,
   getMarketTicker: (symbol, source) => marketData.getTicker(symbol, source),
   getUniverseSymbols: () => universe.getUniverse({ limit: 500 }).symbols,
-  presetsStore,
   logger: app.log,
   onEvent: ({ type, payload }) => {
     if (type === 'leadlag.state') {
@@ -362,10 +306,6 @@ const paperTest = createPaperTest({
       broadcastLeadLagManaged({ topic: 'leadlag.tradeEvent', payload, bucket: null, force: true });
     } else {
       broadcast({ type, payload });
-    }
-    if (type === "leadlag.trade") {
-      if (String(payload?.event || "").toUpperCase() === "OPEN") rememberOpenTrade("LeadLag", payload);
-      else emitJournalFromClose("LeadLag", payload);
     }
   },
 });
@@ -473,8 +413,6 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
         lastEvaluation: trading?.lastEvaluation || null,
         learningLog,
         runSummary,
-        activePresetId: trading?.activePresetId || null,
-        sessionPresetId: trading?.sessionPresetId || null,
       },
       stats: {
         line1: {
@@ -584,7 +522,6 @@ function getSnapshotPayload({ full = false } = {}) {
     botsOverview: getBotsOverview(),
     tradeStatus: tradeStatus(tradeExecutor),
     warnings: tradeWarnings(tradeExecutor),
-    presets: presetsStore.getState(),
     tradePositions: [],
     tradeOrders: [],
     ...(full ? { marketTickers: cappedTickers, bybitTickers: cappedTickers.filter((t) => t?.source === 'BT') } : {}),
@@ -603,12 +540,11 @@ function toBotPnl(state) {
 function getBotsOverview() {
   const leadlagState = paperTest.getState?.({ includeHistory: false }) || paperTest.getState?.() || {};
   const paperBalance = Number(process.env.PAPER_WALLET_BALANCE || 10000);
-  const agg = journalStore.getAggregates();
   return {
     ts: Date.now(),
     paperBalance,
     bots: [
-      { name: "LeadLag", status: leadlagState.status || "STOPPED", pnl: Number(agg?.LeadLag?.pnlUsdt ?? toBotPnl(leadlagState)), startedAt: leadlagState.startedAt || null },
+      { name: "LeadLag", status: leadlagState.status || "STOPPED", pnl: Number(leadlagState?.stats?.pnlUSDT ?? toBotPnl(leadlagState)), startedAt: leadlagState.startedAt || null },
     ],
   };
 }
@@ -844,13 +780,12 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
         let tradeReady = false;
         let blockers = [];
         try {
-          const preset = presetsStore.getActivePreset?.() || null;
-          const excludedCoins = Array.isArray(preset?.excludedCoins) ? preset.excludedCoins : [];
+          const excludedCoins = [];
           const currentEvents = paperTest.getState({ includeHistory: false })?.currentTradeEvents || [];
           const lastTradeAt = currentEvents.find((evt) => String(evt?.event || '').toUpperCase() === 'CLOSE')?.ts || null;
           const readiness = evaluateTradeReady({
             row: { ...row, corr, samples: n, impulses, confirmed, confirmations },
-            preset,
+            preset: null,
             excludedCoins,
             lastTradeAt,
             getBars: (sym, barsN) => marketBars.getBars(sym, barsN, 'BT'),
@@ -1129,41 +1064,10 @@ app.get("/api/trade/history", async (req) => {
     return { history: [] };
   }
 });
-app.get("/api/journal", async (req) => ({
-  rows: journalStore.list({ botName: req.query?.botName ? String(req.query.botName) : null, mode: req.query?.mode ? String(req.query.mode) : null, limit: Number(req.query?.limit || 200) }),
-  aggregates: journalStore.getAggregates(),
-}));
 app.post("/api/trade/killswitch", async (req) => {
   const enabled = tradeExecutor.setKillSwitch(Boolean(req.body?.enabled));
   broadcastEvent("trade.killswitch", { enabled });
   return { ok: true, enabled };
-});
-app.get("/api/presets", async () => presetsStore.getState());
-app.post("/api/presets", async (req) => {
-  const preset = presetsStore.createPreset(req.body || {});
-  const payload = presetsStore.getState();
-  broadcastEvent("presets.updated", payload);
-  return { ok: true, preset, ...payload };
-});
-app.put("/api/presets/:id", async (req) => {
-  const updated = presetsStore.updatePreset(req.params.id, req.body || {});
-  if (!updated) return { ok: false, error: "NOT_FOUND" };
-  const payload = presetsStore.getState();
-  broadcastEvent("presets.updated", payload);
-  return { ok: true, preset: updated, ...payload };
-});
-app.delete("/api/presets/:id", async (req) => {
-  const ok = presetsStore.deletePreset(req.params.id);
-  const payload = presetsStore.getState();
-  broadcastEvent("presets.updated", payload);
-  return { ok, ...payload };
-});
-app.post("/api/presets/:id/select", async (req) => {
-  const ok = presetsStore.selectPreset(req.params.id);
-  const payload = { activePresetId: presetsStore.getState().activePresetId };
-  broadcastEvent("preset.selected", payload);
-  broadcastEvent("presets.updated", presetsStore.getState());
-  return { ok, ...payload };
 });
 
 
@@ -1282,13 +1186,12 @@ app.get("/ws", { websocket: true }, (conn) => {
       const rpcOk = (result) => safeSend(ws, { id: rpcId, result });
       if (rpcMethod === 'leadlag.getState') { rpcOk(safeLeadLagSnapshot({ bumpSeq: false, where: 'rpc.leadlag.getState' })); return; }
       if (rpcMethod === 'leadlag.trading.start') {
-        const presetId = presetsStore.getState().activePresetId;
         const settings = { ...(params || {}), leaderSymbol: params?.leader, followerSymbol: params?.follower };
         const leader = String(settings?.leaderSymbol || 'BTCUSDT').toUpperCase();
         const follower = String(settings?.followerSymbol || 'ETHUSDT').toUpperCase();
         subscriptions.replaceIntent('leadlag-trading', { symbols: [leader, follower], streamType: 'ticker' });
         stopLeadLagSearch({ reason: 'stopped: trading started', preserveRows: false, releaseFeed: true });
-        const result = paperTest.start({ presetId, mode: 'paper', settings });
+        const result = paperTest.start({ mode: 'paper', settings });
         rpcOk({ ok: Boolean(result?.ok) });
         emitLeadLagState({ force: true, bumpSeq: true });
         return;
@@ -1365,14 +1268,12 @@ app.get("/ws", { websocket: true }, (conn) => {
     }
 
     if (msg.type === "startPaperTest" || msg.type === "startLeadLag") {
-      const presetId = msg.presetId || presetsStore.getState().activePresetId;
       const settings = msg?.settings && typeof msg.settings === "object" ? msg.settings : null;
-      applyPresetGuardrails(presetsStore.getPresetById?.(presetId) || presetsStore.getActivePreset?.());
       const leader = String(settings?.leaderSymbol || "BTCUSDT").toUpperCase();
       const follower = String(settings?.followerSymbol || "ETHUSDT").toUpperCase();
       subscriptions.replaceIntent("leadlag-trading", { symbols: [leader, follower], streamType: 'ticker' });
       stopLeadLagSearch({ reason: 'stopped: trading started', preserveRows: false, releaseFeed: true });
-      const result = paperTest.start({ presetId, mode: msg.mode || "paper", settings });
+      const result = paperTest.start({ mode: msg.mode || "paper", settings });
       const currentState = paperTest.getState();
       emitLeadLagState({ force: true, bumpSeq: true });
       broadcastBotsOverview();
@@ -1451,18 +1352,6 @@ app.get("/ws", { websocket: true }, (conn) => {
       return;
     }
 
-    if (msg.type === "getPresets") {
-      safeSend(ws, { type: "presets.updated", payload: presetsStore.getState() });
-      return;
-    }
-
-    if (msg.type === "selectPreset") {
-      const ok = presetsStore.selectPreset(msg.presetId);
-      broadcastEvent("preset.selected", { activePresetId: presetsStore.getState().activePresetId });
-      broadcastEvent("presets.updated", presetsStore.getState());
-      safeSend(ws, { type: "preset.select.ack", payload: { ok, activePresetId: presetsStore.getState().activePresetId } });
-      return;
-    }
 
     } catch (err) {
       app.log.error({ err, msgType: msg?.type || null, method: rpcMethod }, 'ws message handling failed');
