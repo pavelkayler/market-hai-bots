@@ -9,6 +9,11 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
     emitter.emit('state', { market: marketData.getStatus(), instances: [...instances.values()].map((x) => x.getLight()) });
   }
 
+  function syncActiveIntervals() {
+    const intervals = [...instances.values()].map((x) => Number(x.getLight().windowMinutes));
+    marketData.setActiveIntervals?.(intervals);
+  }
+
   marketData.onTick((tick) => {
     const eligible = marketData.getEligibleSymbols();
     for (const inst of instances.values()) inst.onTick(tick, eligible);
@@ -17,8 +22,13 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
 
   function start(config) {
     const id = `mom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const windowMinutes = Number(config?.windowMinutes);
+    if (![1, 5, 15].includes(windowMinutes)) {
+      return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 5, or 15' };
+    }
     const inst = createMomentumInstance({ id, config, marketData, sqlite, logger });
     instances.set(id, inst);
+    syncActiveIntervals();
     emitState();
     return { ok: true, instanceId: id, stateSnapshot: inst.getSnapshot() };
   }
@@ -28,6 +38,7 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
     if (!inst) return { ok: false, reason: 'NOT_FOUND' };
     inst.stop();
     instances.delete(instanceId);
+    syncActiveIntervals();
     emitState();
     return { ok: true };
   }

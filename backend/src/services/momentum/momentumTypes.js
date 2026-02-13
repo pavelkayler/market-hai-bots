@@ -20,6 +20,7 @@ export const DEFAULT_MOMENTUM_CONFIG = {
   mode: 'paper',
   directionMode: 'BOTH',
   windowMinutes: 1,
+  turnoverSpikePct: 100,
   priceThresholdPct: 5,
   oiThresholdPct: 1,
   turnover24hMin: 5_000_000,

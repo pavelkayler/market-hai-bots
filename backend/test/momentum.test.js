@@ -29,6 +29,7 @@ test('pending order has no ttl cancel and can be manually cancelled', async () =
   const md = {
     getSnapshot: (s) => snaps.get(s),
     getAtWindow: () => prev,
+    getTurnoverGate: () => ({ ready: true, prevTurnoverUSDT: 100, curTurnoverUSDT: 250, curCandleStartMs: 0 }),
   };
   const inst = createMomentumInstance({ id: 'a', config: { windowMinutes: 1, cooldownMinutes: 60, priceThresholdPct: 1, oiThresholdPct: 1 }, marketData: md, sqlite });
 
@@ -55,7 +56,7 @@ test('entry offset applies to pending entry price and paper fill behavior', () =
   const snaps = new Map();
   const prev = { tsSec: 0, markPrice: 100, openInterest: 1000 };
   const sqlite = { saveTrade() {}, saveSignal() {} };
-  const md = { getSnapshot: (s) => snaps.get(s), getAtWindow: () => prev };
+  const md = { getSnapshot: (s) => snaps.get(s), getAtWindow: () => prev, getTurnoverGate: () => ({ ready: true, prevTurnoverUSDT: 100, curTurnoverUSDT: 250, curCandleStartMs: 0 }) };
 
   const inst = createMomentumInstance({
     id: 'offset_long',
@@ -98,4 +99,47 @@ test('entry offset applies to pending entry price and paper fill behavior', () =
 test('tick rounding floors long and ceils short', () => {
   assert.equal(roundByTickForSide(100.09, 0.05, 'LONG'), 100.05);
   assert.equal(roundByTickForSide(100.01, 0.05, 'SHORT'), 100.05);
+});
+
+
+test('long turnover gate blocks until threshold while short is unaffected', () => {
+  const snaps = new Map();
+  const prev = { tsSec: 0, markPrice: 100, openInterest: 1000 };
+  const actions = [];
+  const sqlite = { saveTrade() {}, saveSignal(row) { actions.push(row.action); } };
+  let gate = { ready: true, prevTurnoverUSDT: 100, curTurnoverUSDT: 150, curCandleStartMs: 60_000 };
+  const md = {
+    getSnapshot: (s) => snaps.get(s),
+    getAtWindow: () => prev,
+    getTurnoverGate: () => gate,
+  };
+
+  const longInst = createMomentumInstance({
+    id: 'long_gate',
+    config: { windowMinutes: 1, cooldownMinutes: 60, priceThresholdPct: 1, oiThresholdPct: 1, directionMode: 'LONG', turnoverSpikePct: 100 },
+    marketData: md,
+    sqlite,
+  });
+
+  snaps.set('X', { markPrice: 102, openInterest: 1020, turnover24h: 1, vol24h: 0.1, tickSize: 0.1 });
+  longInst.onTick({ ts: 0, sec: 60 }, ['X']);
+  let st = longInst.getSnapshot();
+  assert.equal(st.pendingOrders.length, 0);
+  assert.ok(actions.includes('SKIP_TURNOVER_GATE'));
+
+  gate = { ...gate, curTurnoverUSDT: 220 };
+  longInst.onTick({ ts: 1_000, sec: 61 }, ['X']);
+  st = longInst.getSnapshot();
+  assert.equal(st.pendingOrders.length, 1);
+
+  const shortInst = createMomentumInstance({
+    id: 'short_no_gate',
+    config: { windowMinutes: 1, cooldownMinutes: 60, priceThresholdPct: 1, oiThresholdPct: 1, directionMode: 'SHORT', turnoverSpikePct: 100 },
+    marketData: md,
+    sqlite,
+  });
+  snaps.set('Y', { markPrice: 98, openInterest: 980, turnover24h: 1, vol24h: 0.1, tickSize: 0.1 });
+  shortInst.onTick({ ts: 0, sec: 60 }, ['Y']);
+  const shortState = shortInst.getSnapshot();
+  assert.equal(shortState.pendingOrders.length, 1);
 });

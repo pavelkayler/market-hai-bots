@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import { calcVol24h } from './momentumUtils.js';
 
 const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
+const ALLOWED_INTERVALS = new Set([1, 5, 15]);
 
 function chunk(arr, n = 100) {
   const out = [];
@@ -20,8 +21,24 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   const current = new Map();
   const ring = new Map();
   const instruments = new Set();
-  const subscribed = new Set();
+  const subscribedTickers = new Set();
+  const subscribedKlines = new Set();
   const instrumentMeta = new Map();
+  const activeIntervals = new Set([1]);
+  const turnoverStore = new Map();
+
+  function getTurnoverKey(symbol, interval) {
+    return `${symbol}:${interval}`;
+  }
+
+  function ensureAllowedIntervals(input = []) {
+    const out = new Set();
+    for (const v of input) {
+      const n = Number(v);
+      if (ALLOWED_INTERVALS.has(n)) out.add(n);
+    }
+    return out;
+  }
 
   async function fetchUniverse() {
     let cursor = '';
@@ -44,6 +61,36 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     } while (cursor);
   }
 
+  function upsertTurnover({ symbol, interval, candleStartMs, turnoverUSDT, updateMs }) {
+    const key = getTurnoverKey(symbol, interval);
+    const cur = turnoverStore.get(key) || { prevTurnoverUSDT: null, curTurnoverUSDT: null, curCandleStartMs: null, lastUpdateMs: 0 };
+    if (cur.curCandleStartMs === null || candleStartMs > cur.curCandleStartMs) {
+      if (cur.curCandleStartMs !== null && Number.isFinite(cur.curTurnoverUSDT)) cur.prevTurnoverUSDT = cur.curTurnoverUSDT;
+      cur.curCandleStartMs = candleStartMs;
+      cur.curTurnoverUSDT = turnoverUSDT;
+    } else if (candleStartMs === cur.curCandleStartMs) {
+      cur.curTurnoverUSDT = turnoverUSDT;
+    }
+    cur.lastUpdateMs = updateMs;
+    turnoverStore.set(key, cur);
+  }
+
+  function parseKline(msg) {
+    if (!msg?.topic?.startsWith('kline.')) return null;
+    const parts = String(msg.topic).split('.');
+    if (parts.length < 3) return null;
+    const interval = Number(parts[1]);
+    const symbol = parts[2];
+    if (!ALLOWED_INTERVALS.has(interval) || !symbol) return null;
+    const row = Array.isArray(msg.data) ? msg.data[0] : msg.data;
+    if (!row) return null;
+    const candleStartMs = Number(row.start ?? row.startTime);
+    const turnoverUSDT = Number(row.turnover);
+    if (!Number.isFinite(candleStartMs) || candleStartMs <= 0) return null;
+    if (!Number.isFinite(turnoverUSDT) || turnoverUSDT < 0) return null;
+    return { symbol, interval, candleStartMs, turnoverUSDT };
+  }
+
   function connect() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     ws = new WebSocket(WS_URL);
@@ -52,20 +99,24 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     ws.on('message', (buf) => {
       try {
         const msg = JSON.parse(buf.toString('utf8'));
-        if (!msg?.topic?.startsWith('tickers.')) return;
-        const symbol = msg.topic.slice(8);
-        const d = msg?.data || {};
-        const meta = instrumentMeta.get(symbol) || {};
-        pending.set(symbol, {
-          markPrice: Number(d.markPrice),
-          openInterest: Number(d.openInterest),
-          turnover24h: Number(d.turnover24h),
-          highPrice24h: Number(d.highPrice24h),
-          lowPrice24h: Number(d.lowPrice24h),
-          price24hPcnt: Number(d.price24hPcnt),
-          ts: Number(msg.ts || Date.now()),
-          tickSize: Number(meta.tickSize) || null,
-        });
+        if (msg?.topic?.startsWith('tickers.')) {
+          const symbol = msg.topic.slice(8);
+          const d = msg?.data || {};
+          const meta = instrumentMeta.get(symbol) || {};
+          pending.set(symbol, {
+            markPrice: Number(d.markPrice),
+            openInterest: Number(d.openInterest),
+            turnover24h: Number(d.turnover24h),
+            highPrice24h: Number(d.highPrice24h),
+            lowPrice24h: Number(d.lowPrice24h),
+            price24hPcnt: Number(d.price24hPcnt),
+            ts: Number(msg.ts || Date.now()),
+            tickSize: Number(meta.tickSize) || null,
+          });
+          return;
+        }
+        const k = parseKline(msg);
+        if (k) upsertTurnover({ ...k, updateMs: Number(msg.ts || Date.now()) });
       } catch {}
     });
   }
@@ -112,21 +163,54 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     return rows.slice(0, cap).map((r) => r.symbol);
   }
 
+  async function sendTopicOps(op, topics = []) {
+    for (const c of chunk(topics, 100)) {
+      ws.send(JSON.stringify({ op, args: c }));
+      await new Promise((r) => setTimeout(r, 75));
+    }
+  }
+
   async function reconcileSubscriptions() {
     if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
-    const desired = new Set(getEligibleSymbols());
-    const toSub = [...desired].filter((s) => !subscribed.has(s));
-    const toUn = [...subscribed].filter((s) => !desired.has(s));
-    for (const c of chunk(toSub, 100)) {
-      ws.send(JSON.stringify({ op: 'subscribe', args: c.map((s) => `tickers.${s}`) }));
-      c.forEach((s) => subscribed.add(s));
-      await new Promise((r) => setTimeout(r, 75));
+    const desiredSymbols = getEligibleSymbols();
+    const desiredTickerTopics = new Set(desiredSymbols.map((s) => `tickers.${s}`));
+    const desiredKlineTopics = new Set();
+    for (const symbol of desiredSymbols) {
+      for (const interval of activeIntervals) desiredKlineTopics.add(`kline.${interval}.${symbol}`);
     }
-    for (const c of chunk(toUn, 100)) {
-      ws.send(JSON.stringify({ op: 'unsubscribe', args: c.map((s) => `tickers.${s}`) }));
-      c.forEach((s) => subscribed.delete(s));
-      await new Promise((r) => setTimeout(r, 75));
+
+    const toSubTickers = [...desiredTickerTopics].filter((t) => !subscribedTickers.has(t));
+    const toUnTickers = [...subscribedTickers].filter((t) => !desiredTickerTopics.has(t));
+    await sendTopicOps('subscribe', toSubTickers);
+    toSubTickers.forEach((t) => subscribedTickers.add(t));
+    await sendTopicOps('unsubscribe', toUnTickers);
+    toUnTickers.forEach((t) => subscribedTickers.delete(t));
+
+    const toSubKlines = [...desiredKlineTopics].filter((t) => !subscribedKlines.has(t));
+    const toUnKlines = [...subscribedKlines].filter((t) => !desiredKlineTopics.has(t));
+    await sendTopicOps('subscribe', toSubKlines);
+    toSubKlines.forEach((t) => subscribedKlines.add(t));
+    await sendTopicOps('unsubscribe', toUnKlines);
+    toUnKlines.forEach((t) => subscribedKlines.delete(t));
+  }
+
+  function getTurnoverGate(symbol, interval) {
+    const nInterval = Number(interval);
+    if (!ALLOWED_INTERVALS.has(nInterval)) {
+      return { prevTurnoverUSDT: null, curTurnoverUSDT: null, curCandleStartMs: null, ready: false };
     }
+    const row = turnoverStore.get(getTurnoverKey(symbol, nInterval));
+    if (!row) return { prevTurnoverUSDT: null, curTurnoverUSDT: null, curCandleStartMs: null, ready: false };
+    const ready = Number(row.prevTurnoverUSDT) > 0 && Number(row.curCandleStartMs) > 0;
+    return { prevTurnoverUSDT: row.prevTurnoverUSDT, curTurnoverUSDT: row.curTurnoverUSDT, curCandleStartMs: row.curCandleStartMs, ready };
+  }
+
+  function setActiveIntervals(intervals = []) {
+    const next = ensureAllowedIntervals(intervals);
+    if (next.size === 0) next.add(1);
+    activeIntervals.clear();
+    for (const i of next) activeIntervals.add(i);
+    reconcileSubscriptions().catch((e) => logger.warn?.({ err: e }, 'momentum active intervals reconcile failed'));
   }
 
   async function start() {
@@ -137,12 +221,37 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     setInterval(() => { reconcileSubscriptions().catch((e) => logger.warn?.({ err: e }, 'momentum sub reconcile failed')); }, 45 * 1000);
   }
 
+  function getTurnoverGateReadyCount() {
+    const out = {};
+    for (const interval of activeIntervals) out[String(interval)] = 0;
+    for (const [key, row] of turnoverStore.entries()) {
+      const parts = key.split(':');
+      const interval = Number(parts[1]);
+      if (!activeIntervals.has(interval)) continue;
+      if (Number(row.prevTurnoverUSDT) > 0 && Number(row.curCandleStartMs) > 0) out[String(interval)] += 1;
+    }
+    return out;
+  }
+
   return {
     start,
     onTick: (fn) => emitter.on('tick', fn),
     getSnapshot: (symbol) => current.get(symbol) || null,
     getAtWindow,
     getEligibleSymbols,
-    getStatus: () => ({ wsConnected: connected, subscribedCount: subscribed.size, eligibleCount: getEligibleSymbols().length, universeCount: instruments.size, cap, lastTickTs, tickDriftMs }),
+    getTurnoverGate,
+    setActiveIntervals,
+    getStatus: () => ({
+      wsConnected: connected,
+      subscribedCount: subscribedTickers.size,
+      eligibleCount: getEligibleSymbols().length,
+      universeCount: instruments.size,
+      cap,
+      lastTickTs,
+      tickDriftMs,
+      activeIntervals: [...activeIntervals].sort((a, b) => a - b),
+      klineSubscribedCount: subscribedKlines.size,
+      turnoverGateReadyCount: getTurnoverGateReadyCount(),
+    }),
   };
 }
