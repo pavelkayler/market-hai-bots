@@ -17,6 +17,8 @@ import { createBybitTradeExecutor } from "../bybitTradeExecutor.js";
 import { createMarketDataStore } from "../marketDataStore.js";
 import { createSubscriptionManager } from "../subscriptionManager.js";
 import { createLeadLagLive } from "../leadLagLive.js";
+import { createLeadLagSearchV2 } from "../leadLagSearchV2.js";
+import { createLeadLagLearning } from "../leadLagLearning.js";
 
 dotenv.config();
 
@@ -281,6 +283,19 @@ function createIdleSearchState() {
 let leadLagSearchState = createIdleSearchState();
 let leadLagSearchRunner = null;
 
+const leadLagLearning = createLeadLagLearning({
+  filePath: "backend/data/leadlag_episodes.jsonl",
+  onState: (payload) => broadcastLeadLagManaged({ topic: "leadlag.learning.state", payload, bucket: "leadlagState", intervalMs: 500, force: false }),
+});
+
+const leadLagSearchV2 = createLeadLagSearchV2({
+  getUniverseSymbols: () => getUniverseAllSymbols(),
+  getBars: (symbol, n = 260, source = "BT") => marketBars.getBars(symbol, n, source),
+  onState: (payload) => broadcastLeadLagManaged({ topic: "leadlag.search.state", payload, bucket: "leadlagSearchProgress", intervalMs: 250, force: false }),
+  onShortlist: (payload) => broadcastLeadLagManaged({ topic: "leadlag.search.shortlist", payload, bucket: "leadlagSearchResults", intervalMs: 1000, force: false }),
+  onLog: (payload) => broadcastLeadLagManaged({ topic: "leadlag.log", payload, bucket: null, force: false }),
+});
+
 const bybit = createBybitPublicWs({
   symbols: [],
   logger: app.log,
@@ -314,6 +329,25 @@ function handleLeadLagEngineEvent({ type, payload }) {
     broadcastLeadLagManaged({ topic: 'leadlag.log', payload, bucket: null, force: false });
   } else if (type === 'leadlag.trade' || type === 'paper.trade') {
     broadcastLeadLagManaged({ topic: 'leadlag.tradeEvent', payload, bucket: null, force: true });
+    if (String(payload?.event || '').toUpperCase() === 'CLOSE') {
+      const params = leadLagLearning.getActiveParams();
+      leadLagLearning.onEpisode({
+        ts: Number(payload?.ts || Date.now()),
+        leader: String(payload?.leader || paperTest?.getState?.()?.settings?.leaderSymbol || '').toUpperCase() || null,
+        follower: String(payload?.symbol || payload?.follower || paperTest?.getState?.()?.settings?.followerSymbol || '').toUpperCase() || null,
+        mode: tradeExecutor.getExecutionMode(),
+        params,
+        side: payload?.side || null,
+        entryPrice: Number(payload?.entryPrice || 0) || null,
+        exitPrice: Number(payload?.exitPrice || 0) || null,
+        pnlUSDT: Number(payload?.pnlUSDT || 0) || 0,
+        feesUSDT: Number(payload?.feesUSDT || 0) || 0,
+        fundingUSDT: Number(payload?.fundingUSDT || 0) || 0,
+        slippageUSDT: Number(payload?.slippageUSDT || 0) || 0,
+        durationSec: Math.max(0, Math.round((Number(payload?.ts || 0) - Number(payload?.openedAt || 0)) / 1000)),
+        outcome: { win: Number(payload?.pnlUSDT || 0) >= 0, rMultiple: null },
+      });
+    }
   } else {
     broadcast({ type, payload });
   }
@@ -392,7 +426,8 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
   const trading = (executionMode === 'paper'
     ? paperTest.getState({ includeHistory: false })
     : leadLagLive.getState({ includeHistory: false })) || {};
-  const search = leadLagSearchState || createIdleSearchState();
+  const search = leadLagSearchV2.getState?.() || leadLagSearchState || createIdleSearchState();
+  const learning = leadLagLearning.getState?.() || {};
   if (bumpSeq) leadLagSnapshotSeq += 1;
 
   const leader = String(trading?.settings?.leaderSymbol || trading?.manual?.leaderSymbol || 'BTCUSDT').toUpperCase();
@@ -483,6 +518,7 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
       },
       error: search?.error || null,
     },
+    learning,
   };
   return payload;
 }
@@ -1089,20 +1125,13 @@ setInterval(async () => {
 }, 2500);
 
 app.get("/health", async () => {
-  const bybitWs = getBybitHealth();
-  const cmc = await getCmcHealth();
-  const universeStatus = universe.getStatus();
-  const failedChecks = [cmc, bybitWs].filter((c) => String(c?.status || "").toLowerCase() === "error");
-
   return {
-    status: failedChecks.length ? "degraded" : "ok",
-    now: Date.now(),
-    uptimeMs: Math.floor(process.uptime() * 1000),
-    checks: {
-      bybitWs,
-      cmc,
-      universe: universeStatus,
-    },
+    ok: true,
+    ts: Date.now(),
+    wsClients: clients.size,
+    bybitConnected: Boolean(bybit.getStatus?.()?.connected),
+    searchStatus: leadLagSearchV2.getState?.()?.phase || 'IDLE',
+    tradingStatus: mapTradingStatus((tradeExecutor.getExecutionMode() === 'paper' ? paperTest.getState({ includeHistory: false }) : leadLagLive.getState({ includeHistory: false }))?.status),
   };
 });
 app.get("/api/heartbeat", async () => ({ status: "ok", now: Date.now(), uptime_ms: Math.floor(process.uptime() * 1000) }));
@@ -1355,7 +1384,13 @@ app.get("/ws", { websocket: true }, (conn) => {
         return;
       }
       if (rpcMethod === 'leadlag.trading.start') {
+        const learningParams = leadLagLearning.getActiveParams();
         const settings = { ...(params || {}), leaderSymbol: params?.leader, followerSymbol: params?.follower };
+        if (leadLagLearning.getState().autoEnabled) {
+          settings.leaderMovePct = Number(learningParams.thresholdPct);
+          settings.followerSlPct = Number(learningParams.slPct);
+          settings.followerTpPct = Number(learningParams.tpPct);
+        }
         const leader = String(settings?.leaderSymbol || 'BTCUSDT').toUpperCase();
         const follower = String(settings?.followerSymbol || 'ETHUSDT').toUpperCase();
         subscriptions.replaceIntent('leadlag-trading', { symbols: [leader, follower], streamType: 'ticker' });
@@ -1403,9 +1438,17 @@ app.get("/ws", { websocket: true }, (conn) => {
         emitLeadLagState({ force: true, bumpSeq: true });
         return;
       }
-      if (rpcMethod === 'leadlag.search.start') { const result = startLeadLagSearch(getUniverseAllSymbols(), params || {}); rpcOk({ ok: Boolean(result?.ok), active: Boolean(result?.active) }); emitLeadLagState({ force: true, bumpSeq: true }); return; }
-      if (rpcMethod === 'leadlag.search.stop') { stopLeadLagSearch({ reason: 'stopped', preserveRows: false, releaseFeed: true, silent: true }); rpcOk({ ok: true }); emitLeadLagState({ force: true, bumpSeq: true }); return; }
-      if (rpcMethod === 'leadlag.search.reset') { stopLeadLagSearch({ reason: 'reset', preserveRows: false, releaseFeed: true, silent: true }); leadLagSearchState = createIdleSearchState(); rpcOk({ ok: true }); emitLeadLagState({ force: true, bumpSeq: true }); return; }
+      if (rpcMethod === 'leadlag.search.startV2') { const result = leadLagSearchV2.start(params || {}); rpcOk({ ok: Boolean(result?.ok), ...(result || {}) }); emitLeadLagState({ force: true, bumpSeq: true }); return; }
+      if (rpcMethod === 'leadlag.search.stopV2') { const result = leadLagSearchV2.stop(params?.reason || 'stopped'); rpcOk({ ok: Boolean(result?.ok) }); emitLeadLagState({ force: true, bumpSeq: true }); return; }
+      if (rpcMethod === 'leadlag.search.getStateV2') { rpcOk(leadLagSearchV2.getState()); return; }
+      if (rpcMethod === 'leadlag.search.getCombosPage') { rpcOk(leadLagSearchV2.getCombosPage(params || {})); return; }
+      if (rpcMethod === 'leadlag.search.getShortlist') { rpcOk(leadLagSearchV2.getShortlist()); return; }
+      if (rpcMethod === 'leadlag.learning.getState') { rpcOk(leadLagLearning.getState()); return; }
+      if (rpcMethod === 'leadlag.learning.setAuto') { rpcOk(leadLagLearning.setAuto(Boolean(params?.enabled))); return; }
+      if (rpcMethod === 'leadlag.learning.syncNow') { const out = await leadLagLearning.syncNow(); rpcOk(out); return; }
+      if (rpcMethod === 'leadlag.search.start') { const result = leadLagSearchV2.start(params || {}); rpcOk({ ok: Boolean(result?.ok), ...(result || {}) }); emitLeadLagState({ force: true, bumpSeq: true }); return; }
+      if (rpcMethod === 'leadlag.search.stop') { leadLagSearchV2.stop('stopped'); rpcOk({ ok: true }); emitLeadLagState({ force: true, bumpSeq: true }); return; }
+      if (rpcMethod === 'leadlag.search.reset') { leadLagSearchV2.stop('reset'); leadLagSearchState = createIdleSearchState(); rpcOk({ ok: true }); emitLeadLagState({ force: true, bumpSeq: true }); return; }
     }
     if (!msg?.type) return;
     if (msg.type === "ping") return safeSend(ws, { type: "pong", payload: { now: Date.now() } });
@@ -1500,13 +1543,12 @@ app.get("/ws", { websocket: true }, (conn) => {
 
 
     if (msg.type === "startLeadLagSearch") {
-      const symbols = getUniverseAllSymbols();
-      const result = startLeadLagSearch(symbols);
+      const result = leadLagSearchV2.start({});
       safeSend(ws, { type: "leadlag.search.ack", payload: { ok: Boolean(result?.ok), active: Boolean(result?.active), reason: result?.reason || null, state: result?.state || leadLagSearchState } });
       return;
     }
     if (msg.type === "stopLeadLagSearch") {
-      const stoppedState = stopLeadLagSearch({ reason: 'stopped', preserveRows: false, releaseFeed: true });
+      const stoppedState = leadLagSearchV2.stop('stopped');
       safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: false, state: stoppedState } });
       return;
     }

@@ -5,6 +5,7 @@ import './LeadLagPage.css';
 
 function fmt(n, d = 3) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(d) : '—'; }
 function fmtTs(ts) { return Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : '—'; }
+function fmtEta(sec) { const v = Number(sec); if (!Number.isFinite(v) || v < 0) return '—'; if (v < 60) return `${Math.round(v)}s`; const m = Math.floor(v / 60); const s2 = Math.round(v % 60); return `${m}m ${s2}s`; }
 
 const defaultSettings = { leaderSymbol: 'BTCUSDT', followerSymbol: 'ETHUSDT', leaderMovePct: 0.1, followerTpPct: 0.1, followerSlPct: 0.1, allowShort: true, lagMs: 250 };
 const lagOptions = [250, 500, 750, 1000];
@@ -13,6 +14,12 @@ export default function LeadLagPage() {
   const [state, setState] = useState({ schemaVersion: 1, trading: { status: 'STOPPED' }, search: { status: 'IDLE', progress: { phase: 'IDLE', done: 0, total: 0 } } });
   const [formSettings, setFormSettings] = useState(defaultSettings);
   const [rows, setRows] = useState([]);
+  const [shortlistRows, setShortlistRows] = useState([]);
+  const [combosPage, setCombosPage] = useState({ page: 1, pageSize: 200, totalRows: 0, rows: [] });
+  const [searchV2State, setSearchV2State] = useState({ phase: 'IDLE', progress: { totalPairs: 0, processedPairs: 0, activePairs: 0, droppedPairs: 0, qualifiedPairs: 0 }, etaScanSec: null });
+  const [learningState, setLearningState] = useState({ episodesCount: 0, etaLearningSec: null, autoEnabled: false });
+  const [poolSize, setPoolSize] = useState(50);
+  const [statusFilter, setStatusFilter] = useState('all');
   const [serverNow, setServerNow] = useState(0);
   const [tradeState, setTradeState] = useState({ executionMode: 'paper', killSwitch: false, warnings: [], tradeStatus: { guardrails: {} } });
   const [guardrailsForm, setGuardrailsForm] = useState({ maxNotionalUsd: 100, maxLeverage: 10, maxActivePositions: 1 });
@@ -35,6 +42,9 @@ export default function LeadLagPage() {
     const payload = msg.payload;
 
     if (type === 'leadlag.state') { applySnapshot(payload); return; }
+    if (type === 'leadlag.search.state') { setSearchV2State(payload || {}); return; }
+    if (type === 'leadlag.search.shortlist') { setShortlistRows(Array.isArray(payload?.top) ? payload.top : []); return; }
+    if (type === 'leadlag.learning.state') { setLearningState(payload || {}); return; }
     if (type === 'leadlag.searchProgress') { setState((prev) => ({ ...(prev || {}), search: { ...(prev?.search || {}), progress: { ...(prev?.search?.progress || {}), ...(payload || {}) }, updatedAtMs: Date.now() } })); return; }
     if (type === 'leadlag.searchResults') {
       const topRows = Array.isArray(payload?.top) ? payload.top : [];
@@ -70,22 +80,35 @@ export default function LeadLagPage() {
     let active = true;
     subscribeTopics?.(['leadlag.*', 'trade.*']);
     request('leadlag.getState').then((snapshot) => { if (active) applySnapshot(snapshot); });
-    request('trade.getState').then((snap) => { if (active && snap) setTradeState(snap); });
+    request('leadlag.search.getStateV2').then((snap) => { if (active && snap) setSearchV2State(snap); });
+    request('leadlag.search.getShortlist').then((snap) => { if (active && snap) setShortlistRows(Array.isArray(snap.top) ? snap.top : []); });
+    request('leadlag.learning.getState').then((snap) => { if (active && snap) setLearningState(snap); });
     request('trade.syncNow', {}).then(() => {});
     return () => { active = false; unsubscribeTopics?.(['leadlag.*', 'trade.*']); };
   }, [status, subscribeTopics, unsubscribeTopics, request, applySnapshot]);
 
+  useEffect(() => {
+    if (status !== 'connected') return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      request('leadlag.search.getCombosPage', { page: combosPage.page, pageSize: combosPage.pageSize, filter: { status: statusFilter } }).then((res) => {
+        if (!cancelled && res) setCombosPage((prev) => ({ ...prev, ...res }));
+      });
+    }, 120);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [status, request, combosPage.page, combosPage.pageSize, statusFilter]);
+
   const canStart = status === 'connected' && String(formSettings.leaderSymbol || '').trim().length > 0 && String(formSettings.followerSymbol || '').trim().length > 0;
   const trading = state?.trading || {};
-  const search = state?.search || {};
+  const search = searchV2State || state?.search || {};
   const searchStatus = String(search?.status || search?.phase || 'IDLE').toUpperCase();
   const isSearchRunning = !['IDLE', 'FINISHED', 'ERROR'].includes(searchStatus);
   const mode = tradeState?.executionMode || trading?.execution?.mode || 'paper';
   const modeChangeBlocked = ['RUNNING', 'STARTING'].includes(String(trading?.status || 'STOPPED').toUpperCase());
 
   const progress = search?.progress || {};
-  const progressDone = Number(progress.done || 0);
-  const progressTotal = Math.max(1, Number(progress.total || 0));
+  const progressDone = Number(progress.done || progress.processedPairs || 0);
+  const progressTotal = Math.max(1, Number(progress.total || progress.totalPairs || 0));
   const progressPct = Number(progress.pct || ((progressDone / progressTotal) * 100));
   const searchMessage = String(progress.message || search.message || '—');
   const searchError = searchStatus === 'ERROR' && search?.error ? `${search.error.code || 'ERROR'}: ${search.error.message || 'Search failed'}` : '';
@@ -179,7 +202,42 @@ export default function LeadLagPage() {
       <Col lg={6}><Card><Card.Body><div className='fw-semibold mb-2'>Exchange Orders</div><div style={{ maxHeight: 220, overflow: 'auto' }}><Table size='sm'><colgroup><col style={{ width: '18%' }} /><col style={{ width: '12%' }} /><col style={{ width: '18%' }} /><col style={{ width: '18%' }} /><col style={{ width: '14%' }} /><col style={{ width: '20%' }} /></colgroup><thead><tr><th>Symbol</th><th>Side</th><th>Price</th><th>Qty</th><th>Status</th><th>Created</th></tr></thead><tbody>{exchangeOrders.length ? exchangeOrders.map((o, i) => <tr key={`${o.orderId}_${i}`}><td>{o.symbol}</td><td>{o.side}</td><td>{fmt(o.price, 4)}</td><td>{fmt(o.qty, 4)}</td><td>{o.status}</td><td>{fmtTs(o.createdTime)}</td></tr>) : <tr><td colSpan={6} className='text-muted'>No exchange orders</td></tr>}</tbody></Table></div></Card.Body></Card></Col>
     </Row>}
 
-    <Card><Card.Body><div className='d-flex align-items-center justify-content-between mb-2'><div className='fw-semibold'>Search (Top-50)</div><div className='d-flex gap-2'>{!isSearchRunning && <Button size='sm' disabled={status !== 'connected'} onClick={() => request('leadlag.search.start', {})}>Start search</Button>}{isSearchRunning && <Button size='sm' variant='outline-danger' disabled={status !== 'connected'} onClick={() => request('leadlag.search.stop', {})}>Stop search</Button>}</div></div><div className='small mb-1'>Phase: {String(progress.phase || searchStatus).toUpperCase()} · {progressDone}/{progressTotal} · Last update age: {lastSearchUpdateMs ? Math.max(0, Math.floor((Date.now() - lastSearchUpdateMs) / 1000)) : 0}s</div><div className='small text-muted mb-1'>Message: {searchMessage}</div>{searchError ? <div className='small text-warning mb-1'>{searchError}</div> : null}{isSearchRunning && rows.length === 0 ? <div className='small text-muted mb-1'>No candidates yet — waiting for impulses / market movement</div> : null}<ProgressBar now={progressPct} label={`${Math.round(progressPct)}%`} className='mb-2' /><Table size='sm' className='leadlag-search-table'><colgroup><col style={{ width: '9%' }} /><col style={{ width: '9%' }} /><col style={{ width: '8%' }} /><col style={{ width: '8%' }} /><col style={{ width: '9%' }} /><col style={{ width: '8%' }} /><col style={{ width: '8%' }} /><col style={{ width: '8%' }} /><col style={{ width: '8%' }} /><col style={{ width: '25%' }} /></colgroup><thead><tr><th>Leader</th><th>Follower</th><th>Lag (ms)</th><th>Corr</th><th>Confirmations</th><th>Samples</th><th>Impulses</th><th>Confirmed</th><th>TradeReady</th><th>Blockers</th></tr></thead><tbody>{rows.map((r, idx) => { if (!r || typeof r !== 'object') return null; const blockers = Array.isArray(r?.blockers) ? r.blockers.slice(0, 3).map((b) => `${b?.key || 'BLOCK'}:${b?.detail || ''}`).join('; ') : '—'; return <tr key={`${r.leader}_${r.follower}_${idx}`}><td>{r.leader}</td><td>{r.follower}</td><td className='num'>{fmt(r.lagMs, 0)}</td><td className='num'>{fmt(r.corr, 3)}</td><td className='num'>{Number(r.confirmations || 0)}</td><td className='num'>{Number(r.samples || 0)}</td><td className='num'>{Number(r.impulses || 0)}</td><td><Badge bg={r.confirmed ? 'success' : 'secondary'}>{r.confirmed ? 'YES' : 'NO'}</Badge></td><td><Badge bg={r.tradeReady ? 'success' : 'warning'}>{r.tradeReady ? 'YES' : 'NO'}</Badge></td><td title={blockers}>{blockers}</td></tr>; })}</tbody></Table></Card.Body></Card>
+    <Card><Card.Body>
+      <div className='d-flex align-items-center justify-content-between mb-2'>
+        <div className='fw-semibold'>Search v2</div>
+        <div className='d-flex gap-2'>
+          {!isSearchRunning && <Button size='sm' disabled={status !== 'connected'} onClick={() => request('leadlag.search.startV2', { poolSize })}>Start Search</Button>}
+          {isSearchRunning && <Button size='sm' variant='outline-danger' disabled={status !== 'connected'} onClick={() => request('leadlag.search.stopV2', { reason: 'manual stop' })}>Stop Search</Button>}
+        </div>
+      </div>
+      <Row className='g-2 mb-2'>
+        <Col md={4}><Form.Group><Form.Label>Pairs count</Form.Label><Form.Control type='number' min={50} max={200} step={50} value={poolSize} onChange={(e) => setPoolSize(Number(e.target.value || 50))} /></Form.Group></Col>
+        <Col md={8} className='d-flex align-items-end gap-2'>
+          {[50, 100, 200].map((n) => <Button key={n} size='sm' variant={poolSize === n ? 'primary' : 'outline-secondary'} onClick={() => setPoolSize(n)}>{n}</Button>)}
+          <Form.Check label='Auto learn' checked={Boolean(learningState?.autoEnabled)} onChange={(e) => request('leadlag.learning.setAuto', { enabled: e.target.checked })} />
+        </Col>
+      </Row>
+      <div className='small mb-1'>Phase: {String(search?.phase || searchStatus).toUpperCase()} · {progressDone}/{progressTotal} · ETA scan: {fmtEta(search?.etaScanSec)} · ETA learning: {fmtEta(learningState?.etaLearningSec)}</div>
+      <div className='small text-muted mb-2'>Message: {searchMessage} · Episodes: {Number(learningState?.episodesCount || 0)}</div>
+      {searchError ? <div className='small text-warning mb-2'>{searchError}</div> : null}
+      <ProgressBar now={progressPct} label={`${Math.round(progressPct)}%`} className='mb-3' />
+
+      <div className='fw-semibold mb-2'>Top candidates / Shortlist (Top-10)</div>
+      <Table size='sm' className='leadlag-search-table'><thead><tr><th>Rank</th><th>Leader</th><th>Follower</th><th>Confirmations</th><th>NonConfirmations</th><th>Loyalty%</th><th>Samples</th><th>LastSignal</th></tr></thead><tbody>{shortlistRows.length ? shortlistRows.map((r) => <tr key={`${r.pairIndex}`}><td>{r.rank}</td><td>{r.leader}</td><td>{r.follower}</td><td className='num'>{r.confirmations}</td><td className='num'>{r.nonConfirmations}</td><td className='num'>{fmt(r.loyaltyPct, 2)}</td><td className='num'>{r.samples}</td><td>{fmtTs(r.lastSignalTime)}</td></tr>) : <tr><td colSpan={8} className='text-muted'>No shortlist yet</td></tr>}</tbody></Table>
+
+      <div className='d-flex align-items-center justify-content-between mt-3 mb-2'>
+        <div className='fw-semibold'>All combinations</div>
+        <div className='d-flex align-items-center gap-2'>
+          <Form.Select size='sm' value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setCombosPage((p) => ({ ...p, page: 1 })); }}>
+            <option value='all'>all</option><option value='active'>active</option><option value='qualified'>qualified</option><option value='dropped'>dropped</option>
+          </Form.Select>
+          <Button size='sm' variant='outline-secondary' disabled={combosPage.page <= 1} onClick={() => setCombosPage((p) => ({ ...p, page: Math.max(1, p.page - 1) }))}>Prev</Button>
+          <span className='small'>Page {combosPage.page}</span>
+          <Button size='sm' variant='outline-secondary' disabled={(combosPage.page * combosPage.pageSize) >= combosPage.totalRows} onClick={() => setCombosPage((p) => ({ ...p, page: p.page + 1 }))}>Next</Button>
+        </div>
+      </div>
+      <div style={{ maxHeight: 280, overflow: 'auto' }}><Table size='sm' className='leadlag-search-table'><thead><tr><th>Leader</th><th>Follower</th><th>Attempts</th><th>FailStreak</th><th>Status</th><th>LastUpdate</th></tr></thead><tbody>{combosPage.rows?.length ? combosPage.rows.map((r) => <tr key={`${r.pairIndex}`}><td>{r.leader}</td><td>{r.follower}</td><td className='num'>{r.attempts}</td><td className='num'>{r.failStreak}</td><td>{r.status}</td><td>{fmtTs(r.lastUpdate)}</td></tr>) : <tr><td colSpan={6} className='text-muted'>No rows</td></tr>}</tbody></Table></div>
+    </Card.Body></Card>
 
   </div>;
 }
