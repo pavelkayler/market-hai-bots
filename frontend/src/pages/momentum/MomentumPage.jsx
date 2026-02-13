@@ -18,6 +18,9 @@ export default function MomentumPage() {
   const [trades, setTrades] = useState([]);
   const [form, setForm] = useState(DEFAULT_FORM);
   const [errors, setErrors] = useState({});
+  const [tradePage, setTradePage] = useState(0);
+  const tradePageSize = 50;
+  const [tradeTotal, setTradeTotal] = useState(0);
 
   useEffect(() => {
     const unsub = ws.subscribe((_, parsed) => {
@@ -40,12 +43,12 @@ export default function MomentumPage() {
       if (selectedId) {
         const d = await ws.request('momentum.getState', { instanceId: selectedId });
         if (d?.ok) setDetail(d.stateSnapshot);
-        const t = await ws.request('momentum.getTrades', { instanceId: selectedId, limit: 50, offset: 0 });
-        if (t?.ok) setTrades(t.trades || []);
+        const t = await ws.request('momentum.getTrades', { instanceId: selectedId, limit: tradePageSize, offset: tradePage * tradePageSize });
+        if (t?.ok) { setTrades(t.trades || []); setTradeTotal(Number(t.total || 0)); }
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [ws, selectedId]);
+  }, [ws, selectedId, tradePage]);
 
   const options = useMemo(() => instances.map((i) => <option key={i.id} value={i.id}>{i.id}</option>), [instances]);
 
@@ -62,7 +65,7 @@ export default function MomentumPage() {
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     const out = await ws.request('momentum.start', { config: nextConfig });
-    if (out?.ok && out.instanceId) setSelectedId(out.instanceId);
+    if (out?.ok && out.instanceId) { setSelectedId(out.instanceId); setTradePage(0); }
   }
 
   async function onCancelEntry(symbol) {
@@ -99,8 +102,8 @@ export default function MomentumPage() {
       </tbody></Table>
     </Card.Body></Card></Col>
     <Col md={12}><Card><Card.Body><Card.Title>Selected instance details</Card.Title>
-      <Form.Select className="mb-2" value={selectedId} onChange={(e) => setSelectedId(e.target.value)}><option value="">Select...</option>{options}</Form.Select>
-      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending triggers: {detail.pendingOrders?.length || 0} | W: {detail?.config?.windowMinutes}m | Hedge: {detail?.hedgeMode || 'UNKNOWN'} | Margin: {detail?.marginMode || 'UNKNOWN'}</div>}
+      <Form.Select className="mb-2" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setTradePage(0); }}><option value="">Select...</option>{options}</Form.Select>
+      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending triggers: {detail.pendingOrders?.length || 0} | W: {detail?.config?.windowMinutes}m | Hedge: {detail?.hedgeMode || 'UNKNOWN'} | Margin: {detail?.marginMode || 'UNKNOWN'} | Trades: {detail?.stats?.trades || 0} | Wins: {detail?.stats?.wins || 0} | Losses: {detail?.stats?.losses || 0} | Winrate: {(detail?.stats?.trades ? ((detail.stats.wins / detail.stats.trades) * 100) : 0).toFixed(1)}% | PnL: {Number(detail?.stats?.pnl || 0).toFixed(2)} | Fees: {Number(detail?.stats?.fees || 0).toFixed(2)}</div>}
 
       {detail && <><h6>Open Orders / Pending Triggers</h6><Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>State</th><th>Side</th><th>Trigger</th><th>Created</th><th>Age</th><th>Actions</th></tr></thead><tbody>
         {(detail.pendingOrders || []).map((p) => <tr key={`pending_${p.symbol}`}><td>{p.symbol}</td><td>TRIGGER_PENDING</td><td>{p.side}</td><td>{p.triggerPrice}</td><td>{new Date(p.createdAtMs).toLocaleTimeString()}</td><td>{p.ageSec}s</td><td><Button size="sm" variant="outline-warning" onClick={() => onCancelEntry(p.symbol)}>Cancel entry</Button></td></tr>)}
@@ -116,7 +119,7 @@ export default function MomentumPage() {
         {detail.logs.map((l, idx) => <tr key={`${l.ts}_${idx}`}><td>{new Date(l.ts).toLocaleTimeString()}</td><td>{`${l.msg}${l.symbol ? `: ${l.symbol}` : ''}`}</td></tr>)}
       </tbody></Table>}
 
-      <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th>Trigger</th><th>Entry</th><th>Exit</th><th>Offset</th><th>Outcome</th><th>PNL</th></tr></thead><tbody>{trades.map((t) => <tr key={t.id}><td>{t.symbol}</td><td>{t.side}</td><td>{t.triggerPrice}</td><td>{t.entryPrice}</td><td>{t.exitPrice}</td><td>{Number(t.entryOffsetPct || 0)}%</td><td>{t.outcome}</td><td>{Number(t.pnlUsd || 0).toFixed(3)}</td></tr>)}</tbody></Table>
+      <div className="d-flex gap-2 align-items-center mb-2"><Button size="sm" variant="outline-secondary" disabled={tradePage <= 0} onClick={() => setTradePage((p) => Math.max(0, p - 1))}>Prev</Button><Button size="sm" variant="outline-secondary" disabled={(tradePage + 1) * tradePageSize >= tradeTotal} onClick={() => setTradePage((p) => p + 1)}>Next</Button><span>Page {tradePage + 1} / {Math.max(1, Math.ceil(tradeTotal / tradePageSize))}</span></div><Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th>Trigger</th><th>Entry</th><th>Exit</th><th>Offset</th><th>Outcome</th><th>PNL</th></tr></thead><tbody>{trades.map((t) => <tr key={t.id}><td>{t.symbol}</td><td>{t.side}</td><td>{t.triggerPrice}</td><td>{t.entryPrice}</td><td>{t.exitPrice}</td><td>{Number(t.entryOffsetPct || 0)}%</td><td>{t.outcome}</td><td>{Number(t.pnlUsd || 0).toFixed(3)}</td></tr>)}</tbody></Table>
     </Card.Body></Card></Col>
   </Row>;
 }

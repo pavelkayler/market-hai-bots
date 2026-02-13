@@ -41,9 +41,9 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     marketData.setActiveIntervals?.(intervals);
   }
 
-  marketData.onTick((tick) => {
+  marketData.onTick(async (tick) => {
     const eligible = marketData.getEligibleSymbols();
-    for (const inst of instances.values()) inst.onTick(tick, eligible);
+    for (const inst of instances.values()) await inst.onTick(tick, eligible);
     emitState();
   });
 
@@ -62,7 +62,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
         return { ok: false, error: 'HEDGE_MODE_REQUIRED', message };
       }
     }
-    const inst = createMomentumInstance({ id, config, marketData, sqlite, logger });
+    const inst = createMomentumInstance({ id, config, marketData, sqlite, tradeExecutor, logger });
     instances.set(id, inst);
     syncActiveIntervals();
     emitState();
