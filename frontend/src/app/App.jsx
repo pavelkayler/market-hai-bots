@@ -12,6 +12,7 @@ export default function App() {
           <Nav className="me-auto">
             <Nav.Link as={Link} to="/">Status</Nav.Link>
             <Nav.Link as={Link} to="/leadlag">LeadLag</Nav.Link>
+            <Nav.Link as={Link} to="/momentum">Momentum</Nav.Link>
           </Nav>
         </Container>
       </Navbar>
