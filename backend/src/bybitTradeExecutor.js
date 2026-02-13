@@ -21,6 +21,8 @@ function sumNums(arr) {
 }
 
 function normalizePosition(row) {
+  const normalizedMarginMode = String(row?.marginMode || '').toLowerCase();
+  const tradeMode = Number(row?.tradeMode);
   return {
     symbol: row?.symbol || "",
     side: row?.side || "",
@@ -28,7 +30,7 @@ function normalizePosition(row) {
     avgPrice: row?.avgPrice || null,
     liqPrice: row?.liqPrice || null,
     unrealisedPnl: row?.unrealisedPnl || row?.unrealisedPnlValue || null,
-    marginMode: row?.tradeMode === 1 ? "isolated" : "cross",
+    marginMode: normalizedMarginMode === 'isolated' ? 'isolated' : tradeMode === 1 ? "isolated" : "cross",
     positionIdx: Number(row?.positionIdx ?? 0),
   };
 }
@@ -148,15 +150,19 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     const reasons = [];
     if (state.executionMode === "paper") return { ok: true, reasons };
     if (state.killSwitch && !reduceOnly) reasons.push("KILL_SWITCH_ENABLED");
+    if (state.activeSymbol && symbol && String(symbol).toUpperCase() !== state.activeSymbol) reasons.push("ACTIVE_SYMBOL_MISMATCH");
     if (state.executionMode === "demo" || state.executionMode === "real") {
       if (state.executionMode === "demo" && !/api-demo\.bybit\.com/i.test(tradeBaseUrl)) reasons.push("DEMO_BASE_URL_REQUIRED");
       if (state.executionMode === "real" && !/api\.bybit\.com/i.test(tradeBaseUrl)) reasons.push("REAL_BASE_URL_REQUIRED");
       const rows = await getPositions({});
       const active = rows.filter((r) => Number(r?.size || 0) > 0);
       if (active.length >= state.maxActivePositions && !active.some((r) => r.symbol === symbol)) reasons.push("MAX_ONE_POSITION_GLOBAL");
-      const notional = Math.abs(Number(qty || 0) * Number(priceHint || 0));
-      if (Number.isFinite(notional) && notional > state.maxNotional) reasons.push(`NOTIONAL_LIMIT_EXCEEDED:${notional.toFixed(2)}>${state.maxNotional}`);
-      if (active.some((r) => Number(r?.tradeMode) !== 1)) reasons.push("ISOLATED_MARGIN_REQUIRED");
+      const pxHint = Number(priceHint);
+      if (Number.isFinite(pxHint) && pxHint > 0) {
+        const notional = Math.abs(Number(qty || 0) * pxHint);
+        if (Number.isFinite(notional) && notional > state.maxNotional) reasons.push(`NOTIONAL_LIMIT_EXCEEDED:${notional.toFixed(2)}>${state.maxNotional}`);
+      }
+      if (active.some((r) => String(r?.marginMode || '').toLowerCase() !== 'isolated')) reasons.push("ISOLATED_MARGIN_REQUIRED");
     }
     const ok = reasons.length === 0;
     logger?.info?.({ symbol, side, mode: state.executionMode, reasons, ok }, ok ? "PRE-TRADE CHECK PASSED" : "PRE-TRADE CHECK FAILED");
@@ -183,14 +189,14 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     });
   }
 
-  async function openPosition({ symbol, side, qty, slPrice, tps = [], leverage, timeInForce = "GTC", positionIdx } = {}) {
+  async function openPosition({ symbol, side, qty, slPrice, tps = [], leverage, timeInForce = "GTC", positionIdx, priceHint } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const { qty: q, filters } = await normalizeQtyPrice(symbol, qty, null);
     if (!Number.isFinite(q) || q <= 0) {
       logger?.warn?.({ symbol, qty }, "entry qty is zero/invalid after rounding");
       throw new Error("bad_qty");
     }
-    const pre = await runPreTradeChecks({ symbol, side, qty: q, reduceOnly: false });
+    const pre = await runPreTradeChecks({ symbol, side, qty: q, priceHint, reduceOnly: false });
     if (!pre.ok) throw new Error(pre.reasons.join(";"));
 
     const resolvedPositionIdx = await resolvePositionIdx({ symbol, side, explicitPositionIdx: positionIdx });

@@ -397,16 +397,6 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
   const followerTicker = marketData.getTicker(follower, 'BT') || {};
   const topRows = Array.isArray(search?.results?.top) ? search.results.top : Array.isArray(search?.topRows) ? search.topRows : [];
 
-  const learningLog = Array.isArray(trading?.learningLog) ? trading.learningLog.slice(0, 50) : [];
-  const runSummary = Object.values(trading?.runHistory || {})
-    .map((run) => {
-      const trades = Number(run?.trades || 0);
-      const wins = Number(run?.wins || 0);
-      return { ...run, winRate: trades > 0 ? (wins / trades) * 100 : 0 };
-    })
-    .sort((a, b) => Number(b?.endedAt || b?.startedAt || 0) - Number(a?.endedAt || a?.startedAt || 0))
-    .slice(0, 50);
-
   const lastTs = Number(trading?.currentTradeEvents?.[0]?.ts);
   const payload = {
     schemaVersion: 1,
@@ -444,14 +434,6 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
       tradeEvents: (Array.isArray(trading?.currentTradeEvents) ? trading.currentTradeEvents : []).slice(0, 20),
       history: (Array.isArray(trading?.currentClosedTrades) ? trading.currentClosedTrades : []).slice(0, 50),
       noEntryReasons: (Array.isArray(trading?.lastNoEntryReasons) ? trading.lastNoEntryReasons : []).slice(0, 5),
-      tuning: {
-        autoTuneConfig: trading?.autoTuneConfig || null,
-        tuningStatus: trading?.tuningStatus || null,
-        lastEvaluation: trading?.lastEvaluation || null,
-        learningLog,
-        runSummary,
-      },
-
       execution: {
         mode: executionMode,
         enabled: Boolean(tradeExecutor?.enabled?.()),
@@ -1290,6 +1272,26 @@ app.get("/ws", { websocket: true }, (conn) => {
         rpcOk({ ok: true, ...live, symbol });
         return;
       }
+      if (rpcMethod === 'trade.cancelAll' || rpcMethod === 'trade.panicClose') {
+        const mode = tradeExecutor.getExecutionMode();
+        if (!['demo', 'real'].includes(mode)) { rpcOk({ ok: false, reason: 'LIVE_MODE_REQUIRED' }); return; }
+        if (!tradeExecutor?.enabled?.()) { rpcOk({ ok: false, reason: 'TRADE_DISABLED' }); return; }
+        const symbol = String(params?.symbol || getActiveTradeSymbol() || '').toUpperCase() || null;
+        if (!symbol) { rpcOk({ ok: false, reason: 'NO_ACTIVE_SYMBOL' }); return; }
+        rpcOk({ ok: true });
+        Promise.resolve()
+          .then(async () => {
+            if (rpcMethod === 'trade.panicClose') await tradeExecutor.panicClose({ symbol });
+            else await tradeExecutor.cancelAll({ symbol });
+          })
+          .catch((err) => app.log.warn({ err, method: rpcMethod, symbol }, 'trade emergency action failed'))
+          .finally(async () => {
+            const snap = await getTradeSnapshot(symbol);
+            broadcastEvent('trade.positions', { ts: Date.now(), symbol, positions: (snap.positions || []).slice(0, 20) });
+            broadcastEvent('trade.orders', { ts: Date.now(), symbol, orders: (snap.orders || []).slice(0, 50) });
+          });
+        return;
+      }
       if (rpcMethod === 'leadlag.trading.start') {
         const settings = { ...(params || {}), leaderSymbol: params?.leader, followerSymbol: params?.follower };
         const leader = String(settings?.leaderSymbol || 'BTCUSDT').toUpperCase();
@@ -1313,7 +1315,7 @@ app.get("/ws", { websocket: true }, (conn) => {
             return;
           }
         }
-        rpcOk({ ok: Boolean(result?.ok), reason: result?.reason || null });
+        rpcOk({ ok: Boolean(result?.ok), reason: result?.reason || null, state: safeLeadLagSnapshot({ bumpSeq: false, where: 'rpc.leadlag.trading.start' }) });
         emitLeadLagState({ force: true, bumpSeq: true });
         return;
       }
@@ -1323,7 +1325,7 @@ app.get("/ws", { websocket: true }, (conn) => {
         else await leadLagLive.stop({ reason: params?.reason || 'manual', closePosition: true });
         subscriptions.removeIntent('leadlag-trading');
         tradeExecutor.setActiveSymbol(null);
-        rpcOk({ ok: true });
+        rpcOk({ ok: true, state: safeLeadLagSnapshot({ bumpSeq: false, where: 'rpc.leadlag.trading.stop' }) });
         emitLeadLagState({ force: true, bumpSeq: true });
         return;
       }
@@ -1335,7 +1337,7 @@ app.get("/ws", { websocket: true }, (conn) => {
         stopLeadLagSearch({ reason: 'stopped: reset', preserveRows: false, releaseFeed: true, silent: true });
         paperTest.reset();
         await leadLagLive.reset();
-        rpcOk({ ok: true });
+        rpcOk({ ok: true, state: safeLeadLagSnapshot({ bumpSeq: false, where: 'rpc.leadlag.trading.reset' }) });
         emitLeadLagState({ force: true, bumpSeq: true });
         return;
       }
@@ -1464,26 +1466,6 @@ app.get("/ws", { websocket: true }, (conn) => {
       const state = paperTest.getState();
       sendLeadLagEventNow(ws, 'leadlag.state', safeLeadLagSnapshot({ bumpSeq: false, where: 'ws.leadlag.state' }));
       safeSend(ws, { type: "paper.state", payload: state });
-      return;
-    }
-
-    if (msg.type === "leadlag.setAutoTuneConfig") {
-      const payload = paperTest.setAutoTuneConfig(msg?.payload && typeof msg.payload === 'object' ? msg.payload : msg?.settings && typeof msg.settings === 'object' ? msg.settings : {});
-      safeSend(ws, { type: "leadlag.autotune.ack", payload: { ok: true, config: payload?.autoTuneConfig || null } });
-      sendLeadLagEventNow(ws, 'leadlag.state', safeLeadLagSnapshot({ bumpSeq: false, where: 'ws.leadlag.state' }));
-      return;
-    }
-
-    if (msg.type === "leadlag.clearLearningLog") {
-      const payload = paperTest.clearLearningLog();
-      safeSend(ws, { type: "leadlag.learningLog.cleared", payload: { ok: true } });
-      sendLeadLagEventNow(ws, 'leadlag.state', safeLeadLagSnapshot({ bumpSeq: false, where: 'ws.leadlag.state' }));
-      return;
-    }
-
-    if (msg.type === "leadlag.getLearningLog") {
-      const payload = paperTest.getState({ includeHistory: false });
-      safeSend(ws, { type: "leadlag.learningLog", payload: payload?.learningLog || [] });
       return;
     }
 

@@ -48,6 +48,7 @@ export function createLeadLagLive({ marketData, tradeExecutor, logger = console,
   let pollTimer = null;
   let pendingSignal = null;
   let stopRequested = false;
+  let runToken = 0;
   const seenClosed = new Set();
 
   function emit(type, payload) {
@@ -91,7 +92,7 @@ export function createLeadLagLive({ marketData, tradeExecutor, logger = console,
       state.exchangeClosedPnl = (Array.isArray(closedPnl) ? closedPnl : []).slice(0, 50);
 
       for (const row of state.exchangeClosedPnl) {
-        const key = String(row?.orderId || row?.execId || row?.createdTime || row?.updatedTime || Math.random());
+        const key = [String(row?.orderId || row?.execId || 'NO_ID'), String(row?.updatedTime || row?.createdTime || 0)].join(':');
         if (seenClosed.has(key)) continue;
         seenClosed.add(key);
         const closedAt = Number(row?.updatedTime || row?.createdTime || Date.now());
@@ -105,7 +106,7 @@ export function createLeadLagLive({ marketData, tradeExecutor, logger = console,
           exitPrice: safeNum(row?.avgExitPrice, safeNum(row?.execPrice, null)),
           pnlUSDT: safeNum(row?.closedPnl, 0),
           feesUSDT: Math.abs(safeNum(row?.openFee, 0)) + Math.abs(safeNum(row?.closeFee, 0)),
-          fundingUSDT: safeNum(row?.fillCountValue, 0),
+          fundingUSDT: 0,
           slippageUSDT: 0,
           reason: 'EXCHANGE',
           qty: safeNum(row?.closedSize, safeNum(row?.qty, 0)),
@@ -156,11 +157,35 @@ export function createLeadLagLive({ marketData, tradeExecutor, logger = console,
     }
 
     if (!Number.isFinite(leaderPx) || !Number.isFinite(followerPx) || !Number.isFinite(state.manual.leaderBaseline) || state.manual.leaderBaseline <= 0) return;
-    if (pendingSignal) return;
-    const movePct = ((leaderPx - state.manual.leaderBaseline) / state.manual.leaderBaseline) * 100;
-    if (Math.abs(movePct) < s.leaderMovePct) return;
 
-    const side = movePct >= 0 ? 'LONG' : 'SHORT';
+    const nowMs = Date.now();
+    if (!pendingSignal) {
+      const movePct = ((leaderPx - state.manual.leaderBaseline) / state.manual.leaderBaseline) * 100;
+      if (Math.abs(movePct) < s.leaderMovePct) return;
+      const side = movePct >= 0 ? 'LONG' : 'SHORT';
+      if (side === 'SHORT' && !s.allowShort) {
+        state.lastNoEntryReasons = ['SHORT_DISABLED'];
+        state.manual.lastNoEntryReason = 'SHORT_DISABLED';
+        return;
+      }
+      pendingSignal = {
+        side,
+        executeAtMs: nowMs + Number(s.lagMs || 250),
+        theoreticalFollowerPx: followerPx,
+        leaderBaselineAtSignal: state.manual.leaderBaseline,
+        signalAtMs: nowMs,
+      };
+      return;
+    }
+
+    if (nowMs < Number(pendingSignal.executeAtMs || 0)) return;
+
+    const side = pendingSignal.side;
+    const currentToken = runToken;
+    pendingSignal = null;
+
+    if (currentToken !== runToken || stopRequested || state.status !== 'RUNNING') return;
+
     if (side === 'SHORT' && !s.allowShort) {
       state.lastNoEntryReasons = ['SHORT_DISABLED'];
       state.manual.lastNoEntryReason = 'SHORT_DISABLED';
@@ -179,26 +204,28 @@ export function createLeadLagLive({ marketData, tradeExecutor, logger = console,
     const slPrice = side === 'LONG' ? followerPx * (1 - s.followerSlPct / 100) : followerPx * (1 + s.followerSlPct / 100);
     const tpPrice = side === 'LONG' ? followerPx * (1 + s.followerTpPct / 100) : followerPx * (1 - s.followerTpPct / 100);
 
-    pendingSignal = { side, ts: Date.now() };
     try {
       const openRes = await tradeExecutor.openPosition({
         symbol: s.followerSymbol,
         side: orderSide,
         qty,
         leverage: s.leverage,
+        priceHint: followerPx,
         slPrice,
         tps: [{ price: tpPrice }],
       });
+      if (currentToken !== runToken || stopRequested || state.status !== 'RUNNING') return;
       pushEvent({ ts: Date.now(), event: 'OPEN', symbol: s.followerSymbol, side, entryPrice: followerPx, qty, runKey: state.runKey, exchange: openRes || null });
       state.manual.leaderBaseline = leaderPx;
     } catch (err) {
+      if (currentToken !== runToken || stopRequested || state.status !== 'RUNNING') return;
       const reason = err?.message || 'ENTRY_FAILED';
       state.lastNoEntryReasons = [reason];
       state.manual.lastNoEntryReason = reason;
       pushLog('warn', 'live entry rejected', { reason });
-    } finally {
-      pendingSignal = null;
     }
+
+    if (currentToken === runToken && state.status === 'RUNNING') state.manual.leaderBaseline = leaderPx;
   }
 
   function clearTimers() {
@@ -245,7 +272,15 @@ export function createLeadLagLive({ marketData, tradeExecutor, logger = console,
     state.stats = { trades: 0, wins: 0, losses: 0, pnlUSDT: 0, winRate: 0, feesUSDT: 0, fundingUSDT: 0, slippageUSDT: 0 };
     seenClosed.clear();
     stopRequested = false;
+    runToken += 1;
+    const token = runToken;
     await syncExchangeOnce(state.settings.followerSymbol);
+    if (token !== runToken || stopRequested) return { ok: false, reason: 'START_ABORTED' };
+    if ((state.positions || []).some((p) => Math.abs(Number(p?.size || 0)) > 0.0000001)) {
+      state.status = 'STOPPED';
+      state.endedAt = Date.now();
+      return { ok: false, reason: 'EXCHANGE_POSITION_EXISTS' };
+    }
     startLoops();
     state.status = 'RUNNING';
     state.startedAt = Date.now();
@@ -254,7 +289,9 @@ export function createLeadLagLive({ marketData, tradeExecutor, logger = console,
   }
 
   async function stop({ reason = 'manual', closePosition = true } = {}) {
+    runToken += 1;
     stopRequested = true;
+    pendingSignal = null;
     clearTimers();
     if (state.settings?.followerSymbol && tradeExecutor?.enabled?.()) {
       try {
@@ -275,6 +312,7 @@ export function createLeadLagLive({ marketData, tradeExecutor, logger = console,
   }
 
   async function reset() {
+    runToken += 1;
     await stop({ reason: 'reset', closePosition: true });
     state.startedAt = null;
     state.endedAt = Date.now();
