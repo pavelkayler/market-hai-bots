@@ -16,7 +16,7 @@ export default function JournalPage() {
     fetch(`/api/journal?${qs.toString()}`).then((r) => r.json()).then((d) => setRows(Array.isArray(d?.rows) ? d.rows : [])).catch(() => setRows([]));
   }, [botName, mode]);
 
-  const botOptions = useMemo(() => ['LeadLag', 'RangeMetrics', 'Impulse'], []);
+  const botOptions = useMemo(() => ['LeadLag'], []);
 
   return (
     <Card>
