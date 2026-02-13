@@ -116,6 +116,8 @@ export function createBybitPrivateRest({
     placeOrder: (body) => request("POST", "/v5/order/create", { body }),
     cancelAll: (body) => request("POST", "/v5/order/cancel-all", { body }),
     getOrdersRealtime: (query) => request("GET", "/v5/order/realtime", { query }),
+    getOrderHistory: (query) => request("GET", "/v5/order/history", { query }),
+    getExecutions: (query) => request("GET", "/v5/execution/list", { query }),
     getPositions: (query) => request("GET", "/v5/position/list", { query }),
     setTradingStop: (body) => request("POST", "/v5/position/trading-stop", { body }),
     getClosedPnl: (query) => request("GET", "/v5/position/closed-pnl", { query }),

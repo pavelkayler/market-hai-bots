@@ -286,6 +286,10 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     return Number(current.get(symbol)?.oiValue || 0);
   }
 
+  function isDataFresh(maxAgeMs = 5000) {
+    return connected && (Date.now() - Number(lastTickTs || 0)) <= maxAgeMs;
+  }
+
   async function start() {
     await fetchUniverse();
     connect();
@@ -303,6 +307,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     getTrendOk,
     getOiAgeSec,
     getOiValue,
+    isDataFresh,
     getEligibleSymbols,
     getTurnoverGate,
     setActiveIntervals,

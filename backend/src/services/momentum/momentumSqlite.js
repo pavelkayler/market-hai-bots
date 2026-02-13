@@ -37,7 +37,9 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
       entryOffsetPct REAL DEFAULT 0, turnoverSpikePct REAL DEFAULT 100,
       baselineFloorUSDT REAL DEFAULT 100000, holdSeconds INTEGER DEFAULT 3,
       trendConfirmSeconds INTEGER DEFAULT 3, oiMaxAgeSec REAL DEFAULT 10,
-      lastPriceAtTrigger REAL, markPriceAtTrigger REAL
+      lastPriceAtTrigger REAL, markPriceAtTrigger REAL,
+      entryOrderId TEXT, entryPriceActual REAL, entryQtyActual REAL, entryFillTs INTEGER,
+      tpPrice REAL, slPrice REAL, tpSlStatus TEXT, tpOrderId TEXT, slOrderId TEXT
     )`);
     await run(`CREATE TABLE IF NOT EXISTS momentum_signals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,6 +62,15 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
     await ensureColumn('momentum_trades', 'oiMaxAgeSec', 'REAL DEFAULT 10');
     await ensureColumn('momentum_trades', 'lastPriceAtTrigger', 'REAL');
     await ensureColumn('momentum_trades', 'markPriceAtTrigger', 'REAL');
+    await ensureColumn('momentum_trades', 'entryOrderId', 'TEXT');
+    await ensureColumn('momentum_trades', 'entryPriceActual', 'REAL');
+    await ensureColumn('momentum_trades', 'entryQtyActual', 'REAL');
+    await ensureColumn('momentum_trades', 'entryFillTs', 'INTEGER');
+    await ensureColumn('momentum_trades', 'tpPrice', 'REAL');
+    await ensureColumn('momentum_trades', 'slPrice', 'REAL');
+    await ensureColumn('momentum_trades', 'tpSlStatus', 'TEXT');
+    await ensureColumn('momentum_trades', 'tpOrderId', 'TEXT');
+    await ensureColumn('momentum_trades', 'slOrderId', 'TEXT');
 
     await ensureColumn('momentum_signals', 'entryOffsetPct', 'REAL DEFAULT 0');
     await ensureColumn('momentum_signals', 'prevTurnoverUSDT', 'REAL');
@@ -101,8 +112,8 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
   }
 
   function saveTrade(row) {
-    enqueueWrite(() => run(`INSERT INTO momentum_trades(instanceId, mode, symbol, side, windowMinutes, priceThresholdPct, oiThresholdPct, turnover24hMin, vol24hMin, leverage, marginUsd, entryTs, triggerPrice, entryPrice, actualEntryPrice, exitTs, exitPrice, outcome, pnlUsd, feesUsd, durationSec, entryOffsetPct, turnoverSpikePct, baselineFloorUSDT, holdSeconds, trendConfirmSeconds, oiMaxAgeSec, lastPriceAtTrigger, markPriceAtTrigger)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.mode, row.symbol, row.side, row.windowMinutes, row.priceThresholdPct, row.oiThresholdPct, row.turnover24hMin, row.vol24hMin, row.leverage, row.marginUsd, row.entryTs, row.triggerPrice ?? null, row.entryPrice, row.actualEntryPrice ?? null, row.exitTs, row.exitPrice, row.outcome, row.pnlUsd, row.feesUsd, row.durationSec, row.entryOffsetPct ?? 0, row.turnoverSpikePct ?? 100, row.baselineFloorUSDT ?? 100000, row.holdSeconds ?? 3, row.trendConfirmSeconds ?? 3, row.oiMaxAgeSec ?? 10, row.lastPriceAtTrigger ?? null, row.markPriceAtTrigger ?? null]));
+    enqueueWrite(() => run(`INSERT INTO momentum_trades(instanceId, mode, symbol, side, windowMinutes, priceThresholdPct, oiThresholdPct, turnover24hMin, vol24hMin, leverage, marginUsd, entryTs, triggerPrice, entryPrice, actualEntryPrice, exitTs, exitPrice, outcome, pnlUsd, feesUsd, durationSec, entryOffsetPct, turnoverSpikePct, baselineFloorUSDT, holdSeconds, trendConfirmSeconds, oiMaxAgeSec, lastPriceAtTrigger, markPriceAtTrigger, entryOrderId, entryPriceActual, entryQtyActual, entryFillTs, tpPrice, slPrice, tpSlStatus, tpOrderId, slOrderId)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.mode, row.symbol, row.side, row.windowMinutes, row.priceThresholdPct, row.oiThresholdPct, row.turnover24hMin, row.vol24hMin, row.leverage, row.marginUsd, row.entryTs, row.triggerPrice ?? null, row.entryPrice, row.actualEntryPrice ?? null, row.exitTs, row.exitPrice, row.outcome, row.pnlUsd, row.feesUsd, row.durationSec, row.entryOffsetPct ?? 0, row.turnoverSpikePct ?? 100, row.baselineFloorUSDT ?? 100000, row.holdSeconds ?? 3, row.trendConfirmSeconds ?? 3, row.oiMaxAgeSec ?? 10, row.lastPriceAtTrigger ?? null, row.markPriceAtTrigger ?? null, row.entryOrderId ?? null, row.entryPriceActual ?? null, row.entryQtyActual ?? null, row.entryFillTs ?? null, row.tpPrice ?? null, row.slPrice ?? null, row.tpSlStatus ?? null, row.tpOrderId ?? null, row.slOrderId ?? null]));
   }
 
   async function getTrades(instanceId, limit = 50, offset = 0) {
