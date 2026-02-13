@@ -22,11 +22,27 @@ test('volatility high/low and fallback', () => {
   assert.equal(fb.usedFallback, true);
 });
 
-test('manager rejects invalid windows and allows 1/3/5', () => {
+test('manager rejects invalid windows and allows 1/3/5', async () => {
   const md = { onTick() {}, getEligibleSymbols: () => [], setActiveIntervals() {}, getStatus: () => ({}) };
   const manager = createMomentumManager({ marketData: md, sqlite: { getTrades: async () => ({ trades: [], total: 0 }) } });
-  assert.equal(manager.start({ windowMinutes: 15 }).ok, false);
-  assert.equal(manager.start({ windowMinutes: 3 }).ok, true);
+  assert.equal((await manager.start({ windowMinutes: 15 })).ok, false);
+  assert.equal((await manager.start({ windowMinutes: 3 })).ok, true);
+});
+
+test('manager blocks demo/real momentum start when hedge mode preflight fails', async () => {
+  const md = { onTick() {}, getEligibleSymbols: () => [], setActiveIntervals() {}, getStatus: () => ({}) };
+  const manager = createMomentumManager({
+    marketData: md,
+    sqlite: { getTrades: async () => ({ trades: [], total: 0 }) },
+    tradeExecutor: {
+      enabled: () => true,
+      ensureHedgeMode: async () => ({ ok: false, error: 'HEDGE MODE REQUIRED: enable Hedge (dual-side) in Bybit account settings, then restart.' }),
+      getPreflightStatus: () => ({ hedgeMode: 'ONE_WAY' }),
+    },
+  });
+  const out = await manager.start({ windowMinutes: 1, mode: 'demo' });
+  assert.equal(out.ok, false);
+  assert.equal(out.error, 'HEDGE_MODE_REQUIRED');
 });
 
 test('hold + trend + turnover baseline + manual cancel', () => {

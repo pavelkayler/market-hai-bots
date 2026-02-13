@@ -69,6 +69,18 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     maxLeverage: Number(process.env.TRADE_MAX_LEVERAGE || 10),
     maxActivePositions: Number(process.env.TRADE_MAX_ACTIVE_POSITIONS || 1),
   };
+  const preflight = {
+    hedgeMode: "UNKNOWN",
+    lastHedgeModeCheckTs: null,
+    lastHedgeModeError: null,
+    marginMode: "UNKNOWN",
+    lastMarginModeCheckTs: null,
+    lastMarginModeError: null,
+  };
+  const isolatedCache = new Map();
+  const isolatedInFlight = new Map();
+  const isolatedTtlMs = 60 * 1000;
+  let hedgeInFlight = null;
 
   function enabled() {
     return Boolean(privateRest && privateRest.enabled);
@@ -131,8 +143,9 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   }
 
   async function detectPositionMode(symbol) {
-    const rows = await getPositions({ symbol });
+    const rows = await getPositionsRaw({ symbol });
     const idxSet = new Set(rows.map((r) => Number(r.positionIdx ?? 0)).filter(Number.isFinite));
+    if (idxSet.size === 0) return "UNKNOWN";
     const hedge = idxSet.has(1) || idxSet.has(2);
     return hedge ? "HEDGE" : "ONE_WAY";
   }
@@ -141,9 +154,89 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     if (Number.isFinite(Number(explicitPositionIdx))) return Number(explicitPositionIdx);
     const mode = await detectPositionMode(symbol);
     if (mode === "ONE_WAY") return 0;
+    if (mode === "UNKNOWN") throw new Error("POSITION_MODE_UNKNOWN");
     if (side === "Buy") return 1;
     if (side === "Sell") return 2;
     return 0;
+  }
+
+  async function getPositionModeFromAccount() {
+    if (!privateRest.getAccountInfo) return "UNKNOWN";
+    const res = await privateRest.getAccountInfo({});
+    const list = res?.result?.list || [];
+    const unifiedMarginStatus = Number(list[0]?.unifiedMarginStatus);
+    if (unifiedMarginStatus === 3 || unifiedMarginStatus === 4 || unifiedMarginStatus === 5 || unifiedMarginStatus === 6) return "HEDGE";
+    return "UNKNOWN";
+  }
+
+  async function ensureHedgeMode({ symbol } = {}) {
+    if (state.executionMode === "paper") return { ok: true, mode: "HEDGE", skipped: true };
+    if (hedgeInFlight) return hedgeInFlight;
+    hedgeInFlight = (async () => {
+      try {
+        let mode = await detectPositionMode(symbol);
+        if (mode === "UNKNOWN") mode = await getPositionModeFromAccount();
+        if (mode !== "HEDGE" && privateRest.switchPositionMode) {
+          await privateRest.switchPositionMode({ category: "linear", mode: 3, symbol: symbol || undefined, coin: "USDT" });
+          await new Promise((r) => setTimeout(r, 150));
+          mode = await detectPositionMode(symbol);
+          if (mode === "UNKNOWN") mode = await getPositionModeFromAccount();
+        }
+        preflight.lastHedgeModeCheckTs = Date.now();
+        preflight.hedgeMode = mode;
+        if (mode !== "HEDGE") {
+          preflight.lastHedgeModeError = "HEDGE MODE REQUIRED: enable Hedge (dual-side) in Bybit account settings, then restart.";
+          return { ok: false, mode, error: preflight.lastHedgeModeError };
+        }
+        preflight.lastHedgeModeError = null;
+        return { ok: true, mode };
+      } catch (err) {
+        preflight.lastHedgeModeCheckTs = Date.now();
+        preflight.hedgeMode = "UNKNOWN";
+        preflight.lastHedgeModeError = String(err?.message || err || "unknown");
+        return { ok: false, mode: "UNKNOWN", error: preflight.lastHedgeModeError };
+      } finally {
+        hedgeInFlight = null;
+      }
+    })();
+    return hedgeInFlight;
+  }
+
+  async function ensureIsolated({ symbol } = {}) {
+    if (state.executionMode === "paper") return { ok: true, marginMode: "ISOLATED", skipped: true };
+    const sym = String(symbol || "").toUpperCase();
+    if (!sym) return { ok: false, error: "SYMBOL_REQUIRED" };
+    const now = Date.now();
+    const cached = isolatedCache.get(sym);
+    if (cached && now - cached.ts <= isolatedTtlMs && cached.ok) return { ok: true, marginMode: "ISOLATED", cached: true };
+    if (isolatedInFlight.has(sym)) return isolatedInFlight.get(sym);
+    const run = (async () => {
+      try {
+        const before = await getPositionsRaw({ symbol: sym });
+        const allIsolatedBefore = before.length > 0 && before.every((r) => String(r?.marginMode || '').toLowerCase() === 'isolated');
+        if (!allIsolatedBefore) {
+          if (!privateRest.switchIsolated) throw new Error("switch_isolated_not_supported");
+          await privateRest.switchIsolated({ category: "linear", symbol: sym, tradeMode: 1, buyLeverage: "1", sellLeverage: "1" });
+        }
+        const after = await getPositionsRaw({ symbol: sym });
+        const allIsolatedAfter = after.length > 0 && after.every((r) => String(r?.marginMode || '').toLowerCase() === 'isolated');
+        if (!allIsolatedAfter) throw new Error("ISOLATED_MARGIN_NOT_CONFIRMED");
+        preflight.marginMode = "ISOLATED";
+        preflight.lastMarginModeCheckTs = Date.now();
+        preflight.lastMarginModeError = null;
+        isolatedCache.set(sym, { ok: true, ts: Date.now() });
+        return { ok: true, marginMode: "ISOLATED" };
+      } catch (err) {
+        preflight.marginMode = "UNKNOWN";
+        preflight.lastMarginModeCheckTs = Date.now();
+        preflight.lastMarginModeError = String(err?.message || err || "unknown");
+        return { ok: false, error: preflight.lastMarginModeError };
+      } finally {
+        isolatedInFlight.delete(sym);
+      }
+    })();
+    isolatedInFlight.set(sym, run);
+    return run;
   }
 
   async function runPreTradeChecks({ symbol, side, qty, priceHint, reduceOnly = false } = {}) {
@@ -174,6 +267,10 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     const { qty: q, price: p } = await normalizeQtyPrice(symbol, qty, price, { qtyMode: "floor", priceMode });
     if (!Number.isFinite(q) || q <= 0) throw new Error("bad_qty");
     if (!Number.isFinite(p) || p <= 0) throw new Error("bad_price");
+    const isolated = await ensureIsolated({ symbol });
+    if (!isolated.ok) throw new Error(`ISOLATED_MARGIN_REQUIRED:${isolated.error || 'unknown'}`);
+    const hedge = await ensureHedgeMode({ symbol });
+    if (!hedge.ok) throw new Error(hedge.error || "HEDGE_MODE_REQUIRED");
     const resolvedPositionIdx = await resolvePositionIdx({ symbol, side, explicitPositionIdx: positionIdx });
 
     return privateRest.placeOrder({
@@ -199,15 +296,11 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     const pre = await runPreTradeChecks({ symbol, side, qty: q, priceHint, reduceOnly: false });
     if (!pre.ok) throw new Error(pre.reasons.join(";"));
 
+    const isolated = await ensureIsolated({ symbol });
+    if (!isolated.ok) throw new Error(`ISOLATED_MARGIN_REQUIRED:${isolated.error || 'unknown'}`);
+    const hedge = await ensureHedgeMode({ symbol });
+    if (!hedge.ok) throw new Error(hedge.error || "HEDGE_MODE_REQUIRED");
     const resolvedPositionIdx = await resolvePositionIdx({ symbol, side, explicitPositionIdx: positionIdx });
-
-    if (privateRest.switchIsolated) {
-      try {
-        await privateRest.switchIsolated({ category: "linear", symbol, tradeMode: 1, buyLeverage: "1", sellLeverage: "1" });
-      } catch (e) {
-        logger?.warn?.({ err: e, symbol }, "switch isolated failed, continuing");
-      }
-    }
 
     if (Number.isFinite(num(leverage)) && privateRest.setLeverage) {
       const safeLeverage = Math.max(1, Math.min(state.maxLeverage, Number(leverage)));
@@ -308,9 +401,14 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   }
 
   async function getPositions({ symbol } = {}) {
+    const rows = await getPositionsRaw({ symbol });
+    return rows.filter(isMeaningfulPosition);
+  }
+
+  async function getPositionsRaw({ symbol } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const res = await privateRest.getPositions({ category: "linear", symbol });
-    return (res?.result?.list || []).map(normalizePosition).filter(isMeaningfulPosition);
+    return (res?.result?.list || []).map(normalizePosition);
   }
 
   async function getOpenOrders({ symbol } = {}) {
@@ -383,6 +481,10 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     return { maxNotional: state.maxNotional, maxLeverage: state.maxLeverage, maxActivePositions: state.maxActivePositions };
   }
 
+  function getPreflightStatus() {
+    return { ...preflight };
+  }
+
   return {
     enabled,
     getStatus,
@@ -405,6 +507,9 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     closePositionMarket,
     panicClose,
     detectPositionMode,
+    ensureHedgeMode,
+    ensureIsolated,
+    getPreflightStatus,
     resolvePositionIdx,
     createHedgeOrders,
     placeEntryMarket: async (botName, symbol, side, notionalUSD, leverage) => {
