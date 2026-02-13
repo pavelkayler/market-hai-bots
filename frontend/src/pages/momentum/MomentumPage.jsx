@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
 import { useWs } from '../../shared/api/ws.js';
 
-const DEFAULT_FORM = { mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, priceThresholdPct: 5, oiThresholdPct: 1, turnover24hMin: 5000000, vol24hMin: 0.1, leverage: 10, marginUsd: 100, tpRoiPct: 10, slRoiPct: 10, entryOffsetPct: 0, turnoverSpikePct: 100, globalSymbolLock: false };
+const DEFAULT_FORM = {
+  mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, priceThresholdPct: 5, oiThresholdPct: 1,
+  turnover24hMin: 5000000, vol24hMin: 0.1, leverage: 10, marginUsd: 100, tpRoiPct: 10, slRoiPct: 10,
+  entryOffsetPct: -0.01, turnoverSpikePct: 100, baselineFloorUSDT: 100000, holdSeconds: 3, trendConfirmSeconds: 3, oiMaxAgeSec: 10,
+  globalSymbolLock: false,
+};
 
 export default function MomentumPage() {
   const ws = useWs();
@@ -47,17 +52,16 @@ export default function MomentumPage() {
   async function onStart(e) {
     e.preventDefault();
     const nextErrors = {};
-    let entryOffsetPct = form.entryOffsetPct;
-    if (entryOffsetPct === '' || entryOffsetPct === null || entryOffsetPct === undefined) entryOffsetPct = 0;
-    let turnoverSpikePct = form.turnoverSpikePct;
-    if (turnoverSpikePct === '' || turnoverSpikePct === null || turnoverSpikePct === undefined) turnoverSpikePct = 100;
-    const parsedOffset = Number(entryOffsetPct);
-    const parsedTurnoverSpikePct = Number(turnoverSpikePct);
-    if (!Number.isFinite(parsedOffset)) nextErrors.entryOffsetPct = 'Entry offset must be a valid number.';
-    if (!Number.isFinite(parsedTurnoverSpikePct) || parsedTurnoverSpikePct < 0) nextErrors.turnoverSpikePct = 'Turnover spike must be a valid number >= 0.';
+    const numFields = ['entryOffsetPct', 'turnoverSpikePct', 'baselineFloorUSDT', 'holdSeconds', 'trendConfirmSeconds', 'oiMaxAgeSec'];
+    const nextConfig = { ...form, windowMinutes: Number(form.windowMinutes) };
+    for (const k of numFields) {
+      const n = Number(nextConfig[k]);
+      if (!Number.isFinite(n)) nextErrors[k] = `${k} must be a valid number.`;
+      else nextConfig[k] = n;
+    }
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
-    const out = await ws.request('momentum.start', { config: { ...form, entryOffsetPct: parsedOffset, turnoverSpikePct: parsedTurnoverSpikePct, windowMinutes: Number(form.windowMinutes) } });
+    const out = await ws.request('momentum.start', { config: nextConfig });
     if (out?.ok && out.instanceId) setSelectedId(out.instanceId);
   }
 
@@ -78,33 +82,11 @@ export default function MomentumPage() {
         <Form.Group className="mb-2">
           <Form.Label>Window (minutes)</Form.Label>
           <Form.Select value={form.windowMinutes} onChange={(e) => setForm({ ...form, windowMinutes: Number(e.target.value) })}>
-            <option value={1}>1</option>
-            <option value={5}>5</option>
-            <option value={15}>15</option>
+            <option value={1}>1</option><option value={3}>3</option><option value={5}>5</option>
           </Form.Select>
         </Form.Group>
-        {['priceThresholdPct', 'oiThresholdPct', 'turnover24hMin', 'vol24hMin'].map((k) => <Form.Control key={k} className="mb-2" value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} placeholder={k} />)}
-        <Form.Group className="mb-2">
-          <Form.Label>Entry offset (%) from Mark Price</Form.Label>
-          <Form.Control
-            value={form.entryOffsetPct}
-            onChange={(e) => setForm({ ...form, entryOffsetPct: e.target.value })}
-            placeholder="0"
-            isInvalid={Boolean(errors.entryOffsetPct)}
-          />
-          <Form.Control.Feedback type="invalid">{errors.entryOffsetPct}</Form.Control.Feedback>
-        </Form.Group>
-        <Form.Group className="mb-2">
-          <Form.Label>Turnover spike required (%, LONG only)</Form.Label>
-          <Form.Control
-            type="number"
-            min={0}
-            step="0.01"
-            value={form.turnoverSpikePct}
-            onChange={(e) => setForm({ ...form, turnoverSpikePct: e.target.value })}
-          />
-          <Form.Text>Current candle turnover (USDT) must be &gt;= (1 + X%) of previous candle turnover.</Form.Text>
-        </Form.Group>
+        {['priceThresholdPct', 'oiThresholdPct', 'turnover24hMin', 'vol24hMin', 'tpRoiPct', 'slRoiPct'].map((k) => <Form.Control key={k} className="mb-2" value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} placeholder={k} />)}
+        {['entryOffsetPct', 'turnoverSpikePct', 'baselineFloorUSDT', 'holdSeconds', 'trendConfirmSeconds', 'oiMaxAgeSec'].map((k) => <Form.Control key={k} className="mb-2" value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} placeholder={k} isInvalid={Boolean(errors[k])} />)}
         <Form.Check className="mb-2" checked={form.globalSymbolLock} onChange={(e) => setForm({ ...form, globalSymbolLock: e.target.checked })} label="Global symbol lock" />
         <Button type="submit">Start</Button>
       </Form>
@@ -116,18 +98,18 @@ export default function MomentumPage() {
     </Card.Body></Card></Col>
     <Col md={12}><Card><Card.Body><Card.Title>Selected instance details</Card.Title>
       <Form.Select className="mb-2" value={selectedId} onChange={(e) => setSelectedId(e.target.value)}><option value="">Select...</option>{options}</Form.Select>
-      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending: {detail.pendingOrders?.length || 0} | W: {detail?.config?.windowMinutes}m | Offset: {Number(detail?.config?.entryOffsetPct || 0)}% | Turnover gate: {Number(detail?.config?.turnoverSpikePct || 100)}%</div>}
+      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending triggers: {detail.pendingOrders?.length || 0} | W: {detail?.config?.windowMinutes}m</div>}
 
-      {detail && <Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>State</th><th>Side</th><th>Entry</th><th>Actions</th></tr></thead><tbody>
-        {(detail.pendingOrders || []).map((p) => <tr key={`pending_${p.symbol}`}><td>{p.symbol}</td><td>ORDER_PENDING</td><td>{p.side}</td><td>{p.entryPrice}</td><td><Button size="sm" variant="outline-warning" onClick={() => onCancelEntry(p.symbol)}>Cancel entry</Button></td></tr>)}
-        {(detail.openPositions || []).map((p) => <tr key={`pos_${p.symbol}`}><td>{p.symbol}</td><td>IN_POSITION</td><td>{p.side}</td><td>{p.entryPrice}</td><td>-</td></tr>)}
-      </tbody></Table>}
+      {detail && <><h6>Open Orders / Pending Triggers</h6><Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>State</th><th>Side</th><th>Trigger</th><th>Created</th><th>Age</th><th>Actions</th></tr></thead><tbody>
+        {(detail.pendingOrders || []).map((p) => <tr key={`pending_${p.symbol}`}><td>{p.symbol}</td><td>TRIGGER_PENDING</td><td>{p.side}</td><td>{p.triggerPrice}</td><td>{new Date(p.createdAtMs).toLocaleTimeString()}</td><td>{p.ageSec}s</td><td><Button size="sm" variant="outline-warning" onClick={() => onCancelEntry(p.symbol)}>Cancel entry</Button></td></tr>)}
+        {(detail.openPositions || []).map((p) => <tr key={`pos_${p.symbol}`}><td>{p.symbol}</td><td>IN_POSITION</td><td>{p.side}</td><td>{p.entryPrice}</td><td>-</td><td>-</td><td>-</td></tr>)}
+      </tbody></Table></>}
 
       {detail?.logs?.length > 0 && <Table size="sm"><thead><tr><th>Time</th><th>Message</th></tr></thead><tbody>
-        {detail.logs.map((l, idx) => <tr key={`${l.ts}_${idx}`}><td>{new Date(l.ts).toLocaleTimeString()}</td><td>{l.msg === 'SKIP SYMBOL_BUSY' ? `SKIP SYMBOL_BUSY: ${l.symbol} has ORDER_PENDING/IN_POSITION` : l.msg === 'SKIP_TURNOVER_GATE' ? `SKIP_TURNOVER_GATE: ${l.symbol} W=${l.W} cur=${l.curTurnoverUSDT} prev=${l.prevTurnoverUSDT} reqX=${l.requiredMultiplier}` : l.msg === 'SKIP_NO_PREV_CANDLE' ? `SKIP_NO_PREV_CANDLE: ${l.symbol} W=${l.W}` : `${l.msg}${l.symbol ? `: ${l.symbol}` : ''}`}</td></tr>)}
+        {detail.logs.map((l, idx) => <tr key={`${l.ts}_${idx}`}><td>{new Date(l.ts).toLocaleTimeString()}</td><td>{`${l.msg}${l.symbol ? `: ${l.symbol}` : ''}`}</td></tr>)}
       </tbody></Table>}
 
-      <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Offset</th><th>Outcome</th><th>PNL</th></tr></thead><tbody>{trades.map((t) => <tr key={t.id}><td>{t.symbol}</td><td>{t.side}</td><td>{t.entryPrice}</td><td>{t.exitPrice}</td><td>{Number(t.entryOffsetPct || 0)}%</td><td>{t.outcome}</td><td>{Number(t.pnlUsd || 0).toFixed(3)}</td></tr>)}</tbody></Table>
+      <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th>Trigger</th><th>Entry</th><th>Exit</th><th>Offset</th><th>Outcome</th><th>PNL</th></tr></thead><tbody>{trades.map((t) => <tr key={t.id}><td>{t.symbol}</td><td>{t.side}</td><td>{t.triggerPrice}</td><td>{t.entryPrice}</td><td>{t.exitPrice}</td><td>{Number(t.entryOffsetPct || 0)}%</td><td>{t.outcome}</td><td>{Number(t.pnlUsd || 0).toFixed(3)}</td></tr>)}</tbody></Table>
     </Card.Body></Card></Col>
   </Row>;
 }

@@ -16,26 +16,49 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
   }
 
   function stateFor(symbol) {
-    if (!symbols.has(symbol)) symbols.set(symbol, { state: SYMBOL_STATE.IDLE, cooldownUntil: 0, pending: null, pos: null });
+    if (!symbols.has(symbol)) {
+      symbols.set(symbol, {
+        state: SYMBOL_STATE.IDLE,
+        cooldownUntil: 0,
+        pending: null,
+        pos: null,
+        holdCount: { LONG: 0, SHORT: 0 },
+        lastMarkPrice: null,
+      });
+    }
     return symbols.get(symbol);
   }
 
-  function getEntryPrice({ side, markPrice, tickSize }) {
+  function getTriggerPrice({ side, markPrice, tickSize }) {
     const offsetFactor = 1 + (Number(cfg.entryOffsetPct || 0) / 100);
     const rawPrice = Number(markPrice) * offsetFactor;
     return roundByTickForSide(rawPrice, tickSize, side);
   }
 
-  function tryEnter(symbol, side, snap, nowMs) {
-    const st = stateFor(symbol);
-    if (st.state === SYMBOL_STATE.IN_POSITION || st.state === SYMBOL_STATE.ORDER_PENDING) return false;
-    if (st.cooldownUntil > nowMs) return false;
-    const entryPrice = getEntryPrice({ side, markPrice: snap.markPrice, tickSize: snap.tickSize });
-    if (!(entryPrice > 0)) return false;
-    st.state = SYMBOL_STATE.ORDER_PENDING;
-    st.pending = { side, entryPrice, placedAt: nowMs, entryOffsetPct: cfg.entryOffsetPct };
-    log('entry pending', { symbol, side, entryPrice, markPrice: snap.markPrice, entryOffsetPct: cfg.entryOffsetPct });
+  function createTrigger(symbol, side, snap, nowMs, st) {
+    const triggerPrice = getTriggerPrice({ side, markPrice: snap.markPrice, tickSize: snap.tickSize });
+    if (!(triggerPrice > 0)) return false;
+    st.state = SYMBOL_STATE.TRIGGER_PENDING;
+    st.pending = { side, triggerPrice, createdAtMs: nowMs, holdProgress: cfg.holdSeconds, trendProgress: cfg.trendConfirmSeconds, entryOffsetPct: cfg.entryOffsetPct };
+    st.holdCount.LONG = 0;
+    st.holdCount.SHORT = 0;
+    log('trigger created', { symbol, side, triggerPrice, markPrice: snap.markPrice });
     return true;
+  }
+
+  function crossed(lastMark, mark, triggerPrice) {
+    if (!(Number.isFinite(lastMark) && Number.isFinite(mark) && Number.isFinite(triggerPrice))) return false;
+    if (mark === triggerPrice) return true;
+    return (lastMark < triggerPrice && mark >= triggerPrice) || (lastMark > triggerPrice && mark <= triggerPrice);
+  }
+
+  function openPosition(symbol, st, snap, ts) {
+    const p = st.pending;
+    const tpSl = calcTpSl({ side: p.side, entryPrice: p.triggerPrice, tpRoiPct: cfg.tpRoiPct, slRoiPct: cfg.slRoiPct, leverage: cfg.leverage });
+    st.state = SYMBOL_STATE.IN_POSITION;
+    st.pos = { ...p, entryPrice: p.triggerPrice, actualEntryPrice: p.triggerPrice, triggerPrice: p.triggerPrice, ...tpSl, openedAt: ts };
+    st.pending = null;
+    log('trigger filled', { symbol, side: st.pos.side, triggerPrice: st.pos.triggerPrice });
   }
 
   function saveManualCancelTrade(symbol, pending, ts, outcome) {
@@ -51,22 +74,28 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
       vol24hMin: cfg.vol24hMin,
       leverage: cfg.leverage,
       marginUsd: cfg.marginUsd,
-      entryTs: pending.placedAt,
-      entryPrice: pending.entryPrice,
+      entryTs: pending.createdAtMs,
+      triggerPrice: pending.triggerPrice,
+      entryPrice: pending.triggerPrice,
+      actualEntryPrice: null,
       exitTs: ts,
-      exitPrice: pending.entryPrice,
+      exitPrice: pending.triggerPrice,
       outcome,
       pnlUsd: 0,
       feesUsd: 0,
-      durationSec: Math.max(0, Math.round((ts - pending.placedAt) / 1000)),
+      durationSec: Math.max(0, Math.round((ts - pending.createdAtMs) / 1000)),
       entryOffsetPct: cfg.entryOffsetPct,
       turnoverSpikePct: cfg.turnoverSpikePct,
+      baselineFloorUSDT: cfg.baselineFloorUSDT,
+      holdSeconds: cfg.holdSeconds,
+      trendConfirmSeconds: cfg.trendConfirmSeconds,
+      oiMaxAgeSec: cfg.oiMaxAgeSec,
     });
   }
 
   function cancelEntry(symbol, { ts = Date.now(), outcome = 'MANUAL_CANCEL', logMessage = 'entry cancelled' } = {}) {
     const st = stateFor(symbol);
-    if (st.state !== SYMBOL_STATE.ORDER_PENDING || !st.pending) return { ok: false, reason: 'NOT_PENDING' };
+    if (st.state !== SYMBOL_STATE.TRIGGER_PENDING || !st.pending) return { ok: false, reason: 'NOT_PENDING' };
     const pending = st.pending;
     st.pending = null;
     st.state = SYMBOL_STATE.IDLE;
@@ -75,19 +104,27 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
     return { ok: true };
   }
 
-  function cancelAllPending({ ts = Date.now(), outcome = 'MANUAL_CANCEL', logMessage = 'all pending entries cancelled' } = {}) {
-    let cancelled = 0;
-    for (const [symbol, st] of symbols.entries()) {
-      if (st.state === SYMBOL_STATE.ORDER_PENDING && st.pending) {
-        const pending = st.pending;
-        st.pending = null;
-        st.state = SYMBOL_STATE.IDLE;
-        saveManualCancelTrade(symbol, pending, ts, outcome);
-        cancelled += 1;
-      }
-    }
-    if (cancelled > 0) log(logMessage, { cancelled, outcome });
-    return cancelled;
+  function getLongTurnoverGate(symbol) {
+    const requiredMultiplier = 1 + (Number(cfg.turnoverSpikePct || 0) / 100);
+    const gate = marketData.getTurnoverGate?.(symbol, cfg.windowMinutes) || { ready: false };
+    const prev = Number(gate.prevTurnoverUSDT || 0);
+    const median = Number(gate.medianTurnoverUSDT || 0);
+    const cur = Number(gate.curTurnoverUSDT || 0);
+    const baseline = Math.max(prev, median, Number(cfg.baselineFloorUSDT || 0));
+    const passed = gate.ready && cur >= baseline * requiredMultiplier;
+    return { gate, prev, median, cur, baseline, requiredMultiplier, passed };
+  }
+
+  function saveSignalBase(base) {
+    sqlite.saveSignal?.({
+      ...base,
+      entryOffsetPct: cfg.entryOffsetPct,
+      turnoverSpikePct: cfg.turnoverSpikePct,
+      baselineFloorUSDT: cfg.baselineFloorUSDT,
+      holdSeconds: cfg.holdSeconds,
+      trendConfirmSeconds: cfg.trendConfirmSeconds,
+      oiMaxAgeSec: cfg.oiMaxAgeSec,
+    });
   }
 
   function onTick({ ts, sec }, eligibleSymbols) {
@@ -99,20 +136,12 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
       if (!snap || !(snap.markPrice > 0 && snap.openInterest > 0)) continue;
       const prev = marketData.getAtWindow(symbol, sec - windowSec);
       if (!prev) continue;
-      const priceChange = calcChange(snap.markPrice, prev.markPrice);
-      const oiChange = calcChange(snap.openInterest, prev.openInterest);
-      if (priceChange === null || oiChange === null) continue;
-
       const st = stateFor(symbol);
-      if (st.state === SYMBOL_STATE.ORDER_PENDING && st.pending) {
-        const hit = (st.pending.side === SIDE.LONG && snap.markPrice <= st.pending.entryPrice) || (st.pending.side === SIDE.SHORT && snap.markPrice >= st.pending.entryPrice);
-        if (hit) {
-          const tpSl = calcTpSl({ side: st.pending.side, entryPrice: st.pending.entryPrice, tpRoiPct: cfg.tpRoiPct, slRoiPct: cfg.slRoiPct, leverage: cfg.leverage });
-          st.state = SYMBOL_STATE.IN_POSITION;
-          st.pos = { ...st.pending, ...tpSl, openedAt: ts };
-          st.pending = null;
-          log('filled', { symbol, side: st.pos.side });
-        }
+      const prevMark = st.lastMarkPrice;
+      st.lastMarkPrice = snap.markPrice;
+
+      if (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) {
+        if (crossed(prevMark, snap.markPrice, st.pending.triggerPrice)) openPosition(symbol, st, snap, ts);
       }
 
       if (st.state === SYMBOL_STATE.IN_POSITION && st.pos) {
@@ -130,7 +159,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
           stats.pnl += net;
           stats.fees += fees;
           if (net >= 0) stats.wins += 1; else stats.losses += 1;
-          sqlite.saveTrade({ instanceId: id, mode: cfg.mode, symbol, side: p.side, windowMinutes: cfg.windowMinutes, priceThresholdPct: cfg.priceThresholdPct, oiThresholdPct: cfg.oiThresholdPct, turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin, leverage: cfg.leverage, marginUsd: cfg.marginUsd, entryTs: p.placedAt, entryPrice: p.entryPrice, exitTs: ts, exitPrice, outcome: tpHit ? 'TP' : 'SL', pnlUsd: net, feesUsd: fees, durationSec: Math.round((ts - p.openedAt) / 1000), entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct });
+          sqlite.saveTrade({ instanceId: id, mode: cfg.mode, symbol, side: p.side, windowMinutes: cfg.windowMinutes, priceThresholdPct: cfg.priceThresholdPct, oiThresholdPct: cfg.oiThresholdPct, turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin, leverage: cfg.leverage, marginUsd: cfg.marginUsd, entryTs: p.createdAtMs, triggerPrice: p.triggerPrice, entryPrice: p.entryPrice, actualEntryPrice: p.actualEntryPrice, exitTs: ts, exitPrice, outcome: tpHit ? 'TP' : 'SL', pnlUsd: net, feesUsd: fees, durationSec: Math.round((ts - p.openedAt) / 1000), entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, baselineFloorUSDT: cfg.baselineFloorUSDT, holdSeconds: cfg.holdSeconds, trendConfirmSeconds: cfg.trendConfirmSeconds, oiMaxAgeSec: cfg.oiMaxAgeSec });
           st.state = SYMBOL_STATE.COOLDOWN;
           st.cooldownUntil = ts + cfg.cooldownMinutes * 60_000;
           st.pos = null;
@@ -138,37 +167,59 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
       }
 
       if (st.state === SYMBOL_STATE.COOLDOWN && ts >= st.cooldownUntil) st.state = SYMBOL_STATE.IDLE;
-
-      const longOk = priceChange >= (cfg.priceThresholdPct / 100) && oiChange >= (cfg.oiThresholdPct / 100);
-      const shortOk = priceChange <= -(cfg.priceThresholdPct / 100) && oiChange <= -(cfg.oiThresholdPct / 100);
+      if (st.state === SYMBOL_STATE.TRIGGER_PENDING || st.state === SYMBOL_STATE.IN_POSITION) {
+        saveSignalBase({ instanceId: id, symbol, side: st.pending?.side || st.pos?.side || null, ts, windowMinutes: cfg.windowMinutes, priceChange: null, oiChange: null, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SYMBOL_BUSY' });
+        continue;
+      }
       if (entries >= cfg.maxNewEntriesPerTick) continue;
 
-      const signalCandidates = [];
-      if ((cfg.directionMode === 'LONG' || cfg.directionMode === 'BOTH') && longOk) signalCandidates.push(SIDE.LONG);
-      if ((cfg.directionMode === 'SHORT' || cfg.directionMode === 'BOTH') && shortOk) signalCandidates.push(SIDE.SHORT);
+      const priceChange = calcChange(snap.markPrice, prev.markPrice);
+      const oiChange = calcChange(snap.openInterest, prev.openInterest);
+      if (priceChange === null || oiChange === null) continue;
+      const oiAgeSec = Number(marketData.getOiAgeSec?.(symbol));
+      const oiFresh = oiAgeSec <= cfg.oiMaxAgeSec;
 
-      for (const side of signalCandidates) {
+      const sideCandidates = [];
+      if (cfg.directionMode === 'LONG' || cfg.directionMode === 'BOTH') sideCandidates.push(SIDE.LONG);
+      if (cfg.directionMode === 'SHORT' || cfg.directionMode === 'BOTH') sideCandidates.push(SIDE.SHORT);
+
+      for (const side of sideCandidates) {
         if (entries >= cfg.maxNewEntriesPerTick) break;
-        if (st.state === SYMBOL_STATE.ORDER_PENDING || st.state === SYMBOL_STATE.IN_POSITION) {
-          log('SKIP SYMBOL_BUSY', { symbol, side, symbolState: st.state });
-          sqlite.saveSignal?.({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SYMBOL_BUSY', entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct });
+        const priceOk = side === SIDE.LONG ? priceChange >= (cfg.priceThresholdPct / 100) : priceChange <= -(cfg.priceThresholdPct / 100);
+        const oiOk = side === SIDE.LONG ? oiChange >= (cfg.oiThresholdPct / 100) : oiChange <= -(cfg.oiThresholdPct / 100);
+        const trendOk = marketData.getTrendOk?.(symbol, cfg.trendConfirmSeconds, side) || false;
+        if (!oiFresh) {
+          st.holdCount[side] = 0;
+          log('SKIP_OI_STALE', { symbol, side, oiAgeSec });
+          saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_OI_STALE', oiAgeSec });
           continue;
         }
+        if (!trendOk) {
+          st.holdCount[side] = 0;
+          saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_TREND_FAIL' });
+          continue;
+        }
+
+        let turnoverOk = true;
+        let turnover = null;
         if (side === SIDE.LONG) {
-          const requiredMultiplier = 1 + (Number(cfg.turnoverSpikePct || 0) / 100);
-          const gate = marketData.getTurnoverGate?.(symbol, cfg.windowMinutes) || { ready: false };
-          if (!gate.ready) {
-            log('SKIP_NO_PREV_CANDLE', { symbol, W: cfg.windowMinutes, curCandleStartMs: gate.curCandleStartMs || null });
-            sqlite.saveSignal?.({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_NO_PREV_CANDLE', entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, prevTurnoverUSDT: gate.prevTurnoverUSDT ?? null, curTurnoverUSDT: gate.curTurnoverUSDT ?? null, turnoverGatePassed: 0 });
-            continue;
-          }
-          if (!(Number(gate.curTurnoverUSDT) >= Number(gate.prevTurnoverUSDT) * requiredMultiplier)) {
-            log('SKIP_TURNOVER_GATE', { symbol, W: cfg.windowMinutes, prevTurnoverUSDT: gate.prevTurnoverUSDT, curTurnoverUSDT: gate.curTurnoverUSDT, requiredMultiplier, curCandleStartMs: gate.curCandleStartMs });
-            sqlite.saveSignal?.({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_TURNOVER_GATE', entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, prevTurnoverUSDT: gate.prevTurnoverUSDT ?? null, curTurnoverUSDT: gate.curTurnoverUSDT ?? null, turnoverGatePassed: 0 });
+          turnover = getLongTurnoverGate(symbol);
+          turnoverOk = turnover.passed;
+          if (!turnoverOk) {
+            st.holdCount[side] = 0;
+            saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, oiNow: snap.openInterest, oiPrev: prev.openInterest, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SKIP_TURNOVER_GATE', prevTurnoverUSDT: turnover.prev, curTurnoverUSDT: turnover.cur, medianTurnoverUSDT: turnover.median, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: 0 });
             continue;
           }
         }
-        if (tryEnter(symbol, side, snap, ts)) entries += 1;
+
+        const allOk = priceOk && oiOk && trendOk && oiFresh && turnoverOk;
+        st.holdCount[side] = allOk ? (st.holdCount[side] + 1) : 0;
+        if (allOk && st.holdCount[side] < cfg.holdSeconds) log('hold progress', { symbol, side, hold: st.holdCount[side], holdSeconds: cfg.holdSeconds });
+        if (st.holdCount[side] >= cfg.holdSeconds && createTrigger(symbol, side, snap, ts, st)) {
+          entries += 1;
+          if (snap.markPrice === st.pending?.triggerPrice) openPosition(symbol, st, snap, ts);
+          break;
+        }
       }
     }
   }
@@ -179,7 +230,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
     let cooldownCount = 0;
     for (const [symbol, st] of symbols.entries()) {
       if (st.state === SYMBOL_STATE.IN_POSITION && st.pos) openPositions.push({ symbol, ...st.pos });
-      if (st.state === SYMBOL_STATE.ORDER_PENDING && st.pending) pendingOrders.push({ symbol, ...st.pending });
+      if (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) pendingOrders.push({ symbol, ...st.pending, ageSec: Math.floor((Date.now() - st.pending.createdAtMs) / 1000) });
       if (st.state === SYMBOL_STATE.COOLDOWN) cooldownCount += 1;
     }
     return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50) };
@@ -188,10 +239,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, logger 
   return {
     id,
     onTick,
-    stop: () => {
-      cancelAllPending({ ts: Date.now(), outcome: 'MANUAL_CANCEL', logMessage: 'stop cancelled pending entries' });
-      status = MOMENTUM_STATUS.STOPPED;
-    },
+    stop: () => { status = MOMENTUM_STATUS.STOPPED; },
     cancelEntry,
     getSnapshot,
     getLight: () => ({ id, status, mode: cfg.mode, direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m }),
