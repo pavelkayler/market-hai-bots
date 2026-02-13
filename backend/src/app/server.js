@@ -19,6 +19,9 @@ import { createSubscriptionManager } from "../subscriptionManager.js";
 import { createLeadLagLive } from "../leadLagLive.js";
 import { createLeadLagSearchV2 } from "../leadLagSearchV2.js";
 import { createLeadLagLearning } from "../leadLagLearning.js";
+import { createMomentumMarketData } from "../services/momentum/momentumMarketData.js";
+import { createMomentumSqlite } from "../services/momentum/momentumSqlite.js";
+import { createMomentumManager } from "../services/momentum/momentumManager.js";
 
 dotenv.config();
 
@@ -322,6 +325,12 @@ const privateRest = createBybitPrivateRest({
 });
 const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, privateRest, logger: app.log });
 const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
+const momentumSqlite = createMomentumSqlite({ logger: app.log });
+await momentumSqlite.init();
+const momentumMarketData = createMomentumMarketData({ logger: app.log });
+await momentumMarketData.start();
+const momentumManager = createMomentumManager({ marketData: momentumMarketData, sqlite: momentumSqlite, logger: app.log });
+momentumManager.onState((payload) => broadcastEvent('momentum.state', payload));
 function handleLeadLagEngineEvent({ type, payload }) {
   if (type === 'leadlag.state') {
     emitLeadLagState({ force: false, bumpSeq: true });
@@ -1325,6 +1334,13 @@ app.get("/ws", { websocket: true }, (conn) => {
       const rpcOk = (result) => safeSend(ws, { id: rpcId, result });
       if (rpcMethod === 'leadlag.getState') { rpcOk(safeLeadLagSnapshot({ bumpSeq: false, where: 'rpc.leadlag.getState' })); return; }
       if (rpcMethod === 'trade.getState') { rpcOk(getTradeStatePayload()); return; }
+      if (rpcMethod === 'momentum.start') { rpcOk(momentumManager.start(params?.config || {})); return; }
+      if (rpcMethod === 'momentum.stop') { rpcOk(momentumManager.stop(params?.instanceId)); return; }
+      if (rpcMethod === 'momentum.list') { rpcOk(momentumManager.list()); return; }
+      if (rpcMethod === 'momentum.getState') { rpcOk(momentumManager.getState(params?.instanceId)); return; }
+      if (rpcMethod === 'momentum.getPositions') { rpcOk(momentumManager.getPositions(params?.instanceId)); return; }
+      if (rpcMethod === 'momentum.getTrades') { rpcOk(await momentumManager.getTrades(params?.instanceId, params?.limit, params?.offset)); return; }
+      if (rpcMethod === 'momentum.getMarketStatus') { rpcOk(momentumManager.getMarketStatus()); return; }
       if (rpcMethod === 'trade.setMode') {
         const mode = String(params?.mode || 'paper').toLowerCase();
         if (isLeadLagRunning()) { rpcOk({ ok: false, reason: 'STOP_TRADING_FIRST' }); return; }
