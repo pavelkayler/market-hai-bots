@@ -21,21 +21,31 @@ test('volatility high/low and fallback', () => {
   assert.equal(fb.usedFallback, true);
 });
 
-test('ttl cancel and cooldown', async () => {
+test('pending order has no ttl cancel and can be manually cancelled', async () => {
   const snaps = new Map();
   const prev = { tsSec: 0, markPrice: 100, openInterest: 1000 };
-  const sqlite = { saveTrade() {} };
+  let busySignals = 0;
+  const sqlite = { saveTrade() {}, saveSignal(row) { if (row.action === 'SYMBOL_BUSY') busySignals += 1; } };
   const md = {
     getSnapshot: (s) => snaps.get(s),
     getAtWindow: () => prev,
   };
   const inst = createMomentumInstance({ id: 'a', config: { windowMinutes: 1, cooldownMinutes: 60, priceThresholdPct: 1, oiThresholdPct: 1 }, marketData: md, sqlite });
-  snaps.set('X', { markPrice: 102, openInterest: 1020 });
+
+  snaps.set('X', { markPrice: 102, openInterest: 1020, turnover24h: 1, vol24h: 0.1 });
   inst.onTick({ ts: 0, sec: 60 }, ['X']);
   let st = inst.getSnapshot();
   assert.equal(st.pendingOrders.length, 1);
-  snaps.set('X', { markPrice: 100, openInterest: 1000 });
-  inst.onTick({ ts: 61_000, sec: 121 }, ['X']);
+
+  // still pending after long time (no TTL)
+  snaps.set('X', { markPrice: 105, openInterest: 1025, turnover24h: 1, vol24h: 0.1 });
+  inst.onTick({ ts: 180_000, sec: 240 }, ['X']);
+  st = inst.getSnapshot();
+  assert.equal(st.pendingOrders.length, 1);
+  assert.equal(busySignals, 1);
+
+  const cancel = inst.cancelEntry('X');
+  assert.equal(cancel.ok, true);
   st = inst.getSnapshot();
   assert.equal(st.pendingOrders.length, 0);
 });

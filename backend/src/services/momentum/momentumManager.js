@@ -32,6 +32,12 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
     return { ok: true };
   }
 
+  function cancelEntry(instanceId, symbol) {
+    const inst = instances.get(instanceId);
+    if (!inst) return { ok: false, reason: 'NOT_FOUND' };
+    return inst.cancelEntry(symbol, { ts: Date.now(), outcome: 'MANUAL_CANCEL', logMessage: 'manual cancel entry' });
+  }
+
   return {
     start,
     stop,
@@ -48,6 +54,7 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
     },
     getTrades: async (instanceId, limit, offset) => ({ ok: true, ...(await sqlite.getTrades(instanceId, limit, offset)) }),
     getMarketStatus: () => ({ ok: true, ...marketData.getStatus() }),
+    cancelEntry,
     onState: (fn) => emitter.on('state', fn),
   };
 }
