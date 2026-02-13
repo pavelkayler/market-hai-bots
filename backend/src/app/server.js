@@ -872,7 +872,10 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       .map((v) => Number(v))
       .filter((v) => Number.isFinite(v) && v > 0 && v <= 5000);
     const cleanLags = lags.length ? lags : [250, 500, 750, 1000];
-    const leaderMoveThr = Math.max(0.0005, Number(paperTest.getState({ includeHistory: false })?.settings?.leaderMovePct || 0.1) / 100);
+    const impulseZ = Number(params.impulseZ ?? 2);
+    const absFloor = 0.00015;
+    const screeningMinConfirmations = Math.max(1, Number(params.screeningMinConfirmations || 1));
+    const windowMs = Math.max(10_000, Number(params.confirmWindowSec || 120) * 1000);
     const candidateCap = 5000;
     const features = new Map();
 
@@ -884,20 +887,41 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       const lf = features.get(leader);
       const ff = features.get(follower);
       if (!lf || !ff) return null;
+      const followerMoveThr = Math.max(Number(ff.threshold || 0), absFloor);
+      const now = Date.now();
+      const leaderImpulseTimes = lf.impulseTimes.filter((ts) => (now - Number(ts || 0)) <= windowMs);
+      const leaderImpulsesCount = leaderImpulseTimes.length;
+      if (!leaderImpulsesCount) return null;
+      const tsLeader = Number(marketData.getTicker(leader, 'BT')?.ts || 0);
+      const tsFollower = Number(marketData.getTicker(follower, 'BT')?.ts || 0);
+      const lastSeenAgeMs = (tsLeader > 0 && tsFollower > 0)
+        ? Math.max(0, now - Math.max(tsLeader, tsFollower))
+        : Number.MAX_SAFE_INTEGER;
       let best = null;
       for (const lag of cleanLags) {
         let conf = 0;
-        for (const ts of ff.impulseTimes) {
-          const x = lf.returnsMap.get(ts - lag);
-          const y = ff.returnsMap.get(ts);
+        for (const tsL of leaderImpulseTimes) {
+          const x = lf.returnsMap.get(tsL);
+          const y = ff.returnsMap.get(tsL + lag);
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-          if (Math.abs(x) < leaderMoveThr || Math.abs(y) < leaderMoveThr) continue;
           if (Math.sign(x) !== Math.sign(y)) continue;
+          if (Math.abs(y) < followerMoveThr) continue;
           conf += 1;
         }
-        if (!best || conf > best.confirmations) best = { leader, follower, lagMs: lag, confirmations: conf, impulses: ff.impulseTimes.length, score: conf };
+        if (!best || conf > best.confirmations) {
+          best = {
+            leader,
+            follower,
+            lagMs: lag,
+            confirmations: conf,
+            impulses: leaderImpulsesCount,
+            score: conf,
+            leaderImpulsesConsidered: leaderImpulsesCount,
+            lastSeenAgeMs,
+          };
+        }
       }
-      return best && best.confirmations > 1 ? best : null;
+      return best && best.confirmations >= screeningMinConfirmations ? best : null;
     };
 
     const buildFeaturesTick = () => {
@@ -906,7 +930,7 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       const budget = Math.max(1, Number(params.timeBudgetMs || 8));
       while ((performance.now() - tickStart) < budget && featureIdx < featureTotal) {
         const sym = readySymbols[featureIdx++];
-        features.set(sym, buildSymbolFeature(sym, marketBars.getBars(sym, 500, 'BT') || []));
+        features.set(sym, buildSymbolFeature(sym, marketBars.getBars(sym, 500, 'BT') || [], impulseZ));
       }
       runner.cpuMs = Math.round((runner.cpuMs * 0.7) + ((performance.now() - tickStart) * 0.3));
       updateState({ progress: { done: featureIdx, total: Math.max(1, featureTotal), message: 'screening: building features' } });
@@ -944,7 +968,9 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
         }
         if (pendingCandidates.length) {
           candidates.push(...pendingCandidates);
-          candidates.sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0));
+          candidates.sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0)
+            || Number(b.leaderImpulsesConsidered || 0) - Number(a.leaderImpulsesConsidered || 0)
+            || Number(a.lastSeenAgeMs || Number.MAX_SAFE_INTEGER) - Number(b.lastSeenAgeMs || Number.MAX_SAFE_INTEGER));
           if (candidates.length > candidateCap) candidates.length = candidateCap;
         }
         runner.cpuMs = Math.round((runner.cpuMs * 0.7) + ((performance.now() - tickStart) * 0.3));
@@ -968,9 +994,10 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
   const warmupTick = () => {
     if (!runner.active || runner.cancel) return;
     const ready = [];
+    const minReady = 20;
     for (const sym of cappedSymbols) {
       const t = marketData.getTicker(sym, 'BT');
-      if (!t || (Date.now() - Number(t.ts || 0)) > 15_000) continue;
+      if (!t || (Date.now() - Number(t.ts || 0)) > 30_000) continue;
       if ((marketBars.getBars(sym, 200, 'BT') || []).length >= minBars) ready.push(sym);
     }
     updateState({ symbolsReady: ready.length, progress: { done: ready.length, total: Math.max(1, cappedSymbols.length), message: 'warming up' } });
@@ -978,12 +1005,16 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       runner.warmupTimer = setTimeout(warmupTick, 300);
       return;
     }
-    if (ready.length < 30) {
+    if (ready.length < minReady) {
       finish({ status: 'ERROR', message: 'Not enough symbols ready for search', error: { code: 'WARMUP_NOT_READY', message: 'Not enough symbols ready for search' } });
       return;
     }
     subscriptions.replaceIntent('leadlag-search', { symbols: ready, streamType: 'ticker' });
-    updateState({ subscribedSymbols: ready.length });
+    if (ready.length < cappedSymbols.length) {
+      updateState({ subscribedSymbols: ready.length, message: `warmup partial: proceeding with ${ready.length} ready symbols` });
+    } else {
+      updateState({ subscribedSymbols: ready.length });
+    }
     runScreening(ready);
   };
 
