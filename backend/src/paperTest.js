@@ -362,31 +362,39 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
   }
 
   function getState({ includeHistory = true } = {}) {
-    const base = { ...state, position: state.positions[0] || null };
-    base.autoTuneEnabled = autoTune.getAutoTuneConfig().enabled;
-    base.autoTuneConfig = autoTune.getAutoTuneConfig();
-    base.learningLog = autoTune.getLearningLog();
-    base.perConfigLearningState = state.currentConfigKey ? autoTune.getPerConfigState(state.currentConfigKey) : null;
-    base.currentClosedTrades = trades
-      .filter((t) => String(t?.event || '').toUpperCase() === 'CLOSE' && t?.runKey === state.currentRunKey && String(t?.symbol || '').toUpperCase() === String(state?.settings?.followerSymbol || '').toUpperCase())
-      .slice(0, 50)
-      .map((t) => ({
-        closedAt: Number(t?.ts || 0) || null,
-        side: t?.side || null,
-        entryPrice: Number(t?.entryPrice || 0) || null,
-        exitPrice: Number(t?.exitPrice || 0) || null,
-        qty: Number(t?.qty || 0) || null,
-        pnl: Number(t?.pnlUSDT || 0) || 0,
-        fees: Number(t?.feesUSDT || 0) || 0,
-        funding: Number(t?.fundingUSDT || 0) || 0,
-        slippage: Number(t?.slippageUSDT || 0) || 0,
-        reason: t?.reason || null,
-        durationSec: Number.isFinite(Number(t?.ts || 0)) && Number.isFinite(Number(t?.openedAt || 0)) && Number(t.openedAt) > 0 ? Math.max(0, (Number(t.ts) - Number(t.openedAt)) / 1000) : null,
-      }));
+    const base = {
+      status: state.status,
+      startedAt: state.startedAt,
+      endedAt: state.endedAt,
+      settings: state.settings,
+      manual: state.manual,
+      pendingSignal: state.pendingSignal,
+      positions: state.positions.slice(0, 5),
+      currentTradeEvents: state.currentTradeEvents.slice(0, 20),
+      currentClosedTrades: trades
+        .filter((t) => String(t?.event || '').toUpperCase() === 'CLOSE' && t?.runKey === state.currentRunKey && String(t?.symbol || '').toUpperCase() === String(state?.settings?.followerSymbol || '').toUpperCase())
+        .slice(0, 50)
+        .map((t) => ({
+          closedAt: Number(t?.ts || 0) || null,
+          side: t?.side || null,
+          entryPrice: Number(t?.entryPrice || 0) || null,
+          exitPrice: Number(t?.exitPrice || 0) || null,
+          qty: Number(t?.qty || 0) || null,
+          pnl: Number(t?.pnlUSDT || 0) || 0,
+          fees: Number(t?.feesUSDT || 0) || 0,
+          funding: Number(t?.fundingUSDT || 0) || 0,
+          slippage: Number(t?.slippageUSDT || 0) || 0,
+          reason: t?.reason || null,
+          durationSec: Number.isFinite(Number(t?.ts || 0)) && Number.isFinite(Number(t?.openedAt || 0)) && Number(t.openedAt) > 0 ? Math.max(0, (Number(t.ts) - Number(t.openedAt)) / 1000) : null,
+        })),
+      stats: { ...(state.stats || {}) },
+      lastNoEntryReasons: Array.isArray(state.lastNoEntryReasons) ? state.lastNoEntryReasons.slice(0, 5) : [],
+      currentRunKey: state.currentRunKey,
+      position: state.positions[0] || null,
+    };
     if (includeHistory) {
       base.trades = trades.slice(0, 100);
       base.logs = logs.slice(0, 200);
-      base.runSummary = Object.values(state.runHistory).map((r) => ({ ...r, winRate: r.trades ? (r.wins / r.trades) * 100 : 0 }));
     }
     return base;
   }
