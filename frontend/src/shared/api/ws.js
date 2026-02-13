@@ -142,8 +142,6 @@ export function createWsManager(
       lastPongAt = Date.now();
       notifyStatus("connected");
       sendJson({ type: "ping", ts: Date.now() });
-      sendJson({ type: "getStatus" });
-      sendJson({ type: "getSnapshot" });
       flushOutbox();
       startHeartbeat();
     };
@@ -215,6 +213,12 @@ export function createWsManager(
       return () => listeners.delete(handler);
     },
     request,
+    subscribeTopics(topics = []) {
+      return sendJson({ type: "ui.subscribe", payload: { topics } });
+    },
+    unsubscribeTopics(topics = []) {
+      return sendJson({ type: "ui.unsubscribe", payload: { topics } });
+    },
     subscribeStatus(handler) {
       statusListeners.add(handler);
       handler(status);
@@ -303,7 +307,7 @@ export function useWsClient({ onMessage, onOpen } = {}) {
 
   useEffect(() => {
     if (!onMessage) return undefined;
-    return manager.subscribe((event) => onMessage(event));
+    return manager.subscribe((event, parsed) => onMessage(event, parsed));
   }, [manager, onMessage]);
 
   useEffect(() => {
@@ -317,5 +321,7 @@ export function useWsClient({ onMessage, onOpen } = {}) {
     reconnect: manager.reconnect,
     subscribe: manager.subscribe,
     request: manager.request,
+    subscribeTopics: manager.subscribeTopics,
+    unsubscribeTopics: manager.unsubscribeTopics,
   };
 }

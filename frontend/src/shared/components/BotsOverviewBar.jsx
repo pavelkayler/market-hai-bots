@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge } from 'react-bootstrap';
 import { useWsClient } from '../api/ws.js';
 
@@ -21,16 +21,19 @@ function fmtUptime(startedAt) {
 export default function BotsOverviewBar() {
   const [overview, setOverview] = useState({ paperBalance: 10000, bots: [] });
 
-  const onMessage = useMemo(() => (event) => {
-    let msg;
-    try { msg = JSON.parse(event.data); } catch { return; }
+  const onMessage = useMemo(() => (_event, msg) => {
+    if (!msg) return;
     const type = msg?.type === 'event' ? msg.topic : msg.type;
     const payload = msg?.payload;
-    if (type === 'snapshot' && payload?.botsOverview) setOverview(payload.botsOverview);
     if (type === 'bots.overview' && payload) setOverview(payload);
   }, []);
 
-  const { status } = useWsClient({ onMessage });
+  const { status, subscribeTopics, unsubscribeTopics } = useWsClient({ onMessage });
+
+  useEffect(() => {
+    subscribeTopics?.(['bots.overview']);
+    return () => unsubscribeTopics?.(['bots.overview']);
+  }, [subscribeTopics, unsubscribeTopics]);
 
   return (
     <div style={{ background: '#1f2937', color: '#e5e7eb', padding: '6px 12px', fontSize: 13 }} className="d-flex flex-wrap gap-3 align-items-center">

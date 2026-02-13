@@ -16,9 +16,8 @@ export default function StatusPage() {
     cmcApi: { status: 'waiting', lastCheckAt: null, ageMs: null, latencyMs: null },
   })
 
-  const onWsMessage = useMemo(() => (ev) => {
-    let msg
-    try { msg = JSON.parse(ev.data) } catch { return }
+  const onWsMessage = useMemo(() => (_ev, msg) => {
+    if (!msg) return
     const type = msg.type === 'event' ? msg.topic : msg.type
     if (type === 'status.health') {
       setHealthWs((prev) => ({ ...prev, ...(msg.payload || {}), now: Date.now() }))
