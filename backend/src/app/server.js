@@ -11,15 +11,11 @@ import { createLeadLag } from "../leadLag.js";
 import { evaluateTradeReady } from "../leadLagReadiness.js";
 import { createPaperTest } from "../paperTest.js";
 import { createCmcBybitUniverse } from "../cmcBybitUniverse.js";
-import { createBybitKlinesCache } from "../bybitKlinesCache.js";
-import { createRangeMetricsTest } from "../rangeMetricsTest.js";
 import { createBybitPrivateRest } from "../bybitPrivateRest.js";
 import { createBybitInstrumentsCache } from "../bybitInstrumentsCache.js";
 import { createBybitTradeExecutor } from "../bybitTradeExecutor.js";
-import { createBybitRest } from "../bybitRest.js";
 import { createMarketDataStore } from "../marketDataStore.js";
 import { createPresetsStore } from "../presetsStore.js";
-import { createImpulseBot } from "../impulseBot.js";
 import { createJournalStore } from "../journalStore.js";
 import { createSubscriptionManager } from "../subscriptionManager.js";
 
@@ -124,28 +120,6 @@ function applyPresetGuardrails(preset) {
     maxActivePositions: Number(params.maxActivePositions || 1),
   });
 }
-// rolling liquidation feed (30m)
-const liqEvents = new Map();
-function pushLiq(ev) {
-  const key = String(ev.symbol || "").toUpperCase();
-  if (!key) return;
-  const arr = liqEvents.get(key) || [];
-  const usd = (Number(ev.price) || 0) * (Number(ev.size) || 0);
-  arr.push({ ts: Number(ev.ts) || Date.now(), usd, side: ev.side });
-  const cutoff = Date.now() - 30 * 60 * 1000;
-  while (arr.length && arr[0].ts < cutoff) arr.shift();
-  liqEvents.set(key, arr);
-}
-const liqFeed = {
-  getRollingUsd(symbol, windowMs = 15 * 60 * 1000) {
-    const arr = liqEvents.get(String(symbol || "").toUpperCase()) || [];
-    const cutoff = Date.now() - windowMs;
-    let usd = 0; let count = 0;
-    for (const x of arr) { if (x.ts >= cutoff) { usd += x.usd; count += 1; } }
-    return { usd, count };
-  },
-};
-
 const marketData = createMarketDataStore();
 const marketBars = createMicroBarAggregator({
   bucketMs: 250,
@@ -194,7 +168,7 @@ const bybit = createBybitPublicWs({
     broadcast({ type: "market.ticker", payload: normalized });
     broadcastEvent("market.ticker", normalized);
   },
-  onLiquidation: (ev) => pushLiq(ev),
+  onLiquidation: () => {},
 });
 
 const subscriptions = createSubscriptionManager({ bybit, logger: app.log });
@@ -208,7 +182,6 @@ const privateRest = createBybitPrivateRest({
 });
 const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, privateRest, logger: app.log });
 const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
-const bybitRest = createBybitRest({ logger: app.log });
 const presetsStore = createPresetsStore({ logger: app.log });
 const journalStore = createJournalStore({ logger: app.log });
 
@@ -287,41 +260,6 @@ function getUniverseAllSymbols() {
   return normalizeSymbols(universe.getUniverse({ limit: 2000 }).symbols || [], 2000);
 }
 
-function pickMostVolatileSymbols(limit = 100) {
-  const rows = marketData.getTickersArray().filter((t) => t?.source === "BT" && t?.symbol && !String(t.symbol).includes("-"));
-  const scored = rows.map((t) => {
-    const bars = marketBars.getBars(t.symbol, 60, "BT");
-    const first = Number(bars?.[0]?.c || bars?.[0]?.close);
-    const last = Number(bars?.[bars.length - 1]?.c || bars?.[bars.length - 1]?.close);
-    const score = Number.isFinite(first) && Number.isFinite(last) && first !== 0 ? Math.abs((last - first) / Math.abs(first)) : 0;
-    return { symbol: t.symbol, score };
-  }).sort((a,b)=>b.score-a.score);
-  return scored.slice(0, limit).map((x) => x.symbol);
-}
-
-const klines = createBybitKlinesCache({ logger: app.log });
-const rangeTest = createRangeMetricsTest({ universe, klines, bybitRest, liqFeed, trade: tradeExecutor, logger: app.log, onEvent: ({ type, payload }) => {
-  broadcast({ type, payload });
-  if (type === "range.trade") {
-    if (String(payload?.event || "").toUpperCase() === "OPEN") rememberOpenTrade("RangeMetrics", payload);
-    else emitJournalFromClose("RangeMetrics", payload);
-  }
-} });
-const impulseBot = createImpulseBot({
-  getSymbols: () => bybit.getSymbols(),
-  getCapsUniverse: () => universe.getUniverse({ limit: 500 }).symbols,
-  getCandles: ({ symbol, interval, limit }) => klines.getCandles({ symbol, interval, limit }),
-  getOi: ({ symbol, interval, limit }) => bybitRest.getOpenInterest({ symbol, interval: String(interval || '5'), limit }),
-  logger: app.log,
-  onEvent: ({ type, payload }) => {
-    broadcast({ type, payload });
-    if (type === "impulse.trade") {
-      if (String(payload?.event || "").toUpperCase() === "OPEN") rememberOpenTrade("Impulse", payload);
-      else emitJournalFromClose("Impulse", payload);
-    }
-  },
-});
-
 async function getTradeSnapshot(symbol) {
   if (!tradeExecutor?.enabled?.()) return { positions: [], orders: [] };
   try {
@@ -349,13 +287,9 @@ function getSnapshotPayload() {
     leadlagState: paperTest.getState(),
     universeStatus: universe.getStatus(),
     universeList: universe.getUniverse({ limit: 500 }),
-    rangeState: rangeTest.getState(),
-    impulseState: impulseBot.getState(),
     botsOverview: getBotsOverview(),
     watchlists: {
       leadlag: bybit.getSymbols().slice(0, 100),
-      range: pickMostVolatileSymbols(500),
-      impulse: universe.getUniverse({ limit: 500 }).symbols,
     },
     tradeStatus: tradeStatus(tradeExecutor),
     warnings: tradeWarnings(tradeExecutor),
@@ -377,8 +311,6 @@ function toBotPnl(state) {
 
 function getBotsOverview() {
   const leadlagState = paperTest.getState?.({ includeHistory: false }) || paperTest.getState?.() || {};
-  const rangeState = rangeTest.getState?.() || {};
-  const impulseState = impulseBot.getState?.() || {};
   const paperBalance = Number(process.env.PAPER_WALLET_BALANCE || 10000);
   const agg = journalStore.getAggregates();
   return {
@@ -386,8 +318,6 @@ function getBotsOverview() {
     paperBalance,
     bots: [
       { name: "LeadLag", status: leadlagState.status || "STOPPED", pnl: Number(agg?.LeadLag?.pnlUsdt ?? toBotPnl(leadlagState)), startedAt: leadlagState.startedAt || null },
-      { name: "RangeMetrics", status: rangeState.status || "STOPPED", pnl: Number(agg?.RangeMetrics?.pnlUsdt ?? toBotPnl(rangeState)), startedAt: rangeState.startedAt || null },
-      { name: "Impulse", status: impulseState.status || "STOPPED", pnl: Number(agg?.Impulse?.pnlUsdt ?? toBotPnl(impulseState)), startedAt: impulseState.startedAt || null },
     ],
   };
 }
@@ -740,7 +670,7 @@ setInterval(async () => {
   try {
     const ts = tradeStatus(tradeExecutor);
     if (!["demo", "real"].includes(ts.executionMode) || !ts.enabled) return;
-    const symbol = (rangeTest.getState?.().position?.symbol || "BTCUSDT").toUpperCase();
+    const symbol = "BTCUSDT";
     const snap = await getTradeSnapshot(symbol);
     broadcastEvent("trade.positions", { ts: Date.now(), symbol, positions: snap.positions || [] });
     broadcastEvent("trade.orders", { ts: Date.now(), symbol, orders: snap.orders || [] });
@@ -776,8 +706,6 @@ app.get("/api/leadlag/top", async () => ({ bucketMs: 250, top: lastLeadLagTop })
 
 app.get("/api/paper/state", async () => paperTest.getState());
 app.get("/api/leadlag/state", async () => paperTest.getState());
-app.get("/api/range/state", async () => rangeTest.getState());
-app.get("/api/impulse/state", async () => impulseBot.getState());
 app.get("/api/universe/status", async () => universe.getStatus());
 app.get("/api/universe/list", async () => {
   const u = universe.getUniverse({ limit: 2000 }) || {};
@@ -1117,46 +1045,6 @@ app.get("/ws", { websocket: true }, (conn) => {
     }
 
 
-    if (msg.type === "startRangeTest") {
-      const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
-      tradeExecutor.setExecutionMode(mode);
-      if (mode !== "paper" && !tradeExecutor.enabled()) {
-        const error = "Demo trade disabled (missing API keys)";
-        safeSend(ws, { type: "range.start.ack", payload: { ok: false, error } });
-        broadcast({ type: "range.log", payload: { t: Date.now(), level: "error", msg: error } });
-        return;
-      }
-      if (mode === "real" && !TRADE_REAL_ENABLED) {
-        const error = "REAL_DISABLED: set TRADE_REAL_ENABLED=1";
-        safeSend(ws, { type: "range.start.ack", payload: { ok: false, error } });
-        return;
-      }
-      applyPresetGuardrails(presetsStore.getActivePreset?.());
-      safeSend(ws, { type: "range.start.ack", payload: { ok: true, mode } });
-      const symbols = universe.getUniverse({ limit: 120 }).symbols || [];
-      subscriptions.requestFeed("range", { bybitSymbols: symbols, streams: ["ticker"], needsOi: true });
-      rangeTest.start({ mode, preset: msg.preset && typeof msg.preset === "object" ? msg.preset : null });
-      return;
-    }
-    if (msg.type === "stopRangeTest") { safeSend(ws, { type: "range.stop.ack", payload: { ok: true } }); rangeTest.stop({ reason: "manual" }); subscriptions.releaseFeed("range"); return; }
-    if (msg.type === "getRangeState") return safeSend(ws, { type: "range.state", payload: rangeTest.getState() });
-
-    if (msg.type === "startImpulseBot") {
-      const mode = msg.mode === "real" ? "real" : msg.mode === "demo" ? "demo" : "paper";
-      safeSend(ws, { type: "impulse.start.ack", payload: { ok: true, mode } });
-      const symbols = universe.getUniverse({ limit: 80 }).symbols || [];
-      subscriptions.requestFeed("impulse", { bybitSymbols: symbols, streams: ["ticker"], needsOi: true });
-      impulseBot.start({ mode, settings: msg.settings && typeof msg.settings === "object" ? msg.settings : {} });
-      return;
-    }
-    if (msg.type === "stopImpulseBot") { safeSend(ws, { type: "impulse.stop.ack", payload: { ok: true } }); impulseBot.stop({ reason: "manual" }); subscriptions.releaseFeed("impulse"); return; }
-    if (msg.type === "impulse.setConfig") {
-      const payload = impulseBot.setConfig(msg.settings && typeof msg.settings === 'object' ? msg.settings : {});
-      safeSend(ws, { type: "impulse.config.ack", payload: { ok: true } });
-      safeSend(ws, { type: "impulse.state", payload });
-      return;
-    }
-    if (msg.type === "getImpulseState") return safeSend(ws, { type: "impulse.state", payload: impulseBot.getState() });
   });
 
   ws.on("close", () => { stopStatusWatcher(ws); clients.delete(ws); });
