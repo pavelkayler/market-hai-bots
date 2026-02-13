@@ -102,6 +102,18 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     state.activeSymbol = symbol ? String(symbol).toUpperCase() : null;
   }
 
+  function getActiveSymbol() {
+    return state.activeSymbol;
+  }
+
+  function getGuardrails() {
+    return {
+      maxNotionalUsd: Number(state.maxNotional),
+      maxLeverage: Number(state.maxLeverage),
+      maxActivePositions: Number(state.maxActivePositions),
+    };
+  }
+
   async function normalizeQtyPrice(symbol, qty, price, { qtyMode = "floor", priceMode = "nearest" } = {}) {
     const f = instruments ? await instruments.get(symbol) : null;
     const qtyStep = f?.qtyStep;
@@ -313,6 +325,39 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     return { ok: true, result: res?.result || null };
   }
 
+  async function closePositionMarket({ symbol } = {}) {
+    if (!enabled()) throw new Error("trade_disabled");
+    const positions = await getPositions({ symbol });
+    const rows = positions.filter(isMeaningfulPosition);
+    const results = [];
+    for (const row of rows) {
+      const size = Number(row?.size || 0);
+      if (!Number.isFinite(size) || size <= 0) continue;
+      const side = String(row?.side || "").toLowerCase() === "buy" ? "Sell" : "Buy";
+      const positionIdx = await resolvePositionIdx({ symbol: row.symbol, side, explicitPositionIdx: row?.positionIdx });
+      const { qty } = await normalizeQtyPrice(row.symbol, size, null, { qtyMode: "floor" });
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+      const res = await privateRest.placeOrder({
+        category: "linear",
+        symbol: row.symbol,
+        side,
+        orderType: "Market",
+        qty: String(qty),
+        timeInForce: "IOC",
+        reduceOnly: true,
+        closeOnTrigger: true,
+        positionIdx,
+      });
+      results.push(res?.result || null);
+    }
+    return { ok: true, closed: results.length, results };
+  }
+
+  async function panicClose({ symbol } = {}) {
+    await cancelAll({ symbol });
+    return closePositionMarket({ symbol });
+  }
+
   async function createHedgeOrders({ symbol, qty, longPrice, shortPrice } = {}) {
     const ack = { ok: true, queued: true };
     Promise.resolve().then(async () => {
@@ -340,7 +385,9 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     setKillSwitch,
     getKillSwitch,
     setActiveSymbol,
+    getActiveSymbol,
     setGuardrails,
+    getGuardrails,
     normalizeQtyPrice,
     openPosition,
     sync,
@@ -349,6 +396,8 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     getOpenOrders,
     getClosedPnl,
     cancelAll,
+    closePositionMarket,
+    panicClose,
     detectPositionMode,
     resolvePositionIdx,
     createHedgeOrders,
