@@ -136,6 +136,7 @@ function broadcastLeadLagManaged({ topic, payload, bucket = 'leadlagState', inte
 }
 
 const DEFAULT_SYMBOL_LIMIT = Number(process.env.DEFAULT_SYMBOL_LIMIT || 500);
+const SEARCH_BUCKET_MS = 250;
 
 const DEFAULT_SYMBOLS = [
   "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","TRXUSDT","AVAXUSDT","LINKUSDT",
@@ -261,12 +262,15 @@ function createIdleSearchState() {
       maxPairsPerTick: 2000,
       lagsMs: [250, 500, 750, 1000],
       confirmWindowSec: 120,
-      minSamples: 200,
-      minImpulses: 5,
-      minCorr: 0.12,
+      responseWindowMs: 1000,
+      followerThrMult: 0.5,
+      followerAbsFloor: 0.00005,
+      minSamples: 20,
+      minImpulses: 10,
+      minCorr: 0.08,
       minConfirmations: 3,
-      impulseZ: 2,
-      maxCorrSamples: 600,
+      impulseZ: 1.5,
+      maxCorrSamples: 300,
     },
     load: { subscribedSymbols: 0, reducedSymbols: 0, cpuMsPerSec: 0, backlog: 0 },
     results: { updatedAtMs: Date.now(), top: [] },
@@ -628,10 +632,20 @@ function pearsonFromSums({ n, sumX, sumY, sumX2, sumY2, sumXY }) {
   return Math.max(-1, Math.min(1, corr));
 }
 
+function sumWindowReturns(returnsMap, startTs, bucketMs, windowMs) {
+  const outBucketMs = Math.max(1, Number(bucketMs || SEARCH_BUCKET_MS));
+  const outWindowMs = Math.max(0, Number(windowMs || 0));
+  let sum = 0;
+  for (let t = Number(startTs || 0); t <= Number(startTs || 0) + outWindowMs; t += outBucketMs) {
+    sum += Number(returnsMap?.get(t) || 0);
+  }
+  return sum;
+}
+
 function buildSymbolFeature(symbol, bars, impulseZ = 2) {
   const { map, returns } = mapReturns(bars);
   const st = stdDev(returns);
-  const threshold = st > 0 ? st * impulseZ : 0.0004;
+  const threshold = Math.max(st * impulseZ, 0.00005);
   const impulseTimes = [];
   for (const [ts, ret] of map.entries()) {
     if (Math.abs(ret) >= threshold) impulseTimes.push(ts);
@@ -773,20 +787,28 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
         const ff = features.get(row.follower);
         if (!lf || !ff) continue;
         const lagMs = Number(row?.lagMs || 0);
-        const maxCorrSamples = Math.max(50, Number(params.maxCorrSamples || 600));
-        const minCorr = Math.max(0, Number(params.minCorr || 0.12));
-        const minSamples = Math.max(10, Number(params.minSamples || 200));
-        const minImpulses = Math.max(1, Number(params.minImpulses || 5));
+        const responseWindowMs = Math.max(SEARCH_BUCKET_MS, Number(params.responseWindowMs || 1000));
+        const followerThrMult = Math.max(0, Number(params.followerThrMult || 0.5));
+        const followerAbsFloor = Math.max(0.00001, Number(params.followerAbsFloor || 0.00005));
+        const followerMoveThr = Math.max(Number(ff.threshold || 0) * followerThrMult, followerAbsFloor);
+        const confirmWindowMs = Math.max(10_000, Number(params.confirmWindowSec || 120) * 1000);
+        const maxCorrSamples = Math.max(20, Number(params.maxCorrSamples || 300));
+        const minCorr = Math.max(0, Number(params.minCorr || 0.08));
+        const minSamples = Math.max(5, Number(params.minSamples || 20));
+        const minImpulses = Math.max(1, Number(params.minImpulses || 10));
         const minConfirmations = Math.max(1, Number(params.minConfirmations || 3));
+        const now = Date.now();
+        const leaderImpulseTimes = lf.impulseTimes.filter((ts) => (now - Number(ts || 0)) <= confirmWindowMs);
         let n = 0;
         let sumX = 0;
         let sumY = 0;
         let sumX2 = 0;
         let sumY2 = 0;
         let sumXY = 0;
-        let impulses = 0;
-        for (const [tFollower, y] of ff.returnsMap.entries()) {
-          const x = lf.returnsMap.get(tFollower - lagMs);
+        let confirmations = 0;
+        for (const tsL of leaderImpulseTimes) {
+          const x = lf.returnsMap.get(tsL);
+          const y = sumWindowReturns(ff.returnsMap, tsL + lagMs, SEARCH_BUCKET_MS, responseWindowMs);
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
           n += 1;
           sumX += x;
@@ -794,11 +816,11 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
           sumX2 += x * x;
           sumY2 += y * y;
           sumXY += x * y;
-          if (Math.abs(x) >= Number(lf.threshold || 0)) impulses += 1;
+          if (Math.sign(x) === Math.sign(y) && Math.abs(y) >= followerMoveThr) confirmations += 1;
           if (n >= maxCorrSamples) break;
         }
         const corr = pearsonFromSums({ n, sumX, sumY, sumX2, sumY2, sumXY });
-        const confirmations = Number(row?.confirmations || 0);
+        const impulses = leaderImpulseTimes.length;
         const confirmed = Math.abs(corr) >= minCorr
           && n >= minSamples
           && impulses >= minImpulses
@@ -872,9 +894,13 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       .map((v) => Number(v))
       .filter((v) => Number.isFinite(v) && v > 0 && v <= 5000);
     const cleanLags = lags.length ? lags : [250, 500, 750, 1000];
-    const impulseZ = Number(params.impulseZ ?? 2);
-    const absFloor = 0.00015;
+    const impulseZ = Number(params.impulseZ ?? 1.5);
+    const followerThrMult = Math.max(0, Number(params.followerThrMult || 0.5));
+    const followerAbsFloor = Math.max(0.00001, Number(params.followerAbsFloor || 0.00005));
+    const responseWindowMs = Math.max(SEARCH_BUCKET_MS, Number(params.responseWindowMs || 1000));
+    const minImpulses = Math.max(1, Number(params.minImpulses || 10));
     const screeningMinConfirmations = Math.max(1, Number(params.screeningMinConfirmations || 1));
+    const screeningMinImpulses = Math.max(1, Number(params.screeningMinImpulses || Math.min(5, minImpulses)));
     const windowMs = Math.max(10_000, Number(params.confirmWindowSec || 120) * 1000);
     const candidateCap = 5000;
     const features = new Map();
@@ -887,11 +913,11 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       const lf = features.get(leader);
       const ff = features.get(follower);
       if (!lf || !ff) return null;
-      const followerMoveThr = Math.max(Number(ff.threshold || 0), absFloor);
+      const followerMoveThr = Math.max(Number(ff.threshold || 0) * followerThrMult, followerAbsFloor);
       const now = Date.now();
       const leaderImpulseTimes = lf.impulseTimes.filter((ts) => (now - Number(ts || 0)) <= windowMs);
       const leaderImpulsesCount = leaderImpulseTimes.length;
-      if (!leaderImpulsesCount) return null;
+      if (leaderImpulsesCount < screeningMinImpulses) return null;
       const tsLeader = Number(marketData.getTicker(leader, 'BT')?.ts || 0);
       const tsFollower = Number(marketData.getTicker(follower, 'BT')?.ts || 0);
       const lastSeenAgeMs = (tsLeader > 0 && tsFollower > 0)
@@ -902,7 +928,7 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
         let conf = 0;
         for (const tsL of leaderImpulseTimes) {
           const x = lf.returnsMap.get(tsL);
-          const y = ff.returnsMap.get(tsL + lag);
+          const y = sumWindowReturns(ff.returnsMap, tsL + lag, SEARCH_BUCKET_MS, responseWindowMs);
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
           if (Math.sign(x) !== Math.sign(y)) continue;
           if (Math.abs(y) < followerMoveThr) continue;
@@ -935,6 +961,8 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       runner.cpuMs = Math.round((runner.cpuMs * 0.7) + ((performance.now() - tickStart) * 0.3));
       updateState({ progress: { done: featureIdx, total: Math.max(1, featureTotal), message: 'screening: building features' } });
       if (featureIdx >= featureTotal) {
+        const withImpulses = [...features.values()].filter((f) => Array.isArray(f?.impulseTimes) && f.impulseTimes.length > 0).length;
+        updateState({ message: `screening: ${withImpulses}/${featureTotal} symbols have impulses; responseWindow=${responseWindowMs}ms` }, true);
         runPairsScreening();
         return;
       }
@@ -964,7 +992,7 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
           if (j >= i) j += 1;
           const scored = scorePair(readySymbols[i], readySymbols[j]);
           idx += 1;
-          if (scored) pendingCandidates.push(scored);
+          if (scored && typeof scored === 'object' && scored.leader && scored.follower) pendingCandidates.push(scored);
         }
         if (pendingCandidates.length) {
           candidates.push(...pendingCandidates);
@@ -974,7 +1002,10 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
           if (candidates.length > candidateCap) candidates.length = candidateCap;
         }
         runner.cpuMs = Math.round((runner.cpuMs * 0.7) + ((performance.now() - tickStart) * 0.3));
-        updateState({ topRows: candidates.slice(0, 50), candidatesKept: candidates.length, processedPairs: idx, progress: { done: idx, total: Math.max(1, totalPairs), message: 'screening pairs' } });
+        const screeningMsg = idx % 20000 < maxPerTick
+          ? `screening pairs: kept ${candidates.length}`
+          : 'screening pairs';
+        updateState({ message: screeningMsg, topRows: candidates.slice(0, 50), candidatesKept: candidates.length, processedPairs: idx, progress: { done: idx, total: Math.max(1, totalPairs), message: screeningMsg } });
         if (idx >= totalPairs) {
           runConfirmations(candidates.slice(0, 1500), features);
           return;
