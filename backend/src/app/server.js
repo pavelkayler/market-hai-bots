@@ -222,7 +222,7 @@ const leadLag = createLeadLag({ bucketMs: 250, maxLagMs: 1000, minSamples: 200, 
 let lastLeadLagTop = [];
 let leadLagSearchActive = false;
 const LEADLAG_EMIT_LIMITS = {
-  stateMs: 250,
+  stateMs: 500,
   searchProgressMs: 500,
   searchResultsMs: 1000,
   wsBufferedAmountLimit: Number(process.env.WS_BUFFERED_AMOUNT_LIMIT || (1024 * 1024 * 2)),
@@ -252,7 +252,21 @@ function createIdleSearchState() {
     reducedSymbols: 0,
     subscribedSymbols: 0,
     progress: { phase: 'IDLE', done: 0, total: 0, pct: 0, message: 'idle', lastTickMs: Date.now() },
-    params: { universeSize: 300, topK: 50, warmupSec: 15, timeBudgetMs: 8, maxPairsPerTick: 2000, lagsMs: [-1000, -750, -500, -250, 250, 500, 750, 1000], confirmWindowSec: 120 },
+    params: {
+      universeSize: 300,
+      topK: 50,
+      warmupSec: 15,
+      timeBudgetMs: 8,
+      maxPairsPerTick: 2000,
+      lagsMs: [250, 500, 750, 1000],
+      confirmWindowSec: 120,
+      minSamples: 200,
+      minImpulses: 5,
+      minCorr: 0.12,
+      minConfirmations: 3,
+      impulseZ: 2,
+      maxCorrSamples: 600,
+    },
     load: { subscribedSymbols: 0, reducedSymbols: 0, cpuMsPerSec: 0, backlog: 0 },
     results: { updatedAtMs: Date.now(), top: [] },
     error: null,
@@ -396,7 +410,7 @@ function mapTradingStatus(status) {
 }
 
 function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
-  const trading = paperTest.getState({ includeHistory: true }) || {};
+  const trading = paperTest.getState({ includeHistory: false }) || {};
   const search = leadLagSearchState || createIdleSearchState();
   if (bumpSeq) leadLagSnapshotSeq += 1;
 
@@ -405,6 +419,16 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
   const leaderTicker = marketData.getTicker(leader, 'BT') || {};
   const followerTicker = marketData.getTicker(follower, 'BT') || {};
   const topRows = Array.isArray(search?.results?.top) ? search.results.top : Array.isArray(search?.topRows) ? search.topRows : [];
+
+  const learningLog = Array.isArray(trading?.learningLog) ? trading.learningLog.slice(0, 50) : [];
+  const runSummary = Object.values(trading?.runHistory || {})
+    .map((run) => {
+      const trades = Number(run?.trades || 0);
+      const wins = Number(run?.wins || 0);
+      return { ...run, winRate: trades > 0 ? (wins / trades) * 100 : 0 };
+    })
+    .sort((a, b) => Number(b?.endedAt || b?.startedAt || 0) - Number(a?.endedAt || a?.startedAt || 0))
+    .slice(0, 50);
 
   const lastTs = Number(trading?.currentTradeEvents?.[0]?.ts);
   const payload = {
@@ -439,21 +463,19 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
         lastUpdateMs: Date.now(),
         lastEventAgeMs: Number.isFinite(lastTs) ? Math.max(0, Date.now() - lastTs) : null,
       },
-      positions: (Array.isArray(trading?.positions) ? trading.positions : []).slice(0, 5).map((p) => ({
-        posId: p?.id || p?.posId || `${p?.side || 'POS'}:${p?.openedAt || Date.now()}`,
-        side: p?.side || null,
-        qty: Number(p?.qty || 0) || 0,
-        entryPx: Number(p?.entry || p?.entryPrice || 0) || null,
-        entryTs: Number(p?.openedAt || 0) || null,
-        status: 'OPEN',
-        unrealizedPnl: Number(p?.unrealizedPnl || 0) || 0,
-        realizedPnl: Number(p?.realizedPnl || 0) || 0,
-        fees: Number(p?.fees || 0) || 0,
-        funding: Number(p?.funding || 0) || 0,
-        slippage: Number(p?.slippage || 0) || 0,
-      })),
+      positions: (Array.isArray(trading?.positions) ? trading.positions : []).slice(0, 5),
       tradeEvents: (Array.isArray(trading?.currentTradeEvents) ? trading.currentTradeEvents : []).slice(0, 20),
-      history: Array.isArray(trading?.currentClosedTrades) ? trading.currentClosedTrades : [],
+      history: (Array.isArray(trading?.currentClosedTrades) ? trading.currentClosedTrades : []).slice(0, 50),
+      noEntryReasons: (Array.isArray(trading?.lastNoEntryReasons) ? trading.lastNoEntryReasons : []).slice(0, 5),
+      tuning: {
+        autoTuneConfig: trading?.autoTuneConfig || null,
+        tuningStatus: trading?.tuningStatus || null,
+        lastEvaluation: trading?.lastEvaluation || null,
+        learningLog,
+        runSummary,
+        activePresetId: trading?.activePresetId || null,
+        sessionPresetId: trading?.sessionPresetId || null,
+      },
       stats: {
         line1: {
           trades: Number(trading?.stats?.trades || 0), wins: Number(trading?.stats?.wins || 0), losses: Number(trading?.stats?.losses || 0),
@@ -475,13 +497,21 @@ function toLeadLagStateSnapshot({ bumpSeq = true } = {}) {
       results: {
         updatedAtMs: Number(search?.results?.updatedAtMs || Date.now()),
         top: topRows.slice(0, 50).map((r) => ({
-          leader: r?.leader, follower: r?.follower, score: Number(r?.score || r?.confirmations || 0), corr: Number(r?.corr || 0), lagMs: Number(r?.lagMs || 0),
-          confirmations: Number(r?.confirmations || 0), impulses: Number(r?.impulses || 0), samples: Number(r?.samples || 0), lastSeenAgeMs: Number(r?.lastSeenAgeMs || 0),
+          leader: r?.leader,
+          follower: r?.follower,
+          lagMs: Number(r?.lagMs || 0),
+          confirmations: Number(r?.confirmations || 0),
+          corr: Number(r?.corr || 0),
+          samples: Number(r?.samples || 0),
+          impulses: Number(r?.impulses || 0),
+          confirmed: Boolean(r?.confirmed),
+          tradeReady: Boolean(r?.tradeReady),
+          blockers: Array.isArray(r?.blockers) ? r.blockers.slice(0, 3) : [],
+          lastSeenAgeMs: Number(r?.lastSeenAgeMs || 0),
         })),
       },
       error: search?.error || null,
     },
-    legacy: trading,
   };
   return payload;
 }
@@ -536,6 +566,7 @@ function safeLeadLagSnapshot({ bumpSeq = true, where = 'snapshot' } = {}) {
 }
 
 function emitLeadLagState({ force = false, bumpSeq = true } = {}) {
+  if (!force && !hasAnyTopicSubscribers(['leadlag.state'])) return null;
   const snapshot = safeLeadLagSnapshot({ bumpSeq, where: 'emitLeadLagState' });
   broadcastLeadLagManaged({ topic: 'leadlag.state', payload: snapshot, bucket: 'leadlagState', intervalMs: LEADLAG_EMIT_LIMITS.stateMs, force });
   return snapshot;
@@ -615,6 +646,18 @@ function stdDev(values = []) {
   const avg = values.reduce((a, b) => a + b, 0) / values.length;
   const variance = values.reduce((acc, v) => acc + (v - avg) ** 2, 0) / values.length;
   return Math.sqrt(Math.max(0, variance));
+}
+
+function pearsonFromSums({ n, sumX, sumY, sumX2, sumY2, sumXY }) {
+  if (!(n > 1)) return 0;
+  const numerator = (n * sumXY) - (sumX * sumY);
+  const denX = (n * sumX2) - (sumX ** 2);
+  const denY = (n * sumY2) - (sumY ** 2);
+  const denominator = Math.sqrt(Math.max(0, denX * denY));
+  if (!(denominator > 0)) return 0;
+  const corr = numerator / denominator;
+  if (!Number.isFinite(corr)) return 0;
+  return Math.max(-1, Math.min(1, corr));
 }
 
 function buildSymbolFeature(symbol, bars, impulseZ = 2) {
@@ -741,7 +784,7 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       return;
     }
 
-    const reducedSymbols = [...new Set(candidates.flatMap((row) => [row.leader, row.follower]))].slice(0, 100);
+    const reducedSymbols = [...new Set(candidates.slice(0, 300).flatMap((row) => [row.leader, row.follower]))].slice(0, 80);
     subscriptions.replaceIntent('leadlag-search', { symbols: reducedSymbols, streamType: 'ticker' });
     updateState({ status: 'CONFIRMATIONS', phase: 'CONFIRMATIONS', message: 'confirmations', reducedSymbols: reducedSymbols.length, subscribedSymbols: reducedSymbols.length, progress: { done: 0, total: Math.max(1, candidates.length), message: 'confirmations' } }, true);
 
@@ -761,10 +804,85 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
         const lf = features.get(row.leader);
         const ff = features.get(row.follower);
         if (!lf || !ff) continue;
-        rows.push({ ...row, corr: Number(row.corr || 0), source: 'BT', lastSeenAgeMs: 0, tradeReady: Boolean(row.tradeReady) });
+        const lagMs = Number(row?.lagMs || 0);
+        const maxCorrSamples = Math.max(50, Number(params.maxCorrSamples || 600));
+        const minCorr = Math.max(0, Number(params.minCorr || 0.12));
+        const minSamples = Math.max(10, Number(params.minSamples || 200));
+        const minImpulses = Math.max(1, Number(params.minImpulses || 5));
+        const minConfirmations = Math.max(1, Number(params.minConfirmations || 3));
+        let n = 0;
+        let sumX = 0;
+        let sumY = 0;
+        let sumX2 = 0;
+        let sumY2 = 0;
+        let sumXY = 0;
+        let impulses = 0;
+        for (const [tFollower, y] of ff.returnsMap.entries()) {
+          const x = lf.returnsMap.get(tFollower - lagMs);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          n += 1;
+          sumX += x;
+          sumY += y;
+          sumX2 += x * x;
+          sumY2 += y * y;
+          sumXY += x * y;
+          if (Math.abs(x) >= Number(lf.threshold || 0)) impulses += 1;
+          if (n >= maxCorrSamples) break;
+        }
+        const corr = pearsonFromSums({ n, sumX, sumY, sumX2, sumY2, sumXY });
+        const confirmations = Number(row?.confirmations || 0);
+        const confirmed = Math.abs(corr) >= minCorr
+          && n >= minSamples
+          && impulses >= minImpulses
+          && confirmations >= minConfirmations;
+        const tsLeader = Number(marketData.getTicker(row?.leader, 'BT')?.ts || 0);
+        const tsFollower = Number(marketData.getTicker(row?.follower, 'BT')?.ts || 0);
+        const lastSeenAgeMs = (tsLeader > 0 && tsFollower > 0)
+          ? Math.max(0, Date.now() - Math.max(tsLeader, tsFollower))
+          : null;
+
+        let tradeReady = false;
+        let blockers = [];
+        try {
+          const preset = presetsStore.getActivePreset?.() || null;
+          const excludedCoins = Array.isArray(preset?.excludedCoins) ? preset.excludedCoins : [];
+          const currentEvents = paperTest.getState({ includeHistory: false })?.currentTradeEvents || [];
+          const lastTradeAt = currentEvents.find((evt) => String(evt?.event || '').toUpperCase() === 'CLOSE')?.ts || null;
+          const readiness = evaluateTradeReady({
+            row: { ...row, corr, samples: n, impulses, confirmed, confirmations },
+            preset,
+            excludedCoins,
+            lastTradeAt,
+            getBars: (sym, barsN) => marketBars.getBars(sym, barsN, 'BT'),
+            bucketMs: 250,
+          });
+          tradeReady = Boolean(readiness?.tradeReady);
+          blockers = Array.isArray(readiness?.blockers) ? readiness.blockers.slice(0, 3) : [];
+        } catch (err) {
+          tradeReady = false;
+          blockers = [{ key: 'READINESS_ERROR', detail: String(err?.message || err || 'unknown') }];
+        }
+
+        rows.push({
+          ...row,
+          lagMs,
+          source: 'BT',
+          corr,
+          samples: n,
+          impulses,
+          confirmations,
+          confirmed,
+          tradeReady,
+          blockers,
+          lastSeenAgeMs,
+        });
       }
       runner.cpuMs = Math.round((runner.cpuMs * 0.7) + ((performance.now() - tickStart) * 0.3));
-      rows.sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0) || Math.abs(Number(b.corr || 0)) - Math.abs(Number(a.corr || 0)));
+      rows.sort((a, b) => Number(b.tradeReady) - Number(a.tradeReady)
+        || Number(b.confirmed) - Number(a.confirmed)
+        || Number(b.confirmations || 0) - Number(a.confirmations || 0)
+        || Math.abs(Number(b.corr || 0)) - Math.abs(Number(a.corr || 0))
+        || Math.abs(Number(a.lagMs || 0)) - Math.abs(Number(b.lagMs || 0)));
       const topRows = rows.slice(0, Math.max(50, Number(params.topK || 50)));
       lastLeadLagTop = topRows.slice(0, 50);
       paperTest.setSearchRows?.(lastLeadLagTop);
@@ -783,7 +901,10 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
 
   const runScreening = (readySymbols) => {
     if (!runner.active || runner.cancel) return;
-    const lags = Array.isArray(params.lagsMs) && params.lagsMs.length ? params.lagsMs : [250, 500, 750, 1000];
+    const lags = (Array.isArray(params.lagsMs) ? params.lagsMs : [])
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v > 0 && v <= 5000);
+    const cleanLags = lags.length ? lags : [250, 500, 750, 1000];
     const leaderMoveThr = Math.max(0.0005, Number(paperTest.getState({ includeHistory: false })?.settings?.leaderMovePct || 0.1) / 100);
     const candidateCap = 5000;
     const features = new Map();
@@ -797,7 +918,7 @@ function startLeadLagSearch(symbols = getUniverseAllSymbols(), inputParams = {})
       const ff = features.get(follower);
       if (!lf || !ff) return null;
       let best = null;
-      for (const lag of lags) {
+      for (const lag of cleanLags) {
         let conf = 0;
         for (const ts of ff.impulseTimes) {
           const x = lf.returnsMap.get(ts - lag);
@@ -915,7 +1036,7 @@ function stopLeadLagSearch({ reason = 'stopped', preserveRows = false, releaseFe
   }
   leadLagSearchRunner = null;
   leadLagSearchActive = false;
-  subscriptions.removeIntent('leadlag-search');
+  if (releaseFeed) subscriptions.removeIntent('leadlag-search');
   leadLagSearchState = preserveRows
     ? { ...leadLagSearchState, searchActive: false, status: 'FINISHED', phase: 'FINISHED', message: reason, updatedAtMs: Date.now() }
     : { ...createIdleSearchState(), message: reason, status: 'IDLE', phase: 'IDLE' };
@@ -965,7 +1086,10 @@ app.get("/api/subscriptions", async () => subscriptions.getState());
 app.get("/api/leadlag/top", async () => ({ bucketMs: 250, top: lastLeadLagTop }));
 
 app.get("/api/paper/state", async () => paperTest.getState());
-app.get("/api/leadlag/state", async () => paperTest.getState());
+app.get("/api/leadlag/state", async (req) => {
+  const full = String(req.query?.full || '0') === '1';
+  return paperTest.getState({ includeHistory: full });
+});
 app.get("/api/universe/status", async () => universe.getStatus());
 app.get("/api/universe/list", async () => {
   const u = universe.getUniverse({ limit: 2000 }) || {};
