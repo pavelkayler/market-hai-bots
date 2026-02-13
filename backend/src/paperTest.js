@@ -38,6 +38,8 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
   };
   let logs = [];
   let trades = [];
+  let tickTimer = null;
+  let lastStateEmitAt = 0;
   const autoLag = {
     lastLeaderPx: null,
     lastFollowerPx: null,
@@ -101,6 +103,13 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
   function emitLeadLag(type, payload) { emit(type, payload); emit(type.replace('leadlag.', 'paper.'), payload); }
   function pushLog(level, msg, extra = {}) { const row = { ts: now(), level, msg, ...extra }; logs.unshift(row); logs = logs.slice(0, 300); emitLeadLag('leadlag.log', row); }
   function getTicker(symbol) { return getMarketTicker(symbol, 'BT'); }
+  function emitStateSnapshot(force = false) {
+    const ts = now();
+    if (!force && (ts - lastStateEmitAt) < 500) return;
+    lastStateEmitAt = ts;
+    emitLeadLag('leadlag.state', getState({ includeHistory: false }));
+  }
+
 
   function upsertHistory(runKey) {
     if (!state.runHistory[runKey]) {
@@ -154,7 +163,7 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     state.stats.slippageUSDT += slippage;
     state.stats.winRate = state.stats.trades ? (state.stats.wins / state.stats.trades) * 100 : 0;
 
-    const row = { ts: now(), event: 'CLOSE', symbol: pos.symbol, side: pos.side, entryPrice: pos.entryPrice, exitPrice: actualExit, theoreticalExit, pnlUSDT: pnl, feesUSDT: feeExit + pos.feeEntry, fundingUSDT: funding, slippageUSDT: slippage, reason: hitTp ? 'TP' : 'SL', runKey: state.currentRunKey };
+    const row = { ts: now(), event: 'CLOSE', symbol: pos.symbol, side: pos.side, entryPrice: pos.entryPrice, exitPrice: actualExit, theoreticalExit, pnlUSDT: pnl, feesUSDT: feeExit + pos.feeEntry, fundingUSDT: funding, slippageUSDT: slippage, reason: hitTp ? 'TP' : 'SL', runKey: state.currentRunKey, qty: pos.qty, openedAt: pos.openedAt };
     trades.unshift(row); trades = trades.slice(0, 300);
     state.currentTradeEvents.unshift(row); state.currentTradeEvents = state.currentTradeEvents.slice(0, 20);
     emitLeadLag('leadlag.trade', row);
@@ -247,10 +256,8 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     }
     state.positions = remaining;
 
-    emitLeadLag('leadlag.state', getState({ includeHistory: false }));
+    emitStateSnapshot(false);
   }
-
-  const timer = setInterval(() => { try { step(); } catch (e) { logger?.warn?.({ err: e }, 'leadlag paper step failed'); } }, tickMs);
 
   function normalizeSettings(settings) {
     const allowedLagMs = AUTO_LAG_OPTIONS;
@@ -296,14 +303,30 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     state.activePresetId = presetId || presetsStore?.getState()?.activePresetId || null;
     const clone = presetsStore?.clonePresetAsSession?.(state.activePresetId);
     state.sessionPresetId = clone?.id || null;
-    setTimeout(() => { state.status = 'RUNNING'; state.startedAt = now(); emitLeadLag('leadlag.state', getState()); }, 10);
+    if (tickTimer) clearInterval(tickTimer);
+    setTimeout(() => {
+      state.status = 'RUNNING';
+      state.startedAt = now();
+      lastStateEmitAt = 0;
+      tickTimer = setInterval(() => { try { step(); } catch (e) { logger?.warn?.({ err: e }, 'leadlag paper step failed'); } }, tickMs);
+      emitStateSnapshot(true);
+    }, 10);
     return { ok: true };
   }
 
   function stop({ reason = 'manual' } = {}) {
     if (state.status === 'STOPPED' || state.status === 'STOPPING') return { ok: false };
     state.status = 'STOPPING';
-    setTimeout(() => { state.status = 'STOPPED'; state.endedAt = now(); state.pendingSignal = null; state.positions = []; resetAutoLag(); pushLog('info', `Stopped (${reason})`); emitLeadLag('leadlag.state', getState()); }, 10);
+    setTimeout(() => {
+      state.status = 'STOPPED';
+      state.endedAt = now();
+      state.pendingSignal = null;
+      state.positions = [];
+      if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+      resetAutoLag();
+      pushLog('info', `Stopped (${reason})`);
+      emitStateSnapshot(true);
+    }, 10);
     return { ok: true };
   }
 
@@ -316,9 +339,10 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     state.lastEvaluation = null;
     state.tuningStatus = 'idle';
     resetAutoLag();
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     trades = []; logs = [];
     autoTune.reset();
-    emitLeadLag('leadlag.state', getState());
+    emitStateSnapshot(true);
     return { ok: true };
   }
 
@@ -346,6 +370,22 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     base.autoTuneConfig = autoTune.getAutoTuneConfig();
     base.learningLog = autoTune.getLearningLog();
     base.perConfigLearningState = state.currentConfigKey ? autoTune.getPerConfigState(state.currentConfigKey) : null;
+    base.currentClosedTrades = trades
+      .filter((t) => String(t?.event || '').toUpperCase() === 'CLOSE' && t?.runKey === state.currentRunKey && String(t?.symbol || '').toUpperCase() === String(state?.settings?.followerSymbol || '').toUpperCase())
+      .slice(0, 50)
+      .map((t) => ({
+        closedAt: Number(t?.ts || 0) || null,
+        side: t?.side || null,
+        entryPrice: Number(t?.entryPrice || 0) || null,
+        exitPrice: Number(t?.exitPrice || 0) || null,
+        qty: Number(t?.qty || 0) || null,
+        pnl: Number(t?.pnlUSDT || 0) || 0,
+        fees: Number(t?.feesUSDT || 0) || 0,
+        funding: Number(t?.fundingUSDT || 0) || 0,
+        slippage: Number(t?.slippageUSDT || 0) || 0,
+        reason: t?.reason || null,
+        durationSec: Number.isFinite(Number(t?.ts || 0)) && Number.isFinite(Number(t?.openedAt || 0)) && Number(t.openedAt) > 0 ? Math.max(0, (Number(t.ts) - Number(t.openedAt)) / 1000) : null,
+      }));
     if (includeHistory) {
       base.trades = trades.slice(0, 100);
       base.logs = logs.slice(0, 200);
@@ -354,5 +394,5 @@ export function createPaperTest({ getLeadLagTop, getMarketTicker = () => null, g
     return base;
   }
 
-  return { start, stop, reset, setSearchRows, setAutoTuneConfig, clearLearningLog, getState, dispose: () => clearInterval(timer) };
+  return { start, stop, reset, setSearchRows, setAutoTuneConfig, clearLearningLog, getState, dispose: () => { if (tickTimer) clearInterval(tickTimer); tickTimer = null; } };
 }
