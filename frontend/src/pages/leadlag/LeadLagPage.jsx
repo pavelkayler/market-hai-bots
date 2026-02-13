@@ -23,11 +23,10 @@ function calcSearchProgress(search = {}) {
 }
 
 export default function LeadLagPage() {
-  const [state, setState] = useState({ status: 'STOPPED', search: { phase: 'idle' } });
+  const [state, setState] = useState({ schemaVersion: 1, trading: { status: 'STOPPED' }, search: { status: 'IDLE', progress: { phase: 'IDLE', done: 0, total: 0 } }, legacy: { status: 'STOPPED', search: { phase: 'idle' } } });
   const [formSettings, setFormSettings] = useState(defaultSettings);
   const [rows, setRows] = useState([]);
-  const [searchActive, setSearchActive] = useState(false);
-  const [autoTuneConfig, setAutoTuneConfig] = useState({ enabled: true, evalWindowTrades: 20, minTradesToStart: 10, minProfitFactor: 1, minExpectancy: 0, tpStepPct: 0.05, tpMinPct: 0.05, tpMaxPct: 0.5 });
+    const [autoTuneConfig, setAutoTuneConfig] = useState({ enabled: true, evalWindowTrades: 20, minTradesToStart: 10, minProfitFactor: 1, minExpectancy: 0, tpStepPct: 0.05, tpMinPct: 0.05, tpMaxPct: 0.5 });
   const [serverNow, setServerNow] = useState(0);
   const lastTopUpdateAtRef = useRef(0);
 
@@ -42,15 +41,14 @@ export default function LeadLagPage() {
         setState((prev) => ({ ...(prev || {}), ...(payload.leadlagState || {}) }));
         if (payload.leadlagState?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.leadlagState.autoTuneConfig }));
       }
-      if (payload?.leadlagState?.search) {
-        setSearchActive(Boolean(payload.leadlagState.search?.searchActive));
-      }
       return;
     }
 
     if (type === 'leadlag.state') {
       setState((prev) => ({ ...(prev || {}), ...(payload || {}) }));
-      if (payload?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.autoTuneConfig }));
+      const nextRows = payload?.search?.results?.top || payload?.search?.topRows || payload?.legacy?.search?.topRows || [];
+      if (Array.isArray(nextRows)) setRows((prevRows) => nextRows.slice(0, 50).map((r, idx) => ({ ...prevRows[idx], ...r })));
+      if (payload?.legacy?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.legacy.autoTuneConfig }));
       return;
     }
 
@@ -61,14 +59,7 @@ export default function LeadLagPage() {
         setRows(topRows.slice(0, 50));
         lastTopUpdateAtRef.current = now;
       }
-      setState((prev) => ({ ...(prev || {}), search: payload || {} }));
-      setSearchActive(Boolean(payload?.searchActive));
-      return;
-    }
-
-    if (type === 'leadlag.search.ack') {
-      setSearchActive(Boolean(payload?.active));
-      if (payload?.state) setState((prev) => ({ ...(prev || {}), search: payload.state }));
+      setState((prev) => ({ ...(prev || {}), search: { ...(prev?.search || {}), ...(payload || {}) } }));
       return;
     }
 
@@ -85,22 +76,26 @@ export default function LeadLagPage() {
     if (type === 'leadlag.learningLog') setState((prev) => ({ ...(prev || {}), learningLog: Array.isArray(payload) ? payload : [] }));
   }, []);
 
-  const { status, sendJson } = useWsClient({
-    onOpen: () => { sendJson({ type: 'getLeadLagState' }); sendJson({ type: 'getSnapshot' }); sendJson({ type: 'leadlag.getLearningLog' }); },
+  const { status, sendJson, request } = useWsClient({
+    onOpen: () => { request('leadlag.getState'); sendJson({ type: 'getSnapshot' }); sendJson({ type: 'leadlag.getLearningLog' }); },
     onMessage,
   });
 
   const canStart = status === 'connected' && String(formSettings.leaderSymbol || '').trim().length > 0 && String(formSettings.followerSymbol || '').trim().length > 0;
+  const trading = state?.trading || {};
   const search = state?.search || {};
-  const progressPct = calcSearchProgress(search);
-  const positions = Array.isArray(state?.positions) ? state.positions : [];
-  const followerPx = Number(state?.manual?.followerPrice);
-  const currentTradeEvents = Array.isArray(state?.currentTradeEvents) ? state.currentTradeEvents : [];
-  const currentClosedTrades = Array.isArray(state?.currentClosedTrades) ? state.currentClosedTrades : [];
-  const learningLog = Array.isArray(state?.learningLog) ? state.learningLog : [];
-  const runSummary = Array.isArray(state?.runSummary) ? state.runSummary : [];
-  const lastEvaluation = state?.lastEvaluation || {};
-  const decision = state?.learningLog?.[0]?.decision || '—';
+  const legacy = state?.legacy || {};
+  const searchStatus = String(search?.status || search?.phase || 'IDLE').toUpperCase();
+  const isSearchRunning = ['WARMUP', 'SCREENING', 'CONFIRMATIONS'].includes(searchStatus);
+  const progressPct = Number(search?.progress?.pct || calcSearchProgress(search));
+  const positions = Array.isArray(legacy?.positions) ? legacy.positions : [];
+  const followerPx = Number(legacy?.manual?.followerPrice);
+  const currentTradeEvents = Array.isArray(legacy?.currentTradeEvents) ? legacy.currentTradeEvents : [];
+  const currentClosedTrades = Array.isArray(legacy?.currentClosedTrades) ? legacy.currentClosedTrades : [];
+  const learningLog = Array.isArray(legacy?.learningLog) ? legacy.learningLog : [];
+  const runSummary = Array.isArray(legacy?.runSummary) ? legacy.runSummary : [];
+  const lastEvaluation = legacy?.lastEvaluation || {};
+  const decision = legacy?.learningLog?.[0]?.decision || '—';
 
   return <div className='d-grid gap-3'>
     <Row className='g-3'>
@@ -110,7 +105,7 @@ export default function LeadLagPage() {
             <div className='fw-semibold'>LeadLag Trading</div>
             <div className='d-flex gap-2 align-items-center'>
               <Badge bg={status === 'connected' ? 'success' : 'warning'}>{status}</Badge>
-              <Badge bg={state?.status === 'RUNNING' ? 'success' : state?.status === 'STARTING' ? 'warning' : 'secondary'}>{state?.status || 'STOPPED'}</Badge>
+              <Badge bg={trading?.status === 'RUNNING' ? 'success' : trading?.status === 'STARTING' ? 'warning' : 'secondary'}>{trading?.status || 'STOPPED'}</Badge>
             </div>
           </div>
           <Row className='g-2'>
@@ -122,9 +117,9 @@ export default function LeadLagPage() {
             <Col md={4}><Form.Group><Form.Label>Lag (ms)</Form.Label><Form.Select value={formSettings.lagMs} onChange={(e) => setFormSettings((p) => ({ ...p, lagMs: Number(e.target.value) }))}>{lagOptions.map((x) => <option key={x} value={x}>{x}</option>)}</Form.Select></Form.Group></Col>
             <Col md={4} className='d-flex align-items-end'><Form.Check label='Allow short' checked={Boolean(formSettings.allowShort)} onChange={(e) => setFormSettings((p) => ({ ...p, allowShort: e.target.checked }))} /></Col>
             <Col md={12} className='d-flex gap-2'>
-              <Button disabled={!canStart} onClick={() => sendJson({ type: 'startLeadLag', settings: formSettings })}>Start trading</Button>
-              <Button variant='outline-secondary' onClick={() => sendJson({ type: 'stopLeadLag' })}>Stop</Button>
-              <Button variant='outline-danger' onClick={() => sendJson({ type: 'resetLeadLag' })}>Reset</Button>
+              <Button disabled={!canStart} onClick={() => request('leadlag.trading.start', { ...formSettings, leader: formSettings.leaderSymbol, follower: formSettings.followerSymbol })}>Start trading</Button>
+              <Button variant='outline-secondary' onClick={() => request('leadlag.trading.stop', {})}>Stop</Button>
+              <Button variant='outline-danger' onClick={() => request('leadlag.trading.reset', {})}>Reset</Button>
             </Col>
           </Row>
         </Card.Body></Card>
@@ -133,10 +128,10 @@ export default function LeadLagPage() {
       <Col lg={6}>
         <Card><Card.Body className='d-grid gap-3'>
           <div className='fw-semibold'>Trading diagnostics</div>
-          <div className='small'>Pair: {(state?.settings?.leaderSymbol || formSettings.leaderSymbol || '—')} / {(state?.settings?.followerSymbol || formSettings.followerSymbol || '—')}</div>
-          <div className='small'>Leader px {fmt(state?.manual?.leaderPrice)} · Follower px {fmt(state?.manual?.followerPrice)} · Baseline {fmt(state?.manual?.leaderBaseline)} · Leader move now {fmt(state?.manual?.leaderMovePctNow, 2)}%</div>
+          <div className='small'>Pair: {(legacy?.settings?.leaderSymbol || formSettings.leaderSymbol || '—')} / {(legacy?.settings?.followerSymbol || formSettings.followerSymbol || '—')}</div>
+          <div className='small'>Leader px {fmt(legacy?.manual?.leaderPrice)} · Follower px {fmt(legacy?.manual?.followerPrice)} · Baseline {fmt(legacy?.manual?.leaderBaseline)} · Leader move now {fmt(legacy?.manual?.leaderMovePctNow, 2)}%</div>
           <div className='small'>Positions: {positions.length}/5</div>
-          <div className='small'>Fees {fmt(state?.stats?.feesUSDT)} · Funding {fmt(state?.stats?.fundingUSDT)} · Slippage {fmt(state?.stats?.slippageUSDT)}<br />feeRateMaker {fmt(state?.stats?.feeRateMaker, 6)}</div>
+          <div className='small'>Fees {fmt(legacy?.stats?.feesUSDT)} · Funding {fmt(legacy?.stats?.fundingUSDT)} · Slippage {fmt(legacy?.stats?.slippageUSDT)}<br />feeRateMaker {fmt(legacy?.stats?.feeRateMaker, 6)}</div>
           <div style={{ maxHeight: 160, overflow: 'auto' }}>
             <Table size='sm'>
               <thead><tr><th>Side</th><th>Entry</th><th>Qty</th><th>TP/SL</th><th>Unrealized</th><th>Age</th></tr></thead>
@@ -178,17 +173,17 @@ export default function LeadLagPage() {
       <div className='d-flex align-items-center justify-content-between mb-2'>
         <div className='fw-semibold'>Search (Top-50)</div>
         <div className='d-flex gap-2'>
-          <Button size='sm' disabled={searchActive || status !== 'connected'} onClick={() => sendJson({ type: 'startLeadLagSearch' })}>Start search</Button>
-          <Button size='sm' variant='outline-danger' disabled={!searchActive || status !== 'connected'} onClick={() => sendJson({ type: 'stopLeadLagSearch' })}>Stop search</Button>
+          <Button size='sm' disabled={isSearchRunning || !['IDLE','FINISHED','ERROR'].includes(searchStatus) || status !== 'connected'} onClick={() => request('leadlag.search.start', {})}>Start search</Button>
+          <Button size='sm' variant='outline-danger' disabled={!isSearchRunning || status !== 'connected'} onClick={() => request('leadlag.search.stop', {})}>Stop search</Button>
         </div>
       </div>
-      <div className='small mb-1'>Phase: {search?.phase || 'idle'} · Warmup {search?.symbolsReady || 0}/{search?.symbolsTotal || 0} · Screening {search?.processedPairs || 0}/{search?.totalPairs || 0} · Confirmations {search?.confirmationsDone || 0}/{search?.confirmationsTarget || 0}</div>
+      <div className='small mb-1'>Phase: {searchStatus} · {search?.progress?.done || 0}/{search?.progress?.total || 0} · Last update age: {Math.max(0, Math.floor((Date.now() - Number(state?.serverTimeMs || Date.now())) / 1000))}s</div>
       <ProgressBar now={progressPct} label={`${Math.round(progressPct)}%`} className='mb-2' />
       <Table size='sm' style={{ tableLayout: 'fixed' }}>
         <colgroup><col style={{ width: '25%' }} /><col style={{ width: '25%' }} /><col style={{ width: '15%' }} /><col style={{ width: '15%' }} /><col style={{ width: '20%' }} /></colgroup>
         <thead><tr><th>Leader</th><th>Follower</th><th>Corr</th><th>Lag(ms)</th><th>Confirmations</th></tr></thead>
         <tbody>
-          {rows.map((r, i) => <tr key={`${r.leader}-${r.follower}-${i}`}><td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.leader}</td><td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.follower}</td><td>{Number.isFinite(Number(r.corr)) ? fmt(r.corr, 3) : '—'}</td><td>{fmt(r.lagMs, 0)}</td><td>{Number(r.confirmations || 0)}</td></tr>)}
+          {rows.map((r) => <tr key={`${r.leader}_${r.follower}`}><td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.leader}</td><td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.follower}</td><td>{Number.isFinite(Number(r.corr)) ? fmt(r.corr, 3) : '—'}</td><td>{fmt(r.lagMs, 0)}</td><td>{Number(r.confirmations || 0)}</td></tr>)}
         </tbody>
       </Table>
     </Card.Body></Card>
@@ -206,7 +201,7 @@ export default function LeadLagPage() {
           <div className='fw-semibold'>Обучение (Auto-tune)</div>
           <div className='small text-muted'>Только закрытые сделки (CLOSE), single-change rule: по очереди меняем TP и lagMs.</div>
         </div>
-        <Badge bg={state?.tuningStatus === 'frozen' ? 'info' : state?.tuningStatus === 'pending_eval' ? 'warning' : 'secondary'}>{state?.tuningStatus || 'idle'}</Badge>
+        <Badge bg={legacy?.tuningStatus === 'frozen' ? 'info' : legacy?.tuningStatus === 'pending_eval' ? 'warning' : 'secondary'}>{legacy?.tuningStatus || 'idle'}</Badge>
       </div>
 
       <Row className='g-2'>

@@ -11,6 +11,18 @@ export function createSubscriptionManager({ bybit, logger = console } = {}) {
   const refs = new Map();
   const ownerKeys = new Map();
 
+  function toIntentKeys({ symbols = [], streamType = 'ticker', streams, needsOi = false } = {}) {
+    const next = new Set();
+    const streamList = Array.isArray(streams) && streams.length ? streams : [streamType || 'ticker'];
+    for (const symbolRaw of symbols) {
+      const symbol = normSym(symbolRaw);
+      if (!symbol) continue;
+      for (const stream of streamList) next.add(keyFor(stream, symbol));
+      if (needsOi) next.add(keyFor('oi', symbol));
+    }
+    return next;
+  }
+
   function recomputeSymbols() {
     const bybitSymbols = new Set();
     for (const [key, count] of refs.entries()) {
@@ -21,18 +33,10 @@ export function createSubscriptionManager({ bybit, logger = console } = {}) {
     bybit.setSymbols([...bybitSymbols]);
   }
 
-  function requestFeed(owner, { bybitSymbols = [], streams = ['ticker'], needsOi = false } = {}) {
+  function replaceIntent(owner, { symbols = [], streamType = 'ticker', streams, needsOi = false } = {}) {
     const id = String(owner || 'unknown');
     const current = ownerKeys.get(id) || new Set();
-
-    const next = new Set();
-    const streamList = Array.isArray(streams) && streams.length ? streams : ['ticker'];
-    for (const symbolRaw of bybitSymbols) {
-      const symbol = normSym(symbolRaw);
-      if (!symbol) continue;
-      for (const stream of streamList) next.add(keyFor(stream, symbol));
-      if (needsOi) next.add(keyFor('oi', symbol));
-    }
+    const next = toIntentKeys({ symbols, streamType, streams, needsOi });
 
     for (const key of current) {
       if (next.has(key)) continue;
@@ -47,8 +51,28 @@ export function createSubscriptionManager({ bybit, logger = console } = {}) {
 
     ownerKeys.set(id, next);
     recomputeSymbols();
-    logger?.info?.({ owner: id, refs: refs.size }, '[subs] requestFeed');
+    logger?.info?.({ owner: id, refs: refs.size }, '[subs] replaceIntent');
     return { owner: id, keys: [...next] };
+  }
+
+  function addIntent(owner, symbols = [], streamType = 'ticker') {
+    const id = String(owner || 'unknown');
+    const current = ownerKeys.get(id) || new Set();
+    const next = new Set(current);
+    const add = toIntentKeys({ symbols, streamType });
+    for (const key of add) {
+      if (next.has(key)) continue;
+      next.add(key);
+      refs.set(key, Number(refs.get(key) || 0) + 1);
+    }
+    ownerKeys.set(id, next);
+    recomputeSymbols();
+    logger?.info?.({ owner: id, refs: refs.size }, '[subs] addIntent');
+    return { owner: id, keys: [...next] };
+  }
+
+  function requestFeed(owner, { bybitSymbols = [], streams = ['ticker'], needsOi = false } = {}) {
+    return replaceIntent(owner, { symbols: bybitSymbols, streams, needsOi });
   }
 
   function releaseFeed(owner) {
@@ -66,6 +90,10 @@ export function createSubscriptionManager({ bybit, logger = console } = {}) {
     return { owner: id, released: current.size };
   }
 
+  function removeIntent(owner) {
+    return releaseFeed(owner);
+  }
+
   function getState() {
     return {
       refs: Object.fromEntries(refs.entries()),
@@ -74,5 +102,5 @@ export function createSubscriptionManager({ bybit, logger = console } = {}) {
     };
   }
 
-  return { requestFeed, releaseFeed, getState };
+  return { requestFeed, releaseFeed, addIntent, removeIntent, replaceIntent, getState };
 }
