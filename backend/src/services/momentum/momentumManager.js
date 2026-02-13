@@ -54,6 +54,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
     const mode = String(config?.mode || 'paper').toLowerCase();
+    let isolatedPreflight = { ok: true, skipped: true };
     if ((mode === 'demo' || mode === 'real') && tradeExecutor?.enabled?.()) {
       const hedge = await tradeExecutor.ensureHedgeMode({});
       if (!hedge?.ok) {
@@ -61,8 +62,11 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
         logger?.warn?.({ mode, error: message }, 'momentum start refused: hedge mode requirement not met');
         return { ok: false, error: 'HEDGE_MODE_REQUIRED', message };
       }
+      const firstSymbol = marketData.getEligibleSymbols?.()?.[0] || 'BTCUSDT';
+      isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };
+      if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
-    const inst = createMomentumInstance({ id, config, marketData, sqlite, tradeExecutor, logger });
+    const inst = createMomentumInstance({ id, config, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
     emitState();

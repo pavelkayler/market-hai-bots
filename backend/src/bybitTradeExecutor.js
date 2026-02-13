@@ -82,6 +82,47 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   const isolatedTtlMs = 60 * 1000;
   let hedgeInFlight = null;
 
+  async function getOrderById({ symbol, orderId } = {}) {
+    if (!enabled()) throw new Error("trade_disabled");
+    if (!symbol || !orderId) return null;
+    const query = { category: "linear", symbol, orderId };
+    const realtime = await privateRest.getOrdersRealtime(query);
+    const rows = realtime?.result?.list || [];
+    if (rows.length > 0) return rows[0];
+    if (!privateRest.getOrderHistory) return null;
+    const hist = await privateRest.getOrderHistory(query);
+    return (hist?.result?.list || [])[0] || null;
+  }
+
+  async function getExecutionsByOrderId({ symbol, orderId, limit = 50 } = {}) {
+    if (!enabled()) throw new Error("trade_disabled");
+    if (!symbol || !orderId || !privateRest.getExecutions) return [];
+    const res = await privateRest.getExecutions({ category: "linear", symbol, orderId, limit: String(limit) });
+    return res?.result?.list || [];
+  }
+
+  async function ensureIsolatedPreflight({ symbol } = {}) {
+    if (state.executionMode === "paper") {
+      preflight.lastMarginModeCheckTs = Date.now();
+      preflight.marginMode = "ISOLATED";
+      preflight.lastMarginModeError = null;
+      return { ok: true, marginMode: "ISOLATED", skipped: true };
+    }
+    try {
+      const sym = String(symbol || "BTCUSDT").toUpperCase();
+      await getPositionsRaw({ symbol: sym });
+      preflight.marginMode = preflight.marginMode === 'ISOLATED' ? 'ISOLATED' : 'UNKNOWN';
+      preflight.lastMarginModeCheckTs = Date.now();
+      preflight.lastMarginModeError = null;
+      return { ok: true, marginMode: preflight.marginMode, symbol: sym };
+    } catch (err) {
+      preflight.marginMode = "UNKNOWN";
+      preflight.lastMarginModeCheckTs = Date.now();
+      preflight.lastMarginModeError = String(err?.message || err || "unknown");
+      return { ok: false, marginMode: "UNKNOWN", error: preflight.lastMarginModeError };
+    }
+  }
+
   function enabled() {
     return Boolean(privateRest && privateRest.enabled);
   }
@@ -510,6 +551,9 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     ensureHedgeMode,
     ensureIsolated,
     getPreflightStatus,
+    ensureIsolatedPreflight,
+    getOrderById,
+    getExecutionsByOrderId,
     resolvePositionIdx,
     createHedgeOrders,
     placeEntryMarket: async (botName, symbol, side, notionalUSD, leverage) => {
