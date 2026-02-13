@@ -6,7 +6,7 @@ export const MOMENTUM_STATUS = {
 
 export const SYMBOL_STATE = {
   IDLE: 'IDLE',
-  ORDER_PENDING: 'ORDER_PENDING',
+  TRIGGER_PENDING: 'TRIGGER_PENDING',
   IN_POSITION: 'IN_POSITION',
   COOLDOWN: 'COOLDOWN',
 };
@@ -21,6 +21,10 @@ export const DEFAULT_MOMENTUM_CONFIG = {
   directionMode: 'BOTH',
   windowMinutes: 1,
   turnoverSpikePct: 100,
+  baselineFloorUSDT: 100_000,
+  holdSeconds: 3,
+  trendConfirmSeconds: 3,
+  oiMaxAgeSec: 10,
   priceThresholdPct: 5,
   oiThresholdPct: 1,
   turnover24hMin: 5_000_000,
@@ -29,7 +33,7 @@ export const DEFAULT_MOMENTUM_CONFIG = {
   marginUsd: 100,
   tpRoiPct: 10,
   slRoiPct: 10,
-  entryOffsetPct: 0,
+  entryOffsetPct: -0.01,
   cooldownMinutes: 60,
   globalSymbolLock: false,
   maxNewEntriesPerTick: 5,

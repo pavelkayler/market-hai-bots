@@ -23,8 +23,8 @@ export function createMomentumManager({ marketData, sqlite, logger = console }) 
   function start(config) {
     const id = `mom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const windowMinutes = Number(config?.windowMinutes);
-    if (![1, 5, 15].includes(windowMinutes)) {
-      return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 5, or 15' };
+    if (![1, 3, 5].includes(windowMinutes)) {
+      return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
     const inst = createMomentumInstance({ id, config, marketData, sqlite, logger });
     instances.set(id, inst);
