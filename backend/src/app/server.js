@@ -1341,6 +1341,7 @@ app.get("/ws", { websocket: true }, (conn) => {
       if (rpcMethod === 'momentum.getPositions') { rpcOk(momentumManager.getPositions(params?.instanceId)); return; }
       if (rpcMethod === 'momentum.getTrades') { rpcOk(await momentumManager.getTrades(params?.instanceId, params?.limit, params?.offset)); return; }
       if (rpcMethod === 'momentum.getMarketStatus') { rpcOk(momentumManager.getMarketStatus()); return; }
+      if (rpcMethod === 'momentum.cancelEntry') { rpcOk(momentumManager.cancelEntry(params?.instanceId, params?.symbol)); return; }
       if (rpcMethod === 'trade.setMode') {
         const mode = String(params?.mode || 'paper').toLowerCase();
         if (isLeadLagRunning()) { rpcOk({ ok: false, reason: 'STOP_TRADING_FIRST' }); return; }
