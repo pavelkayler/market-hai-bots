@@ -37,4 +37,5 @@ export const DEFAULT_MOMENTUM_CONFIG = {
   cooldownMinutes: 60,
   globalSymbolLock: false,
   maxNewEntriesPerTick: 5,
+  entryPriceSource: 'MARK',
 };
