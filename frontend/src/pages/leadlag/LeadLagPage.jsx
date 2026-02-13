@@ -1,129 +1,194 @@
-import { useMemo, useState } from 'react';
-import { Badge, Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
+import { useMemo, useRef, useState } from 'react';
+import { Badge, Button, Card, Col, Form, ProgressBar, Row, Table } from 'react-bootstrap';
 import { useWsClient } from '../../shared/api/ws.js';
 
 function fmt(n, d = 3) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(d) : '—'; }
 function fmtTs(ts) { return Number.isFinite(Number(ts)) ? new Date(Number(ts)).toLocaleTimeString() : '—'; }
 function fmtPf(v) { return v === Infinity ? '∞' : fmt(v, 3); }
-function normalizeSymbol(sym) { return String(sym || '').toUpperCase().trim().replace(/[/-]/g, ''); }
 
 const defaultSettings = { leaderSymbol: 'BTCUSDT', followerSymbol: 'ETHUSDT', leaderMovePct: 0.1, followerTpPct: 0.1, followerSlPct: 0.1, allowShort: true, lagMs: 250 };
 const lagOptions = [250, 500, 750, 1000];
 
+function calcSearchProgress(search = {}) {
+  const phase = String(search.phase || 'idle');
+  if (phase === 'finished' || phase === 'done') return 100;
+  if (phase === 'idle') return 0;
+  const warmup = Number(search.symbolsTotal || 0) > 0 ? Number(search.symbolsReady || 0) / Number(search.symbolsTotal || 1) : 0;
+  const screening = Number(search.totalPairs || 0) > 0 ? Number(search.processedPairs || 0) / Number(search.totalPairs || 1) : 0;
+  const confirmations = Number(search.confirmationsTarget || 0) > 0 ? Number(search.confirmationsDone || 0) / Number(search.confirmationsTarget || 1) : 0;
+  if (phase === 'warmup') return Math.max(0, Math.min(20, warmup * 20));
+  if (phase === 'screening') return Math.max(20, Math.min(80, 20 + screening * 60));
+  if (phase === 'confirmations') return Math.max(80, Math.min(100, 80 + confirmations * 20));
+  return Math.max(0, Math.min(100, Number(search.pct || 0) * (Number(search.pct || 0) <= 1 ? 100 : 1)));
+}
+
 export default function LeadLagPage() {
   const [state, setState] = useState({ status: 'STOPPED', search: { phase: 'idle' } });
+  const [formSettings, setFormSettings] = useState(defaultSettings);
   const [rows, setRows] = useState([]);
   const [searchActive, setSearchActive] = useState(false);
-  const [sort, setSort] = useState({ key: 'corr', dir: 'desc' });
-  const [universe, setUniverse] = useState([]);
-  const [settings, setSettings] = useState(defaultSettings);
   const [autoTuneConfig, setAutoTuneConfig] = useState({ enabled: true, evalWindowTrades: 20, minTradesToStart: 10, minProfitFactor: 1, minExpectancy: 0, tpStepPct: 0.05, tpMinPct: 0.05, tpMaxPct: 0.5 });
+  const [serverNow, setServerNow] = useState(0);
+  const lastTopUpdateAtRef = useRef(0);
 
   const onMessage = useMemo(() => (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    setServerNow(Date.now());
     const type = msg.type === 'event' ? msg.topic : msg.type;
     const payload = msg.payload;
+
     if (type === 'snapshot') {
       if (payload?.leadlagState) {
-        setState(payload.leadlagState);
-        if (payload.leadlagState?.settings) setSettings((prev) => ({ ...prev, ...payload.leadlagState.settings }));
+        setState((prev) => ({ ...(prev || {}), ...(payload.leadlagState || {}) }));
         if (payload.leadlagState?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.leadlagState.autoTuneConfig }));
       }
-      const snapSymbols = Array.isArray(payload?.universeList?.symbols) ? payload.universeList.symbols : [];
-      if (snapSymbols.length) setUniverse(snapSymbols.map(normalizeSymbol));
+      if (payload?.leadlagState?.search) {
+        setSearchActive(Boolean(payload.leadlagState.search?.searchActive));
+      }
+      return;
     }
+
     if (type === 'leadlag.state') {
       setState((prev) => ({ ...(prev || {}), ...(payload || {}) }));
-      if (payload?.settings) setSettings((prev) => ({ ...prev, ...payload.settings }));
       if (payload?.autoTuneConfig) setAutoTuneConfig((prev) => ({ ...prev, ...payload.autoTuneConfig }));
+      return;
     }
+
     if (type === 'leadlag.top') {
-      const topRows = Array.isArray(payload?.topRows) ? payload.topRows : (Array.isArray(payload?.screeningTopRows) ? payload.screeningTopRows : []);
-      setRows(topRows.slice(0, 50));
+      const topRows = Array.isArray(payload?.topRows) ? payload.topRows : [];
+      const now = Date.now();
+      if (now - lastTopUpdateAtRef.current >= 250) {
+        setRows(topRows.slice(0, 50));
+        lastTopUpdateAtRef.current = now;
+      }
       setState((prev) => ({ ...(prev || {}), search: payload || {} }));
       setSearchActive(Boolean(payload?.searchActive));
+      return;
     }
-    if (type === 'leadlag.settingsUpdated') {
-      const nextSettings = payload?.settings || {};
-      setSettings((prev) => ({ ...prev, ...nextSettings }));
-      setState((prev) => ({ ...(prev || {}), settings: { ...(prev?.settings || {}), ...nextSettings } }));
-    }
+
     if (type === 'leadlag.search.ack') {
       setSearchActive(Boolean(payload?.active));
       if (payload?.state) setState((prev) => ({ ...(prev || {}), search: payload.state }));
+      return;
     }
-    if (type === 'universe.updated') setUniverse(Array.isArray(payload?.symbols) ? payload.symbols.map(normalizeSymbol) : []);
+
+    if (type === 'leadlag.start.ack' || type === 'leadlag.reset.ack') {
+      if (payload?.state?.settings) setFormSettings((prev) => ({ ...prev, ...payload.state.settings }));
+      return;
+    }
+
+    if (type === 'leadlag.settingsUpdated' && payload?.settings) {
+      setState((prev) => ({ ...(prev || {}), settings: { ...(prev?.settings || {}), ...payload.settings } }));
+      return;
+    }
+
     if (type === 'leadlag.learningLog') setState((prev) => ({ ...(prev || {}), learningLog: Array.isArray(payload) ? payload : [] }));
   }, []);
 
-  const { status, sendJson } = useWsClient({ onOpen: () => { sendJson({ type: 'getLeadLagState' }); sendJson({ type: 'getSnapshot' }); sendJson({ type: 'leadlag.getLearningLog' }); }, onMessage });
+  const { status, sendJson } = useWsClient({
+    onOpen: () => { sendJson({ type: 'getLeadLagState' }); sendJson({ type: 'getSnapshot' }); sendJson({ type: 'leadlag.getLearningLog' }); },
+    onMessage,
+  });
 
-  const universeSet = useMemo(() => new Set(universe), [universe]);
-  const isLeaderValid = universeSet.has(normalizeSymbol(settings.leaderSymbol));
-  const isFollowerValid = universeSet.has(normalizeSymbol(settings.followerSymbol));
-  const universeReady = universe.length > 0;
-  const canStart = status === 'connected' && universeReady && isLeaderValid && isFollowerValid;
+  const canStart = status === 'connected' && String(formSettings.leaderSymbol || '').trim().length > 0 && String(formSettings.followerSymbol || '').trim().length > 0;
   const search = state?.search || {};
-  const progressPct = Math.max(0, Math.min(100, Number(search?.pct || 0)));
-
-  const sortedRows = useMemo(() => {
-    const dir = sort.dir === 'asc' ? 1 : -1;
-    return [...rows].sort((a, b) => {
-      const av = a?.[sort.key];
-      const bv = b?.[sort.key];
-      if (typeof av === 'string' || typeof bv === 'string') return String(av || '').localeCompare(String(bv || '')) * dir;
-      return (Number(av || 0) - Number(bv || 0)) * dir;
-    });
-  }, [rows, sort]);
-
+  const progressPct = calcSearchProgress(search);
+  const positions = Array.isArray(state?.positions) ? state.positions : [];
+  const followerPx = Number(state?.manual?.followerPrice);
+  const currentTradeEvents = Array.isArray(state?.currentTradeEvents) ? state.currentTradeEvents : [];
+  const currentClosedTrades = Array.isArray(state?.currentClosedTrades) ? state.currentClosedTrades : [];
   const learningLog = Array.isArray(state?.learningLog) ? state.learningLog : [];
   const runSummary = Array.isArray(state?.runSummary) ? state.runSummary : [];
   const lastEvaluation = state?.lastEvaluation || {};
   const decision = state?.learningLog?.[0]?.decision || '—';
 
   return <div className='d-grid gap-3'>
+    <Row className='g-3'>
+      <Col lg={6}>
+        <Card><Card.Body>
+          <div className='d-flex align-items-center justify-content-between mb-2'>
+            <div className='fw-semibold'>LeadLag Trading</div>
+            <div className='d-flex gap-2 align-items-center'>
+              <Badge bg={status === 'connected' ? 'success' : 'warning'}>{status}</Badge>
+              <Badge bg={state?.status === 'RUNNING' ? 'success' : state?.status === 'STARTING' ? 'warning' : 'secondary'}>{state?.status || 'STOPPED'}</Badge>
+            </div>
+          </div>
+          <Row className='g-2'>
+            <Col md={6}><Form.Group><Form.Label>Leader</Form.Label><Form.Control type='text' value={formSettings.leaderSymbol || ''} onChange={(e) => setFormSettings((p) => ({ ...p, leaderSymbol: e.target.value }))} /></Form.Group></Col>
+            <Col md={6}><Form.Group><Form.Label>Follower</Form.Label><Form.Control type='text' value={formSettings.followerSymbol || ''} onChange={(e) => setFormSettings((p) => ({ ...p, followerSymbol: e.target.value }))} /></Form.Group></Col>
+            <Col md={4}><Form.Group><Form.Label>Leader move (%)</Form.Label><Form.Control type='number' step='0.01' value={formSettings.leaderMovePct} onChange={(e) => setFormSettings((p) => ({ ...p, leaderMovePct: Number(e.target.value) }))} /></Form.Group></Col>
+            <Col md={4}><Form.Group><Form.Label>TP (%)</Form.Label><Form.Control type='number' step='0.01' value={formSettings.followerTpPct} onChange={(e) => setFormSettings((p) => ({ ...p, followerTpPct: Number(e.target.value) }))} /></Form.Group></Col>
+            <Col md={4}><Form.Group><Form.Label>SL (%)</Form.Label><Form.Control type='number' step='0.01' value={formSettings.followerSlPct} onChange={(e) => setFormSettings((p) => ({ ...p, followerSlPct: Number(e.target.value) }))} /></Form.Group></Col>
+            <Col md={4}><Form.Group><Form.Label>Lag (ms)</Form.Label><Form.Select value={formSettings.lagMs} onChange={(e) => setFormSettings((p) => ({ ...p, lagMs: Number(e.target.value) }))}>{lagOptions.map((x) => <option key={x} value={x}>{x}</option>)}</Form.Select></Form.Group></Col>
+            <Col md={4} className='d-flex align-items-end'><Form.Check label='Allow short' checked={Boolean(formSettings.allowShort)} onChange={(e) => setFormSettings((p) => ({ ...p, allowShort: e.target.checked }))} /></Col>
+            <Col md={12} className='d-flex gap-2'>
+              <Button disabled={!canStart} onClick={() => sendJson({ type: 'startLeadLag', settings: formSettings })}>Start trading</Button>
+              <Button variant='outline-secondary' onClick={() => sendJson({ type: 'stopLeadLag' })}>Stop</Button>
+              <Button variant='outline-danger' onClick={() => sendJson({ type: 'resetLeadLag' })}>Reset</Button>
+            </Col>
+          </Row>
+        </Card.Body></Card>
+      </Col>
+
+      <Col lg={6}>
+        <Card><Card.Body className='d-grid gap-3'>
+          <div className='fw-semibold'>Trading diagnostics</div>
+          <div className='small'>Pair: {(state?.settings?.leaderSymbol || formSettings.leaderSymbol || '—')} / {(state?.settings?.followerSymbol || formSettings.followerSymbol || '—')}</div>
+          <div className='small'>Leader px {fmt(state?.manual?.leaderPrice)} · Follower px {fmt(state?.manual?.followerPrice)} · Baseline {fmt(state?.manual?.leaderBaseline)} · Leader move now {fmt(state?.manual?.leaderMovePctNow, 2)}%</div>
+          <div className='small'>Positions: {positions.length}/5</div>
+          <div className='small'>Fees {fmt(state?.stats?.feesUSDT)} · Funding {fmt(state?.stats?.fundingUSDT)} · Slippage {fmt(state?.stats?.slippageUSDT)}<br />feeRateMaker {fmt(state?.stats?.feeRateMaker, 6)}</div>
+          <div style={{ maxHeight: 160, overflow: 'auto' }}>
+            <Table size='sm'>
+              <thead><tr><th>Side</th><th>Entry</th><th>Qty</th><th>TP/SL</th><th>Unrealized</th><th>Age</th></tr></thead>
+              <tbody>
+                {positions.length ? positions.map((p) => {
+                  const sideSign = p?.side === 'SHORT' ? -1 : 1;
+                  const unreal = Number.isFinite(followerPx) ? ((followerPx - Number(p.entryPrice || 0)) * Number(p.qty || 0) * sideSign) : null;
+                  const ageSec = Number.isFinite(Number(p?.openedAt)) && Number(serverNow) > 0 ? Math.max(0, (Number(serverNow) - Number(p.openedAt)) / 1000) : null;
+                  return <tr key={p.id}><td>{p.side}</td><td>{fmt(p.entryPrice, 4)}</td><td>{fmt(p.qty, 4)}</td><td>{fmt(p.tpPrice, 4)} / {fmt(p.slPrice, 4)}</td><td>{fmt(unreal, 4)}</td><td>{Number.isFinite(ageSec) ? `${Math.round(ageSec)}s` : '—'}</td></tr>;
+                }) : <tr><td colSpan={6} className='text-muted'>No open positions</td></tr>}
+              </tbody>
+            </Table>
+          </div>
+
+          <div className='fw-semibold'>Trade events (last 20, current run)</div>
+          <div style={{ maxHeight: 180, overflow: 'auto' }}>
+            <Table size='sm'>
+              <thead><tr><th>Time</th><th>Event</th><th>Symbol</th><th>Side</th><th>Price</th><th>PnL</th></tr></thead>
+              <tbody>
+                {currentTradeEvents.length ? currentTradeEvents.map((e, idx) => <tr key={`${e.ts}-${idx}`}><td>{fmtTs(e.ts)}</td><td>{e.event}</td><td>{e.symbol}</td><td>{e.side || '—'}</td><td>{fmt(e.exitPrice ?? e.entryPrice, 4)}</td><td>{fmt(e.pnlUSDT, 4)}</td></tr>) : <tr><td colSpan={6} className='text-muted'>No events in current run</td></tr>}
+              </tbody>
+            </Table>
+          </div>
+
+          <div className='fw-semibold'>Trade history (closed trades, current pair/current run)</div>
+          <div style={{ maxHeight: 180, overflow: 'auto' }}>
+            <Table size='sm'>
+              <thead><tr><th>Closed</th><th>Side</th><th>Entry</th><th>Exit</th><th>Qty</th><th>PnL</th><th>Fees</th><th>Funding</th><th>Slip</th><th>Reason</th><th>Dur(s)</th></tr></thead>
+              <tbody>
+                {currentClosedTrades.length ? currentClosedTrades.map((t, idx) => <tr key={`${t.closedAt}-${idx}`}><td>{fmtTs(t.closedAt)}</td><td>{t.side}</td><td>{fmt(t.entryPrice, 4)}</td><td>{fmt(t.exitPrice, 4)}</td><td>{fmt(t.qty, 4)}</td><td>{fmt(t.pnl, 4)}</td><td>{fmt(t.fees, 4)}</td><td>{fmt(t.funding, 4)}</td><td>{fmt(t.slippage, 4)}</td><td>{t.reason || '—'}</td><td>{fmt(t.durationSec, 1)}</td></tr>) : <tr><td colSpan={11} className='text-muted'>No closed trades in current run</td></tr>}
+              </tbody>
+            </Table>
+          </div>
+        </Card.Body></Card>
+      </Col>
+    </Row>
+
     <Card><Card.Body>
       <div className='d-flex align-items-center justify-content-between mb-2'>
-        <div className='fw-semibold'>LeadLag Trading</div>
-        <Badge bg={status === 'connected' ? 'success' : 'warning'}>{status}</Badge>
+        <div className='fw-semibold'>Search (Top-50)</div>
+        <div className='d-flex gap-2'>
+          <Button size='sm' disabled={searchActive || status !== 'connected'} onClick={() => sendJson({ type: 'startLeadLagSearch' })}>Start search</Button>
+          <Button size='sm' variant='outline-danger' disabled={!searchActive || status !== 'connected'} onClick={() => sendJson({ type: 'stopLeadLagSearch' })}>Stop search</Button>
+        </div>
       </div>
-      <datalist id='universe-list'>{universe.map((s) => <option key={s} value={s} />)}</datalist>
-      <Row className='g-2'>
-        <Col md={3}><Form.Group><Form.Label>Leader</Form.Label><Form.Control type='text' list='universe-list' value={settings.leaderSymbol || ''} onChange={(e) => setSettings((p) => ({ ...p, leaderSymbol: normalizeSymbol(e.target.value) }))} /></Form.Group></Col>
-        <Col md={3}><Form.Group><Form.Label>Follower</Form.Label><Form.Control type='text' list='universe-list' value={settings.followerSymbol || ''} onChange={(e) => setSettings((p) => ({ ...p, followerSymbol: normalizeSymbol(e.target.value) }))} /></Form.Group></Col>
-        <Col md={2}><Form.Group><Form.Label>Leader move trigger (%)</Form.Label><Form.Control type='number' step='0.01' value={settings.leaderMovePct} onChange={(e) => setSettings((p) => ({ ...p, leaderMovePct: Number(e.target.value) }))} /></Form.Group></Col>
-        <Col md={2}><Form.Group><Form.Label>Follower TP (%)</Form.Label><Form.Control type='number' step='0.01' value={settings.followerTpPct} onChange={(e) => setSettings((p) => ({ ...p, followerTpPct: Number(e.target.value) }))} /></Form.Group></Col>
-        <Col md={2}><Form.Group><Form.Label>Follower SL (%)</Form.Label><Form.Control type='number' step='0.01' value={settings.followerSlPct} onChange={(e) => setSettings((p) => ({ ...p, followerSlPct: Number(e.target.value) }))} /></Form.Group></Col>
-        <Col md={2}><Form.Group><Form.Label>Lag (ms)</Form.Label><Form.Select value={settings.lagMs} onChange={(e) => setSettings((p) => ({ ...p, lagMs: Number(e.target.value) }))}>{lagOptions.map((x) => <option key={x} value={x}>{x}</option>)}</Form.Select></Form.Group></Col>
-        <Col md={2}><Form.Check className='mt-4' label='Allow short' checked={Boolean(settings.allowShort)} onChange={(e) => setSettings((p) => ({ ...p, allowShort: e.target.checked }))} /></Col>
-      </Row>
-      {!universeReady ? <div className='small text-muted mt-2'>Universe loading…</div> : null}
-      {universeReady && (!isLeaderValid || !isFollowerValid) ? <div className='small text-danger mt-2'>Выберите символы только из universe.</div> : null}
-
-      <div className='d-flex gap-2 mt-3'>
-        <Button disabled={!canStart} onClick={() => sendJson({ type: 'startLeadLag', settings })}>Start</Button>
-        <Button variant='outline-warning' disabled={status === 'closed'} onClick={() => sendJson({ type: 'stopLeadLag' })}>Stop</Button>
-        <Button variant='outline-danger' disabled={status === 'closed'} onClick={() => sendJson({ type: 'resetLeadLag' })}>Reset</Button>
-        <Button variant={searchActive ? 'outline-danger' : 'outline-success'} disabled={status === 'closed'} onClick={() => sendJson({ type: searchActive ? 'stopLeadLagSearch' : 'startLeadLagSearch' })}>{searchActive ? 'Stop search' : 'Start search'}</Button>
-      </div>
-
-      <div className='small mt-3'>
-        <div>Trades {Number(state?.stats?.trades || 0)} / Wins {Number(state?.stats?.wins || 0)} / Losses {Number(state?.stats?.losses || 0)} / Win rate {fmt(state?.stats?.winRate, 1)}% / PnL {fmt(state?.stats?.pnlUSDT, 3)}</div>
-        <div>Fees {fmt(state?.stats?.feesUSDT, 3)} / Funding {fmt(state?.stats?.fundingUSDT, 3)} / Проскальзывание {fmt(state?.stats?.slippageUSDT, 3)} / FeeRate maker {fmt(state?.stats?.feeRateMaker, 4)}</div>
-      </div>
-    </Card.Body></Card>
-
-    <Card><Card.Body>
-      <div className='fw-semibold'>Search (Top-50)</div>
-      <div className='small text-muted mb-2'>Phase: {search?.phase || 'idle'} · Warmup {Number(search?.symbolsReady || 0)}/{Number(search?.symbolsTotal || 0)} · Screening {Number(search?.processedPairs || 0)}/{Number(search?.totalPairs || 0)} · Confirmations {Number(search?.confirmationsProcessed || 0)}/{Number(search?.confirmationsTotal || 0)}</div>
-      <div style={{ height: 10, background: '#eee', borderRadius: 6, overflow: 'hidden' }} className='mb-2'><div style={{ width: `${progressPct}%`, height: '100%', background: '#0d6efd', transition: 'width 0.2s linear' }} /></div>
-      {search?.error ? <div className='small text-danger mb-2'>{search.error}</div> : null}
-
-      <Table size='sm' style={{ tableLayout: 'fixed', width: '100%' }}>
-        <colgroup><col style={{ width: '140px' }} /><col style={{ width: '140px' }} /><col style={{ width: '100px' }} /><col style={{ width: '100px' }} /><col style={{ width: '120px' }} /></colgroup>
-        <thead><tr><th role='button' onClick={() => setSort((p) => ({ key: 'leader', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Leader</th><th role='button' onClick={() => setSort((p) => ({ key: 'follower', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Follower</th><th role='button' onClick={() => setSort((p) => ({ key: 'corr', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Corr</th><th role='button' onClick={() => setSort((p) => ({ key: 'lagMs', dir: p.dir === 'desc' ? 'asc' : 'desc' }))}>Lag(ms)</th><th>Confirmations</th></tr></thead>
+      <div className='small mb-1'>Phase: {search?.phase || 'idle'} · Warmup {search?.symbolsReady || 0}/{search?.symbolsTotal || 0} · Screening {search?.processedPairs || 0}/{search?.totalPairs || 0} · Confirmations {search?.confirmationsDone || 0}/{search?.confirmationsTarget || 0}</div>
+      <ProgressBar now={progressPct} label={`${Math.round(progressPct)}%`} className='mb-2' />
+      <Table size='sm' style={{ tableLayout: 'fixed' }}>
+        <colgroup><col style={{ width: '25%' }} /><col style={{ width: '25%' }} /><col style={{ width: '15%' }} /><col style={{ width: '15%' }} /><col style={{ width: '20%' }} /></colgroup>
+        <thead><tr><th>Leader</th><th>Follower</th><th>Corr</th><th>Lag(ms)</th><th>Confirmations</th></tr></thead>
         <tbody>
-          {sortedRows.slice(0, 50).map((r, i) => <tr key={`${r.leader}-${r.follower}-${i}`}><td style={{ whiteSpace: 'nowrap' }}>{r.leader}</td><td style={{ whiteSpace: 'nowrap' }}>{r.follower}</td><td>{fmt(r.corr)}</td><td>{fmt(r.lagMs, 0)}</td><td>{Number(r.confirmations || 0)}</td></tr>)}
+          {rows.map((r, i) => <tr key={`${r.leader}-${r.follower}-${i}`}><td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.leader}</td><td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.follower}</td><td>{Number.isFinite(Number(r.corr)) ? fmt(r.corr, 3) : '—'}</td><td>{fmt(r.lagMs, 0)}</td><td>{Number(r.confirmations || 0)}</td></tr>)}
         </tbody>
       </Table>
     </Card.Body></Card>
@@ -131,7 +196,7 @@ export default function LeadLagPage() {
     <Card><Card.Body>
       <div className='fw-semibold mb-2'>Run summary / History</div>
       <Table size='sm'><thead><tr><th>Pair</th><th>Настройки</th><th>Подтверждения</th><th>Trades/W/L/WR</th><th>PnL</th><th>Fees</th><th>Funding</th><th>Slippage</th><th></th></tr></thead><tbody>
-        {runSummary.length ? runSummary.map((r) => <tr key={r.runKey}><td>{r.pair}</td><td>{`trg:${r.settings?.leaderMovePct} tp:${r.settings?.followerTpPct} sl:${r.settings?.followerSlPct} short:${r.settings?.allowShort ? 'y' : 'n'} lag:${r.settings?.lagMs}`}</td><td>{r.confirmations || 0}</td><td>{r.trades}/{r.wins}/{r.losses}/{fmt(r.winRate, 1)}%</td><td>{fmt(r.pnlUSDT, 3)}</td><td>{fmt(r.feesUSDT, 3)}</td><td>{fmt(r.fundingUSDT, 3)}</td><td>{fmt(r.slippageUSDT, 3)}</td><td><Button size='sm' variant='outline-secondary' onClick={() => setSettings({ ...(r.settings || settings), tpSource: 'manual' })}>Copy</Button></td></tr>) : <tr><td colSpan={9} className='text-muted'>No run history</td></tr>}
+        {runSummary.length ? runSummary.map((r) => <tr key={r.runKey}><td>{r.pair}</td><td>{`trg:${r.settings?.leaderMovePct} tp:${r.settings?.followerTpPct} sl:${r.settings?.followerSlPct} short:${r.settings?.allowShort ? 'y' : 'n'} lag:${r.settings?.lagMs}`}</td><td>{r.confirmations || 0}</td><td>{r.trades}/{r.wins}/{r.losses}/{fmt(r.winRate, 1)}%</td><td>{fmt(r.pnlUSDT, 3)}</td><td>{fmt(r.feesUSDT, 3)}</td><td>{fmt(r.fundingUSDT, 3)}</td><td>{fmt(r.slippageUSDT, 3)}</td><td><Button size='sm' variant='outline-secondary' onClick={() => setFormSettings({ ...(r.settings || formSettings), tpSource: 'manual' })}>Copy</Button></td></tr>) : <tr><td colSpan={9} className='text-muted'>No run history</td></tr>}
       </tbody></Table>
     </Card.Body></Card>
 

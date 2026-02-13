@@ -161,19 +161,17 @@ function createIdleSearchState() {
   return {
     searchActive: false,
     phase: 'idle',
+    message: 'idle',
+    startedAt: null,
     symbolsTotal: 0,
     symbolsReady: 0,
-    warmupPct: 0,
-    warmupNote: null,
     totalPairs: 0,
     processedPairs: 0,
-    screeningPct: 0,
+    confirmationsDone: 0,
+    confirmationsTarget: 0,
     candidatesKept: 0,
     candidatesCap: 5000,
     screeningTopRows: [],
-    confirmationsProcessed: 0,
-    confirmationsTotal: 0,
-    confirmationsPct: 0,
     topRows: [],
     pct: 0,
     lastUpdateAt: Date.now(),
@@ -394,24 +392,10 @@ function getBotsOverview() {
   };
 }
 
-function computeLeadLagTopSimple() {
-  const symbols = bybit.getSymbols();
-  const leaders = ["BTCUSDT", "ETHUSDT", "SOLUSDT"].filter((sym) => symbols.includes(sym));
-  const followers = symbols.filter((sym) => marketBars.getBars(sym, 200, "BT").length >= 30);
-  const eligible = [...new Set([...leaders, ...followers])];
-  const activePreset = presetsStore.getActivePreset();
-  const params = activePreset?.params || {};
-  const excludedCoins = Array.isArray(activePreset?.excludedCoins) ? activePreset.excludedCoins : [];
-  const top = leadLag.computeTop({ leaders, symbols: eligible, getBars: (sym, n) => marketBars.getBars(sym, n, "BT"), topN: 10, windowBars: 480, params });
-
-  lastLeadLagTop = top.map((r) => {
-    const readiness = evaluateTradeReady({ row: r, preset: activePreset, excludedCoins, lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0, getBars: (sym, n, source) => marketBars.getBars(sym, n, source), bucketMs: 250 });
-    return { ...r, leaderSrc: "bybit", followerSrc: "bybit", source: "BT", tradeReady: readiness.tradeReady, blockers: readiness.blockers };
-  });
-  paperTest.setSearchRows?.(lastLeadLagTop);
-  leadLagSearchState = { ...leadLagSearchState, topRows: lastLeadLagTop.slice(0, 50), screeningTopRows: lastLeadLagTop.slice(0, 50), lastUpdateAt: Date.now() };
-  broadcast({ type: "leadlag.top", payload: leadLagSearchState });
+function broadcastBotsOverview() {
+  broadcastEvent("bots.overview", getBotsOverview());
 }
+
 
 function calculateSpreadPct(ticker) {
   const bid = Number(ticker?.bid || 0);
@@ -454,114 +438,142 @@ function buildSymbolFeature(symbol, bars, impulseZ = 2) {
   return { symbol, returnsMap: map, impulseTimes, st, threshold };
 }
 
-function startLeadLagSearch() {
-  if (leadLagSearchRunner?.active) leadLagSearchRunner.active = false;
-  const symbols = normalizeSymbols(universe.getUniverse({ limit: 500 }).symbols || [], 2000).filter((s) => String(s).endsWith('USDT'));
-  const nowTs = Date.now();
-  const runner = { active: true, timer: null };
+function startLeadLagSearch(symbols = getUniverseAllSymbols()) {
+  stopLeadLagSearch({ reason: 'restart', preserveRows: false, releaseFeed: true, silent: true });
+  const normalized = normalizeSymbols(symbols, 2000).filter((sym) => String(sym).endsWith('USDT'));
+  if (!normalized.length) {
+    leadLagSearchState = { ...createIdleSearchState(), message: 'universe empty' };
+    broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
+    return { ok: false, reason: 'UNIVERSE_EMPTY', state: leadLagSearchState };
+  }
+
+  subscriptions.requestFeed('leadlag-search', { bybitSymbols: normalized, streams: ['ticker'] });
+  const startedAt = Date.now();
+  const runner = { active: true, startedAt, lastEmitAt: 0, warmupTimer: null, screenHandle: null, confirmHandle: null };
   leadLagSearchRunner = runner;
   leadLagSearchActive = true;
-
-  const stateBase = {
+  lastLeadLagTop = [];
+  paperTest.setSearchRows?.([]);
+  leadLagSearchState = {
     ...createIdleSearchState(),
     searchActive: true,
     phase: 'warmup',
-    symbolsTotal: symbols.length,
-    warmupNote: 'waiting microbars...',
-    candidatesCap: 5000,
-    lastUpdateAt: nowTs,
+    message: 'warming up',
+    startedAt,
+    symbolsTotal: normalized.length,
   };
-  leadLagSearchState = stateBase;
-  lastLeadLagTop = [];
-  paperTest.setSearchRows?.([]);
-  broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
 
-  const warmupMaxMs = 20_000;
-  const warmupStartedAt = Date.now();
-  const minBars = 60;
+  const throttledBroadcast = (force = false) => {
+    leadLagSearchState.lastUpdateAt = Date.now();
+    if (!force && Date.now() - Number(runner.lastEmitAt || 0) < 250) return;
+    runner.lastEmitAt = Date.now();
+    broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
+  };
 
-  function emitState(patch = {}, force = false) {
-    const next = { ...leadLagSearchState, ...patch, lastUpdateAt: Date.now() };
-    const warm = Number(next.warmupPct || 0);
-    const scr = Number(next.screeningPct || 0);
-    const conf = Number(next.confirmationsPct || 0);
-    next.pct = Math.max(warm * 0.2, scr * 0.8, conf, Number(next.pct || 0));
+  const updateState = (patch = {}, force = false) => {
+    const next = { ...leadLagSearchState, ...patch };
+    next.processedPairs = Math.min(Number(next.processedPairs || 0), Number(next.totalPairs || 0));
+    next.confirmationsDone = Math.min(Number(next.confirmationsDone || 0), Number(next.confirmationsTarget || 0));
+    const warmupPct = next.symbolsTotal > 0 ? (next.symbolsReady / next.symbolsTotal) : 0;
+    const screeningPct = next.totalPairs > 0 ? (next.processedPairs / next.totalPairs) : 0;
+    const confirmationsPct = next.confirmationsTarget > 0 ? (next.confirmationsDone / next.confirmationsTarget) : (next.phase === 'finished' ? 1 : 0);
+    if (next.phase === 'warmup') next.pct = Math.max(0, Math.min(1, warmupPct * 0.2));
+    else if (next.phase === 'screening') next.pct = Math.max(0.2, Math.min(0.8, 0.2 + screeningPct * 0.6));
+    else if (next.phase === 'confirmations') next.pct = Math.max(0.8, Math.min(1, 0.8 + confirmationsPct * 0.2));
+    else if (next.phase === 'finished') next.pct = 1;
+    else if (next.phase === 'idle') next.pct = 0;
     leadLagSearchState = next;
-    if (force || !runner.lastBroadcastAt || Date.now() - runner.lastBroadcastAt >= 250) {
-      runner.lastBroadcastAt = Date.now();
-      broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
-    }
-  }
+    throttledBroadcast(force);
+  };
 
-  function stopWithError(message) {
+  const finishSearch = ({ message = 'finished', topRows = leadLagSearchState.topRows || [] } = {}) => {
     if (!runner.active) return;
     runner.active = false;
     leadLagSearchActive = false;
-    emitState({ searchActive: false, phase: 'error', error: message, warmupNote: message }, true);
-  }
+    const finalRows = (topRows || []).slice(0, 50);
+    lastLeadLagTop = finalRows;
+    paperTest.setSearchRows?.(finalRows);
+    updateState({
+      searchActive: false,
+      phase: 'finished',
+      message,
+      topRows: finalRows,
+      screeningTopRows: finalRows,
+      confirmationsDone: Number(leadLagSearchState.confirmationsTarget || 0),
+    }, true);
+    subscriptions.releaseFeed('leadlag-search');
+  };
 
-  function warmupTick() {
+  const failSearch = (errorMessage) => {
     if (!runner.active) return;
-    const elapsed = Date.now() - warmupStartedAt;
-    const ready = symbols.filter((sym) => {
+    runner.active = false;
+    leadLagSearchActive = false;
+    updateState({ searchActive: false, phase: 'finished', message: errorMessage, error: errorMessage }, true);
+    subscriptions.releaseFeed('leadlag-search');
+  };
+
+  throttledBroadcast(true);
+
+  const warmupStartedAt = Date.now();
+  const warmupMaxMs = 20_000;
+  const minBars = 60;
+
+  const warmupTick = () => {
+    if (!runner.active) return;
+    const ready = [];
+    for (const sym of normalized) {
+      if (!runner.active) return;
       const t = marketData.getTicker(sym, 'BT');
-      if (!t || (Date.now() - Number(t.ts || 0)) > 15_000) return false;
-      return (marketBars.getBars(sym, 200, 'BT') || []).length >= minBars;
-    });
-    const readyCount = ready.length;
-    const byReady = symbols.length > 0 ? (readyCount / symbols.length) * 100 : 0;
-    const byTime = Math.min(100, (elapsed / warmupMaxMs) * 100);
-    emitState({ symbolsReady: readyCount, warmupPct: Math.max(byReady, byTime), warmupNote: readyCount < symbols.length ? 'waiting microbars...' : null });
-
-    if (elapsed < warmupMaxMs && readyCount < symbols.length) {
-      runner.timer = setTimeout(warmupTick, 500);
-      return;
+      if (!t || (Date.now() - Number(t.ts || 0)) > 15_000) continue;
+      if ((marketBars.getBars(sym, 200, 'BT') || []).length >= minBars) ready.push(sym);
     }
+    updateState({ symbolsReady: ready.length, message: ready.length < normalized.length ? 'warming up' : 'warmup done' });
 
-    const readySymbols = ready;
-    if (readySymbols.length < 30) {
-      stopWithError('Not enough symbols ready for search yet');
-      return;
-    }
-    runScreening(readySymbols);
-  }
-
-  function runScreening(readySymbols) {
     if (!runner.active) return;
-    const totalPairs = readySymbols.length * Math.max(0, readySymbols.length - 1);
-    const candidateCap = 5000;
-    const previewCap = 50;
+    if ((Date.now() - warmupStartedAt) < warmupMaxMs && ready.length < normalized.length) {
+      runner.warmupTimer = setTimeout(warmupTick, 500);
+      return;
+    }
+    if (ready.length < 30) {
+      failSearch('Not enough symbols ready for search');
+      return;
+    }
+    runScreening(ready);
+  };
+
+  const runScreening = (readySymbols) => {
+    if (!runner.active) return;
     const minConfirm = 2;
     const minImpulses = 5;
     const lagOptions = [250, 500, 750, 1000];
     const leaderMoveThr = Math.max(0.0005, Number(paperTest.getState({ includeHistory: false })?.settings?.leaderMovePct || 0.1) / 100);
+    const candidateCap = 5000;
+    const previewCap = 50;
 
     const features = new Map();
     for (const sym of readySymbols) {
+      if (!runner.active) return;
       features.set(sym, buildSymbolFeature(sym, marketBars.getBars(sym, 500, 'BT') || []));
     }
 
     let i = 0;
     let j = 0;
     let processedPairs = 0;
+    const totalPairs = readySymbols.length * Math.max(0, readySymbols.length - 1);
     const candidates = [];
     const screeningTopRows = [];
 
     const tryKeep = (arr, row, cap, scoreKey = 'confirmations') => {
       if (arr.length < cap) {
         arr.push(row);
-      } else {
-        arr.sort((a, b) => Number(a[scoreKey] || 0) - Number(b[scoreKey] || 0));
-        if (Number(row[scoreKey] || 0) > Number(arr[0]?.[scoreKey] || 0)) {
-          arr[0] = row;
-        }
+        return;
       }
+      arr.sort((a, b) => Number(a[scoreKey] || 0) - Number(b[scoreKey] || 0));
+      if (Number(row[scoreKey] || 0) > Number(arr[0]?.[scoreKey] || 0)) arr[0] = row;
     };
 
-    emitState({ phase: 'screening', totalPairs, processedPairs: 0, screeningPct: 0, candidatesKept: 0, screeningTopRows: [], topRows: [] }, true);
-
-    function scorePair(leader, follower) {
-      if (leader === follower) return null;
+    const scorePair = (leader, follower) => {
+      if (!runner.active || leader === follower) return null;
       const lt = marketData.getTicker(leader, 'BT');
       const ft = marketData.getTicker(follower, 'BT');
       if (!lt || !ft) return null;
@@ -576,8 +588,10 @@ function startLeadLagSearch() {
       let bestLag = 250;
       let bestConf = 0;
       for (const lag of lagOptions) {
+        if (!runner.active) return null;
         let conf = 0;
         for (const ts of lf.impulseTimes) {
+          if (!runner.active) return null;
           const leaderRet = lf.returnsMap.get(ts);
           const followerRet = ff.returnsMap.get(ts + lag);
           if (!Number.isFinite(leaderRet) || !Number.isFinite(followerRet)) continue;
@@ -591,20 +605,21 @@ function startLeadLagSearch() {
         }
       }
       if (bestConf < minConfirm) return null;
-      return { leader, follower, lagMs: bestLag, confirmations: bestConf, corr: 0, impulses: lf.impulseTimes.length, source: 'BT' };
-    }
+      return { leader, follower, lagMs: bestLag, confirmations: bestConf, corr: null, impulses: lf.impulseTimes.length, source: 'BT' };
+    };
 
-    function screeningTick() {
+    updateState({ phase: 'screening', message: 'screening', totalPairs, processedPairs: 0, candidatesKept: 0, topRows: [], screeningTopRows: [] }, true);
+
+    const screeningTick = () => {
       if (!runner.active) return;
-      let done = 0;
-      while (done < 800 && i < readySymbols.length) {
+      const tickStart = performance.now();
+      while ((performance.now() - tickStart) < 12 && i < readySymbols.length) {
         const leader = readySymbols[i];
         const follower = readySymbols[j];
         j += 1;
         if (j >= readySymbols.length) { i += 1; j = 0; }
         if (!leader || !follower || leader === follower) continue;
         processedPairs += 1;
-        done += 1;
         const scored = scorePair(leader, follower);
         if (!scored) continue;
         tryKeep(candidates, scored, candidateCap);
@@ -612,117 +627,113 @@ function startLeadLagSearch() {
       }
 
       const sortedPreview = [...screeningTopRows].sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0)).slice(0, 50);
-      emitState({ processedPairs, screeningPct: totalPairs > 0 ? Math.min(100, (processedPairs / totalPairs) * 100) : 0, candidatesKept: candidates.length, screeningTopRows: sortedPreview, topRows: sortedPreview });
+      updateState({ processedPairs, candidatesKept: candidates.length, screeningTopRows: sortedPreview, topRows: sortedPreview });
 
       if (i >= readySymbols.length) {
         runConfirmations([...candidates].sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0)).slice(0, 1500), features);
         return;
       }
-      setImmediate(screeningTick);
-    }
+      runner.screenHandle = setImmediate(screeningTick);
+    };
 
-    setImmediate(screeningTick);
-  }
+    runner.screenHandle = setImmediate(screeningTick);
+  };
 
-  function runConfirmations(candidates, features) {
+  const runConfirmations = (candidates, features) => {
     if (!runner.active) return;
     if (!candidates.length) {
-      leadLagSearchActive = false;
-      emitState({ searchActive: false, phase: 'done', confirmationsProcessed: 0, confirmationsTotal: 0, confirmationsPct: 100, topRows: [], screeningTopRows: [] }, true);
+      finishSearch({ message: 'finished: no candidates', topRows: [] });
       return;
     }
+
+    const reducedSymbols = [...new Set(candidates.flatMap((row) => [row.leader, row.follower]))];
+    subscriptions.releaseFeed('leadlag-search');
+    subscriptions.requestFeed('leadlag-search', { bybitSymbols: reducedSymbols, streams: ['ticker'] });
 
     let idx = 0;
     const rows = [];
     const total = candidates.length;
-    emitState({ phase: 'confirmations', confirmationsProcessed: 0, confirmationsTotal: total, confirmationsPct: 0 }, true);
+    updateState({ phase: 'confirmations', message: 'confirmations', confirmationsDone: 0, confirmationsTarget: total }, true);
 
-    function corrForPair(leaderMap, followerMap, lagMs) {
+    const corrForPair = (leaderMap, followerMap, lagMs) => {
       const xs = [];
       const ys = [];
       for (const [ts, lret] of leaderMap.entries()) {
+        if (!runner.active) return null;
         const fret = followerMap.get(ts + lagMs);
         if (!Number.isFinite(fret)) continue;
         xs.push(lret);
         ys.push(fret);
         if (xs.length >= 480) break;
       }
-      if (xs.length < 5) return 0;
-      const avgX = xs.reduce((a, b) => a + b, 0) / xs.length;
-      const avgY = ys.reduce((a, b) => a + b, 0) / ys.length;
+      const n = xs.length;
+      if (n < 120) return null;
+      const avgX = xs.reduce((a, b) => a + b, 0) / n;
+      const avgY = ys.reduce((a, b) => a + b, 0) / n;
       let num = 0; let dx = 0; let dy = 0;
-      for (let k = 0; k < xs.length; k += 1) {
+      for (let k = 0; k < n; k += 1) {
         const vx = xs[k] - avgX;
         const vy = ys[k] - avgY;
         num += vx * vy;
         dx += vx * vx;
         dy += vy * vy;
       }
+      const epsilon = 1e-9;
+      if (dx <= epsilon || dy <= epsilon) return null;
       const den = Math.sqrt(dx * dy);
-      return den > 0 ? num / den : 0;
-    }
+      return den > epsilon ? (num / den) : null;
+    };
 
-    function confTick() {
+    const confTick = () => {
       if (!runner.active) return;
-      let done = 0;
-      while (done < 80 && idx < candidates.length) {
+      const tickStart = performance.now();
+      while ((performance.now() - tickStart) < 12 && idx < candidates.length) {
         const row = candidates[idx];
         idx += 1;
-        done += 1;
         const lf = features.get(row.leader);
         const ff = features.get(row.follower);
         if (!lf || !ff) continue;
         const corr = corrForPair(lf.returnsMap, ff.returnsMap, Number(row.lagMs || 250));
         const activePreset = presetsStore.getActivePreset();
-        const readiness = evaluateTradeReady({ row: { ...row, corr }, preset: activePreset, excludedCoins: Array.isArray(activePreset?.excludedCoins) ? activePreset.excludedCoins : [], lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0, getBars: (sym, n, source) => marketBars.getBars(sym, n, source), bucketMs: 250 });
+        const readiness = evaluateTradeReady({ row: { ...row, corr: Number(corr || 0) }, preset: activePreset, excludedCoins: Array.isArray(activePreset?.excludedCoins) ? activePreset.excludedCoins : [], lastTradeAt: paperTest.getState({ includeHistory: false })?.position?.openedAt || 0, getBars: (sym, n, source) => marketBars.getBars(sym, n, source), bucketMs: 250 });
         rows.push({ ...row, corr, tradeReady: readiness.tradeReady, blockers: readiness.blockers, source: 'BT' });
       }
 
       rows.sort((a, b) => Number(b.confirmations || 0) - Number(a.confirmations || 0) || Math.abs(Number(b.corr || 0)) - Math.abs(Number(a.corr || 0)) || Number(a.lagMs || 0) - Number(b.lagMs || 0));
-      const topRows = rows.slice(0, 50);
-      lastLeadLagTop = topRows;
-      paperTest.setSearchRows?.(topRows);
-      emitState({ confirmationsProcessed: idx, confirmationsTotal: total, confirmationsPct: Math.min(100, (idx / total) * 100), topRows });
+      updateState({ confirmationsDone: idx, topRows: rows.slice(0, 50) });
 
       if (idx >= total) {
-        leadLagSearchActive = false;
-        emitState({ searchActive: false, phase: 'done', screeningPct: 100, confirmationsPct: 100, pct: 100 }, true);
+        finishSearch({ message: 'finished', topRows: rows.slice(0, 50) });
         return;
       }
-      setImmediate(confTick);
-    }
+      runner.confirmHandle = setImmediate(confTick);
+    };
 
-    setImmediate(confTick);
-  }
+    runner.confirmHandle = setImmediate(confTick);
+  };
 
-  setImmediate(warmupTick);
+  runner.warmupTimer = setTimeout(warmupTick, 0);
+  return { ok: true, active: true, state: leadLagSearchState };
 }
 
-function stopLeadLagSearch({ reset = false } = {}) {
-  if (leadLagSearchRunner) {
-    leadLagSearchRunner.active = false;
-    if (leadLagSearchRunner.timer) clearTimeout(leadLagSearchRunner.timer);
+function stopLeadLagSearch({ reason = 'stopped', preserveRows = false, releaseFeed = true, silent = false } = {}) {
+  const runner = leadLagSearchRunner;
+  if (runner) {
+    runner.active = false;
+    if (runner.warmupTimer) clearTimeout(runner.warmupTimer);
+    if (runner.screenHandle) clearImmediate(runner.screenHandle);
+    if (runner.confirmHandle) clearImmediate(runner.confirmHandle);
   }
   leadLagSearchRunner = null;
   leadLagSearchActive = false;
-  leadLagSearchState = reset ? createIdleSearchState() : {
-    ...leadLagSearchState,
-    searchActive: false,
-    phase: 'idle',
-    warmupNote: null,
-    lastUpdateAt: Date.now(),
-  };
-  broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
+  if (releaseFeed) subscriptions.releaseFeed('leadlag-search');
+  leadLagSearchState = preserveRows
+    ? { ...leadLagSearchState, searchActive: false, phase: 'finished', message: reason, pct: 1, lastUpdateAt: Date.now() }
+    : { ...createIdleSearchState(), message: reason };
+  if (!silent) broadcast({ type: 'leadlag.top', payload: leadLagSearchState });
+  return leadLagSearchState;
 }
 
-setInterval(() => {
-  try {
-    if (leadLagSearchActive) return;
-    const llState = paperTest.getState?.({ includeHistory: false }) || {};
-    if (llState?.status !== 'RUNNING') return;
-    computeLeadLagTopSimple();
-  } catch {}
-}, 1000);
 setInterval(() => broadcast({ type: "universe.status", payload: universe.getStatus() }), 30000);
 setInterval(() => broadcastEvent("bots.overview", getBotsOverview()), 2000);
 setInterval(async () => {
@@ -1012,8 +1023,11 @@ app.get("/ws", { websocket: true }, (conn) => {
       const leader = String(settings?.leaderSymbol || "BTCUSDT").toUpperCase();
       const follower = String(settings?.followerSymbol || "ETHUSDT").toUpperCase();
       subscriptions.requestFeed("leadlag-trading", { bybitSymbols: [leader, follower], streams: ["ticker"] });
+      stopLeadLagSearch({ reason: 'stopped: trading started', preserveRows: false, releaseFeed: true });
       const result = paperTest.start({ presetId, mode: msg.mode || "paper", settings });
       const currentState = paperTest.getState();
+      broadcast({ type: 'leadlag.state', payload: currentState });
+      broadcastBotsOverview();
       safeSend(ws, { type: "leadlag.start.ack", payload: { ok: Boolean(result?.ok), state: currentState, settings: currentState?.settings || settings } });
       safeSend(ws, { type: "paper.start.ack", payload: { ok: Boolean(result?.ok), state: currentState, settings: currentState?.settings || settings } });
       return;
@@ -1023,6 +1037,8 @@ app.get("/ws", { websocket: true }, (conn) => {
       paperTest.stop({ reason: "manual" });
       subscriptions.releaseFeed("leadlag-trading");
       const currentState = paperTest.getState();
+      broadcast({ type: 'leadlag.state', payload: currentState });
+      broadcastBotsOverview();
       safeSend(ws, { type: "leadlag.stop.ack", payload: { ok: true, state: currentState } });
       safeSend(ws, { type: "paper.stop.ack", payload: { ok: true, state: currentState } });
       return;
@@ -1031,20 +1047,13 @@ app.get("/ws", { websocket: true }, (conn) => {
 
     if (msg.type === "startLeadLagSearch") {
       const symbols = getUniverseAllSymbols();
-      if (!symbols.length) {
-        safeSend(ws, { type: "leadlag.search.ack", payload: { ok: false, active: false, reason: 'UNIVERSE_EMPTY' } });
-        return;
-      }
-      subscriptions.requestFeed("leadlag-search", { bybitSymbols: symbols, streams: ["ticker"] });
-      startLeadLagSearch();
-      safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: true } });
+      const result = startLeadLagSearch(symbols);
+      safeSend(ws, { type: "leadlag.search.ack", payload: { ok: Boolean(result?.ok), active: Boolean(result?.active), reason: result?.reason || null, state: result?.state || leadLagSearchState } });
       return;
     }
     if (msg.type === "stopLeadLagSearch") {
-      subscriptions.releaseFeed("leadlag-search");
-      leadLagSearchActive = false;
-      stopLeadLagSearch();
-      safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: false, state: leadLagSearchState } });
+      const stoppedState = stopLeadLagSearch({ reason: 'stopped', preserveRows: false, releaseFeed: true });
+      safeSend(ws, { type: "leadlag.search.ack", payload: { ok: true, active: false, state: stoppedState } });
       return;
     }
 
@@ -1052,10 +1061,12 @@ app.get("/ws", { websocket: true }, (conn) => {
       paperTest.stop({ reason: "reset" });
       subscriptions.releaseFeed("leadlag-trading");
       subscriptions.releaseFeed("leadlag-search");
-      leadLagSearchActive = false;
-      stopLeadLagSearch({ reset: true });
+      stopLeadLagSearch({ reason: 'stopped: reset', preserveRows: false, releaseFeed: true });
       const payload = paperTest.reset();
-      safeSend(ws, { type: "leadlag.reset.ack", payload: { ...(payload || {}), state: paperTest.getState(), searchState: leadLagSearchState } });
+      const currentState = paperTest.getState();
+      broadcast({ type: 'leadlag.state', payload: currentState });
+      broadcastBotsOverview();
+      safeSend(ws, { type: "leadlag.reset.ack", payload: { ...(payload || {}), state: currentState, searchState: leadLagSearchState } });
       return;
     }
 
@@ -1148,7 +1159,7 @@ app.get("/ws", { websocket: true }, (conn) => {
     if (msg.type === "getImpulseState") return safeSend(ws, { type: "impulse.state", payload: impulseBot.getState() });
   });
 
-  ws.on("close", () => { stopStatusWatcher(ws); stopLeadLagSearch(); clients.delete(ws); });
+  ws.on("close", () => { stopStatusWatcher(ws); clients.delete(ws); });
 });
 
 await app.listen({ port: PORT, host: HOST });
