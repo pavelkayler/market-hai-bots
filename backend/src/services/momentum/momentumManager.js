@@ -7,8 +7,11 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
 
 
   function normalizeUniverseSource(universeSource) {
-    const u = String(universeSource || 'FAST').toUpperCase();
-    return u === 'SLOW' || u === 'SINGLE' ? u : 'FAST';
+    const raw = String(universeSource || 'TIER_1').toUpperCase();
+    if (/^TIER_\d+$/.test(raw)) return raw;
+    if (raw === 'FAST') return 'TIER_1';
+    if (raw === 'SLOW') return 'TIER_2';
+    return 'TIER_1';
   }
   function normalizeDirection(directionMode) {
     const d = String(directionMode || 'BOTH').toUpperCase();
@@ -114,8 +117,13 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
     const mode = String(config?.mode || 'demo').toLowerCase();
-    const scanMode = String(config?.scanMode || 'UNIVERSE').toUpperCase() === 'SINGLE' ? 'SINGLE' : 'UNIVERSE';
-    const universeSource = normalizeUniverseSource(config?.universeSource);
+    const configUniverseMode = String(config?.universeMode || '').toUpperCase();
+    const scanMode = String(config?.scanMode || '').toUpperCase() === 'SINGLE' || configUniverseMode === 'SINGLE' ? 'SINGLE' : 'UNIVERSE';
+    const rawTierIndex = Number(config?.universeTierIndex);
+    const tierIndex = Number.isInteger(rawTierIndex) && rawTierIndex > 0
+      ? rawTierIndex
+      : Number((String(config?.universeSource || '').match(/^TIER_(\d+)$/i) || [])[1] || 1);
+    const universeSource = normalizeUniverseSource(`TIER_${tierIndex}`);
     let singleSymbol = String(config?.singleSymbol || '').trim().toUpperCase();
     let evalSymbols = [];
     if (scanMode === 'SINGLE') {
@@ -148,7 +156,8 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };
       if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
-    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeSource, singleSymbol, evalSymbols }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
+    const normalizedUniverseMode = scanMode === 'SINGLE' ? 'SINGLE' : 'TIER';
+    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeMode: normalizedUniverseMode, universeTierIndex: tierIndex, universeSource, singleSymbol, evalSymbols }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
     syncSelectionPolicy();

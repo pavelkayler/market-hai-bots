@@ -691,6 +691,6 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     stop: () => { status = MOMENTUM_STATUS.STOPPED; },
     cancelEntry,
     getSnapshot,
-    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, singleSymbol: cfg.singleSymbol, direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
+    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, universeMode: cfg.universeMode, universeTierIndex: cfg.universeTierIndex, universeSource: cfg.universeSource, singleSymbol: cfg.singleSymbol, direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
   };
 }
