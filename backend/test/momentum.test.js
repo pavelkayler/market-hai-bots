@@ -26,7 +26,7 @@ test('manager rejects invalid windows and allows 1/3/5', async () => {
   const md = { onTick() {}, getEligibleSymbols: () => [], setActiveIntervals() {}, getStatus: () => ({}) };
   const manager = createMomentumManager({ marketData: md, sqlite: { getTrades: async () => ({ trades: [], total: 0 }) }, getUniverseBySource: () => ['BTCUSDT'] });
   assert.equal((await manager.start({ windowMinutes: 15 })).ok, false);
-  assert.equal((await manager.start({ windowMinutes: 3 })).ok, true);
+  assert.equal((await manager.start({ windowMinutes: 3, universeMode: 'SINGLE', singleSymbol: 'BTCUSDT' })).ok, true);
 });
 
 test('manager blocks demo/real momentum start when hedge mode preflight fails', async () => {
@@ -41,7 +41,7 @@ test('manager blocks demo/real momentum start when hedge mode preflight fails', 
       getPreflightStatus: () => ({ hedgeMode: 'ONE_WAY' }),
     },
   });
-  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'BOTH' });
+  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'BOTH', universeMode: 'SINGLE', singleSymbol: 'BTCUSDT' });
   assert.equal(out.ok, false);
   assert.equal(out.error, 'HEDGE_MODE_REQUIRED');
 });
@@ -145,7 +145,24 @@ test('manager allows single-direction demo start without hedge when no opposite 
       getPreflightStatus: () => ({ hedgeMode: 'ONE_WAY' }),
     },
   });
-  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'LONG' });
+  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'LONG', universeMode: 'SINGLE', singleSymbol: 'BTCUSDT' });
   assert.equal(out.ok, true);
   assert.equal(hedgeChecks, 0);
+});
+
+
+test('manager resolves tier union with stable dedupe order', async () => {
+  const md = { onTick() {}, getEligibleSymbols: () => ['BTCUSDT'], setActiveIntervals() {}, getStatus: () => ({}) };
+  const manager = createMomentumManager({
+    marketData: md,
+    sqlite: { getTrades: async () => ({ trades: [], total: 0 }) },
+    getUniverseTiers: () => [
+      { tierIndex: 1, symbols: ['AAAUSDT', 'BBBUSDT'] },
+      { tierIndex: 2, symbols: ['BBBUSDT', 'CCCUSDT'] },
+      { tierIndex: 3, symbols: ['DDDUSDT'] },
+    ],
+  });
+  const out = await manager.start({ windowMinutes: 1, universeMode: 'TIERS', tierIndices: [2, 1] });
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.stateSnapshot.config.evalSymbols, ['AAAUSDT', 'BBBUSDT', 'CCCUSDT']);
 });

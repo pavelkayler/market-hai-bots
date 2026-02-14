@@ -355,6 +355,10 @@ const momentumManager = createMomentumManager({
     }
     return [];
   },
+  getUniverseTiers: () => {
+    const result = universeSearch.getLatestResult?.();
+    return Array.isArray(result?.outputs?.tiers) ? result.outputs.tiers : [];
+  },
 });
 momentumManager.onState((payload) => broadcastEvent('momentum.state', payload));
 function handleLeadLagEngineEvent({ type, payload }) {

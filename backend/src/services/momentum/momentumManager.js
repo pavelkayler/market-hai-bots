@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { createMomentumInstance } from './momentumInstance.js';
 
-export function createMomentumManager({ marketData, sqlite, tradeExecutor = null, logger = console, getUniverseBySource = () => [] }) {
+export function createMomentumManager({ marketData, sqlite, tradeExecutor = null, logger = console, getUniverseBySource = () => [], getUniverseTiers = () => [] }) {
   const emitter = new EventEmitter();
   const instances = new Map();
 
@@ -117,16 +117,17 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
     const mode = String(config?.mode || 'demo').toLowerCase();
-    const universeMode = String(config?.universeMode || '').toUpperCase() === 'SINGLE' ? 'SINGLE' : 'TIER';
+    const universeMode = String(config?.universeMode || '').toUpperCase() === 'SINGLE' ? 'SINGLE' : 'TIERS';
     const scanMode = universeMode === 'SINGLE' ? 'SINGLE' : 'UNIVERSE';
-    const rawTierIndex = Number(config?.tierIndex ?? config?.universeTierIndex);
-    const tierFromSource = Number((String(config?.universeSource || '').match(/^TIER_(\d+)$/i) || [])[1] || 0);
-    const tierIndex = Number.isInteger(rawTierIndex) && rawTierIndex > 0
-      ? rawTierIndex
-      : (tierFromSource > 0 ? tierFromSource : 1);
-    const universeSource = normalizeUniverseSource(`TIER_${tierIndex}`);
+    const tiers = Array.isArray(getUniverseTiers?.()) ? getUniverseTiers() : [];
+    const totalTiers = tiers.length;
+    const tierIndices = [...new Set((Array.isArray(config?.tierIndices) ? config.tierIndices : [config?.tierIndex ?? config?.universeTierIndex])
+      .map((x) => Number(x))
+      .filter((x) => Number.isInteger(x) && x > 0))].sort((a, b) => a - b);
+    const universeSource = tierIndices.length > 0 ? normalizeUniverseSource(`TIER_${tierIndices[0]}`) : 'TIER_1';
     let singleSymbol = String(config?.singleSymbol || '').trim().toUpperCase();
     let evalSymbols = [];
+    let resolvedSymbolsCount = 0;
     if (scanMode === 'SINGLE') {
       if (!singleSymbol) {
         return { ok: false, error: 'SINGLE_SYMBOL_REQUIRED', message: 'singleSymbol is required when universeMode=SINGLE' };
@@ -137,9 +138,22 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       if (marketData.hasInstrument && !marketData.hasInstrument(singleSymbol)) logger?.warn?.({ symbol: singleSymbol }, 'UNKNOWN_SYMBOL');
     } else {
       singleSymbol = null;
-      if (!(tierIndex > 0)) return { ok: false, error: 'TIER_INDEX_REQUIRED', message: 'tierIndex is required when universeMode=TIER' };
-      evalSymbols = getUniverseBySource(universeSource);
+      if (tierIndices.length === 0) return { ok: false, error: 'TIER_INDICES_REQUIRED', message: 'tierIndices is required when universeMode=TIERS' };
+      if (totalTiers <= 0) return { ok: false, error: 'UNIVERSE_SOURCE_EMPTY', message: 'Run Universe Search first.' };
+      const outOfRange = tierIndices.find((idx) => idx < 1 || idx > totalTiers);
+      if (outOfRange) return { ok: false, error: 'TIER_INDEX_OUT_OF_RANGE', message: `tierIndices must be within 1..${totalTiers}` };
+      const seen = new Set();
+      for (const idx of tierIndices) {
+        const tier = tiers.find((x) => Number(x?.tierIndex) === idx);
+        for (const symbol of (tier?.symbols || [])) {
+          const sym = String(symbol || '').toUpperCase();
+          if (!sym || seen.has(sym)) continue;
+          seen.add(sym);
+          evalSymbols.push(sym);
+        }
+      }
       if (!Array.isArray(evalSymbols) || evalSymbols.length === 0) return { ok: false, error: 'UNIVERSE_SOURCE_EMPTY', message: 'Run Universe Search first.' };
+      resolvedSymbolsCount = evalSymbols.length;
     }
     let isolatedPreflight = { ok: true, skipped: true };
     if ((mode === 'demo' || mode === 'real') && tradeExecutor?.enabled?.()) {
@@ -158,8 +172,8 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };
       if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
-    const normalizedUniverseMode = scanMode === 'SINGLE' ? 'SINGLE' : 'TIER';
-    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeMode: normalizedUniverseMode, universeTierIndex: scanMode === 'SINGLE' ? null : tierIndex, universeSource, singleSymbol, evalSymbols }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
+    const normalizedUniverseMode = scanMode === 'SINGLE' ? 'SINGLE' : 'TIERS';
+    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeMode: normalizedUniverseMode, universeTierIndex: scanMode === 'SINGLE' ? null : tierIndices[0], universeSource, singleSymbol, evalSymbols, tierIndices: scanMode === 'SINGLE' ? [] : tierIndices, resolvedSymbolsCount }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
     syncSelectionPolicy();

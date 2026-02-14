@@ -162,6 +162,22 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     return inFlight;
   }
 
+  async function getKlinesBootstrap(symbol, interval, limit) {
+    const sym = String(symbol || '').toUpperCase();
+    const nInterval = Number(interval);
+    const nLimit = Math.min(200, Math.max(1, Number(limit) || 50));
+    if (!sym || !ALLOWED_INTERVALS.has(nInterval)) return { ok: false, reason: 'INVALID_BOOTSTRAP_INPUT' };
+    try {
+      const candles = await getKlinesCached(sym, nInterval, nLimit);
+      return {
+        ok: true,
+        candles: (candles || []).map((row) => ({ ts: Number(row?.t || 0), open: Number(row?.o || 0), high: Number(row?.h || 0), low: Number(row?.l || 0), close: Number(row?.c || 0), volume: Number(row?.v || 0), turnover: Number(row?.turnover || 0) })),
+      };
+    } catch (err) {
+      return { ok: false, reason: 'HISTORY_FETCH_FAILED', error: String(err?.message || err) };
+    }
+  }
+
   async function bootstrapPriceHistory(symbol, interval, requiredSeconds = 0) {
     const sym = String(symbol || '').toUpperCase();
     const nInterval = Number(interval);
@@ -169,9 +185,10 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     const minRows = Math.max(4, Math.ceil(Math.max(0, Number(requiredSeconds) || 0) / nInterval) + 2);
     const limit = Math.min(200, Math.max(10, minRows));
     try {
-      const candles = await getKlinesCached(sym, nInterval, limit);
-      const inserted = pushHistoryRowsIntoRing(sym, candles);
-      return { ok: true, inserted, rows: candles?.length || 0, requiredSeconds };
+      const klines = await getKlinesBootstrap(sym, nInterval, limit);
+      if (!klines?.ok) return klines;
+      const inserted = pushHistoryRowsIntoRing(sym, klines.candles.map((x) => ({ t: x.ts, o: x.open, h: x.high, l: x.low, c: x.close, v: x.volume, turnover: x.turnover })));
+      return { ok: true, inserted, rows: klines?.candles?.length || 0, requiredSeconds };
     } catch (err) {
       return { ok: false, reason: 'HISTORY_FETCH_FAILED', error: String(err?.message || err) };
     }
@@ -795,6 +812,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     isSymbolInDesiredSet,
     getTurnoverGate,
     getCandleBaseline,
+    getKlinesBootstrap,
     bootstrapPriceHistory,
     seedKlineBaseline,
     setActiveIntervals,

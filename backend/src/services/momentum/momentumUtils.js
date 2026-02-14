@@ -55,6 +55,9 @@ export function normalizeMomentumConfig(raw = {}) {
   c.universeSource = /^TIER_\d+$/.test(normalizedUniverseSource)
     ? normalizedUniverseSource
     : (normalizedUniverseSource === 'FAST' ? 'TIER_1' : (normalizedUniverseSource === 'SLOW' ? 'TIER_2' : 'TIER_1'));
+  c.universeMode = String(c.universeMode || (c.scanMode === 'SINGLE' ? 'SINGLE' : 'TIERS')).toUpperCase() === 'SINGLE' ? 'SINGLE' : 'TIERS';
+  c.tierIndices = [...new Set((Array.isArray(c.tierIndices) ? c.tierIndices : [c.universeTierIndex]).map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))].sort((a, b) => a - b);
+  c.resolvedSymbolsCount = Math.max(0, Number(c.resolvedSymbolsCount || 0));
   c.leverage = Math.max(1, parseFloatSafe(c.leverage, 3));
   c.marginUsd = Math.max(1, parseFloatSafe(c.marginUsd, 10));
   c.tpRoiPct = Math.max(0.1, parseFloatSafe(c.tpRoiPct, 2));
