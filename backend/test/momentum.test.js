@@ -24,7 +24,7 @@ test('volatility high/low and fallback', () => {
 
 test('manager rejects invalid windows and allows 1/3/5', async () => {
   const md = { onTick() {}, getEligibleSymbols: () => [], setActiveIntervals() {}, getStatus: () => ({}) };
-  const manager = createMomentumManager({ marketData: md, sqlite: { getTrades: async () => ({ trades: [], total: 0 }) } });
+  const manager = createMomentumManager({ marketData: md, sqlite: { getTrades: async () => ({ trades: [], total: 0 }) }, getUniverseBySource: () => ['BTCUSDT'] });
   assert.equal((await manager.start({ windowMinutes: 15 })).ok, false);
   assert.equal((await manager.start({ windowMinutes: 3 })).ok, true);
 });
@@ -34,6 +34,7 @@ test('manager blocks demo/real momentum start when hedge mode preflight fails', 
   const manager = createMomentumManager({
     marketData: md,
     sqlite: { getTrades: async () => ({ trades: [], total: 0 }) },
+    getUniverseBySource: () => ['BTCUSDT'],
     tradeExecutor: {
       enabled: () => true,
       getHedgeModeSnapshot: async () => ({ mode: 'ONE_WAY' }),
@@ -136,6 +137,7 @@ test('manager allows single-direction demo start without hedge when no opposite 
   const manager = createMomentumManager({
     marketData: md,
     sqlite: { getTrades: async () => ({ trades: [], total: 0 }) },
+    getUniverseBySource: () => ['BTCUSDT'],
     tradeExecutor: {
       enabled: () => true,
       getHedgeModeSnapshot: async () => { hedgeChecks += 1; return { mode: 'ONE_WAY' }; },

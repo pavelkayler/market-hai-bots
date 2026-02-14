@@ -16,15 +16,13 @@ export const SIDE = {
   SHORT: 'SHORT',
 };
 
-export const MOMENTUM_UNIVERSE_LIMIT_OPTIONS = [50, 100, 200, 300, 500, 800, 1000];
-
 export const DEFAULT_MOMENTUM_CONFIG = {
   scanMode: 'UNIVERSE',
   singleSymbol: null,
   mode: 'demo',
   directionMode: 'BOTH',
   windowMinutes: 1,
-  universeLimit: 200,
+  universeSource: 'FAST',
   turnoverSpikePct: 0,
   baselineFloorUSDT: 0,
   holdSeconds: 1,

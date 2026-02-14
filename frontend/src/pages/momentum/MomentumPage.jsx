@@ -2,10 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Col, Form, InputGroup, Row, Table } from 'react-bootstrap';
 import { useWs } from '../../shared/api/ws.js';
 
-const UNIVERSE_OPTIONS = [50, 100, 200, 300, 500, 800, 1000];
-
 const DEFAULT_FORM = {
-  mode: 'demo', directionMode: 'BOTH', windowMinutes: 1, universeLimit: 200, priceThresholdPct: 0.2, oiThresholdPct: 0,
+  mode: 'demo', directionMode: 'BOTH', windowMinutes: 1, universeSource: 'FAST', priceThresholdPct: 0.2, oiThresholdPct: 0,
   turnover24hMin: 0, vol24hMin: 0, leverage: 3, marginUsd: 10, tpRoiPct: 2, slRoiPct: 2,
   entryOffsetPct: -0.01, turnoverSpikePct: 0, baselineFloorUSDT: 0, holdSeconds: 1, trendConfirmSeconds: 1, oiMaxAgeSec: 9999,
   globalSymbolLock: false,
@@ -95,7 +93,7 @@ export default function MomentumPage() {
     e.preventDefault();
     const nextErrors = {};
     const numFields = numericFieldDefs.map((x) => x.key);
-    const nextConfig = { ...form, windowMinutes: Number(form.windowMinutes), universeLimit: Number(form.universeLimit) };
+    const nextConfig = { ...form, windowMinutes: Number(form.windowMinutes) };
     for (const k of numFields) {
       const n = Number(nextConfig[k]);
       if (!Number.isFinite(n)) nextErrors[k] = `${k} must be a valid number.`;
@@ -145,8 +143,9 @@ export default function MomentumPage() {
         <Form.Group className="mb-2"><Form.Label>Lookback window (minutes)</Form.Label>
           <InputGroup><Form.Select value={form.windowMinutes} onChange={(e) => setForm({ ...form, windowMinutes: Number(e.target.value) })}><option value={1}>1</option><option value={3}>3</option><option value={5}>5</option></Form.Select><InputGroup.Text>min</InputGroup.Text></InputGroup>
         </Form.Group>
-        <Form.Group className="mb-2"><Form.Label>Universe size (symbols)</Form.Label>
-          <InputGroup><Form.Select value={form.universeLimit} onChange={(e) => setForm({ ...form, universeLimit: Number(e.target.value) })}>{UNIVERSE_OPTIONS.map((v) => <option key={v} value={v}>{v}</option>)}</Form.Select><InputGroup.Text>symbols</InputGroup.Text></InputGroup>
+        <Form.Group className="mb-2"><Form.Label>Universe source</Form.Label>
+          <Form.Select value={form.universeSource} onChange={(e) => setForm({ ...form, universeSource: e.target.value })}><option value="FAST">FAST</option><option value="SLOW">SLOW</option><option value="SINGLE">SINGLE</option></Form.Select>
+          <Form.Text muted>FAST/SLOW uses latest Universe Search lists; run Universe Search first.</Form.Text>
         </Form.Group>
         {numericFieldDefs.map((field) => <Form.Group className="mb-2" key={field.key}><Form.Label>{field.label}</Form.Label><InputGroup><Form.Control value={form[field.key]} onChange={(e) => setForm({ ...form, [field.key]: e.target.value })} isInvalid={Boolean(errors[field.key])} placeholder={field.placeholder} /><InputGroup.Text>{field.unit}</InputGroup.Text></InputGroup>{field.help ? <Form.Text muted>{field.help}</Form.Text> : null}</Form.Group>)}
 

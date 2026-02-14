@@ -1,4 +1,4 @@
-import { DEFAULT_MOMENTUM_CONFIG, MOMENTUM_UNIVERSE_LIMIT_OPTIONS } from './momentumTypes.js';
+import { DEFAULT_MOMENTUM_CONFIG } from './momentumTypes.js';
 
 export function parseFloatSafe(v, fallback = null) {
   const n = Number(v);
@@ -51,8 +51,7 @@ export function normalizeMomentumConfig(raw = {}) {
   c.oiThresholdPct = Math.max(0, parseFloatSafe(c.oiThresholdPct, 0));
   c.turnover24hMin = Math.max(0, parseFloatSafe(c.turnover24hMin, 0));
   c.vol24hMin = Math.max(0, parseFloatSafe(c.vol24hMin, 0));
-  c.universeLimit = Math.trunc(parseFloatSafe(c.universeLimit, 200));
-  if (!MOMENTUM_UNIVERSE_LIMIT_OPTIONS.includes(c.universeLimit)) c.universeLimit = 200;
+  c.universeSource = ['FAST', 'SLOW', 'SINGLE'].includes(String(c.universeSource).toUpperCase()) ? String(c.universeSource).toUpperCase() : 'FAST';
   c.leverage = Math.max(1, parseFloatSafe(c.leverage, 3));
   c.marginUsd = Math.max(1, parseFloatSafe(c.marginUsd, 10));
   c.tpRoiPct = Math.max(0.1, parseFloatSafe(c.tpRoiPct, 2));

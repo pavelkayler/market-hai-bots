@@ -1,11 +1,15 @@
-import { MOMENTUM_UNIVERSE_LIMIT_OPTIONS } from './momentumTypes.js';
 import { EventEmitter } from 'events';
 import { createMomentumInstance } from './momentumInstance.js';
 
-export function createMomentumManager({ marketData, sqlite, tradeExecutor = null, logger = console }) {
+export function createMomentumManager({ marketData, sqlite, tradeExecutor = null, logger = console, getUniverseBySource = () => [] }) {
   const emitter = new EventEmitter();
   const instances = new Map();
 
+
+  function normalizeUniverseSource(universeSource) {
+    const u = String(universeSource || 'FAST').toUpperCase();
+    return u === 'SLOW' || u === 'SINGLE' ? u : 'FAST';
+  }
   function normalizeDirection(directionMode) {
     const d = String(directionMode || 'BOTH').toUpperCase();
     return d === 'LONG' || d === 'SHORT' ? d : 'BOTH';
@@ -72,30 +76,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   }
 
   function syncSelectionPolicy() {
-    if (instances.size === 0) {
-      marketData.setSelectionPolicy?.({ cap: 200, turnover24hMin: 0, vol24hMin: 0 });
-      marketData.reconcileSubscriptions?.('policyChange').catch?.(() => {});
-      return;
-    }
-    const lights = [...instances.values()].map((x) => x.getSnapshot?.()?.config).filter(Boolean);
-    if (!lights.length) return;
-    const cap = lights.reduce((maxCap, cfg) => {
-      const n = Number(cfg?.universeLimit);
-      return Number.isFinite(n) ? Math.max(maxCap, n) : maxCap;
-    }, 200);
-    const turnover24hMin = lights.reduce((minTurnover, cfg) => {
-      const n = Number(cfg?.turnover24hMin);
-      return Number.isFinite(n) ? Math.min(minTurnover, n) : minTurnover;
-    }, Number.POSITIVE_INFINITY);
-    const vol24hMin = lights.reduce((minVol, cfg) => {
-      const n = Number(cfg?.vol24hMin);
-      return Number.isFinite(n) ? Math.min(minVol, n) : minVol;
-    }, Number.POSITIVE_INFINITY);
-    marketData.setSelectionPolicy?.({
-      cap,
-      turnover24hMin: Number.isFinite(turnover24hMin) ? turnover24hMin : undefined,
-      vol24hMin: Number.isFinite(vol24hMin) ? vol24hMin : undefined,
-    });
+    marketData.setSelectionPolicy?.({ cap: 200, turnover24hMin: 0, vol24hMin: 0 });
     marketData.reconcileSubscriptions?.('policyChange').catch?.(() => {});
   }
 
@@ -104,9 +85,12 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     const pinned = new Set();
     for (const inst of instances.values()) {
       const cfg = inst.getSnapshot?.()?.config || {};
-      if (cfg.scanMode !== 'SINGLE') continue;
-      const sym = String(cfg.singleSymbol || '').toUpperCase().trim();
-      if (sym) pinned.add(sym);
+      if (cfg.scanMode === 'SINGLE') {
+        const sym = String(cfg.singleSymbol || '').toUpperCase().trim();
+        if (sym) pinned.add(sym);
+        continue;
+      }
+      for (const sym of Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols : []) if (sym) pinned.add(String(sym).toUpperCase());
     }
     marketData.setPinnedSymbols?.([...pinned]);
   }
@@ -117,7 +101,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       const singleSymbol = String(cfg.singleSymbol || '').toUpperCase().trim();
       const evalSymbols = cfg.scanMode === 'SINGLE' && singleSymbol
         ? [singleSymbol]
-        : marketData.getDesiredSymbolsForCap?.(cfg.universeLimit, { turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin }) || [];
+        : (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols : []);
       await inst.onTick(tick, evalSymbols);
     }
     emitState();
@@ -130,12 +114,10 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
     const mode = String(config?.mode || 'demo').toLowerCase();
-    const universeLimit = Number(config?.universeLimit ?? 200);
-    if (!MOMENTUM_UNIVERSE_LIMIT_OPTIONS.includes(universeLimit)) {
-      return { ok: false, error: 'INVALID_UNIVERSE_LIMIT', message: `universeLimit must be one of: ${MOMENTUM_UNIVERSE_LIMIT_OPTIONS.join(', ')}` };
-    }
     const scanMode = String(config?.scanMode || 'UNIVERSE').toUpperCase() === 'SINGLE' ? 'SINGLE' : 'UNIVERSE';
+    const universeSource = normalizeUniverseSource(config?.universeSource);
     let singleSymbol = String(config?.singleSymbol || '').trim().toUpperCase();
+    let evalSymbols = [];
     if (scanMode === 'SINGLE') {
       if (!singleSymbol) {
         return { ok: false, error: 'SINGLE_SYMBOL_REQUIRED', message: 'singleSymbol is required for scanMode=SINGLE' };
@@ -146,6 +128,8 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       if (marketData.hasInstrument && !marketData.hasInstrument(singleSymbol)) logger?.warn?.({ symbol: singleSymbol }, 'UNKNOWN_SYMBOL');
     } else {
       singleSymbol = null;
+      evalSymbols = getUniverseBySource(universeSource);
+      if (!Array.isArray(evalSymbols) || evalSymbols.length === 0) return { ok: false, error: 'UNIVERSE_SOURCE_EMPTY', message: 'Run Universe Search first.' };
     }
     let isolatedPreflight = { ok: true, skipped: true };
     if ((mode === 'demo' || mode === 'real') && tradeExecutor?.enabled?.()) {
@@ -164,7 +148,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };
       if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
-    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, singleSymbol }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
+    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeSource, singleSymbol, evalSymbols }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
     syncSelectionPolicy();

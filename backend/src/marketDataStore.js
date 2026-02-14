@@ -1,3 +1,5 @@
+import { EventEmitter } from 'events';
+
 function normalizeSymbol(symbol) {
   return String(symbol || "").trim().toUpperCase();
 }
@@ -14,6 +16,7 @@ function numOrNull(v) {
 }
 
 export function createMarketDataStore() {
+  const emitter = new EventEmitter();
   const tickers = new Map();
 
   function keyOf(source, symbol) {
@@ -38,6 +41,7 @@ export function createMarketDataStore() {
 
     const ticker = { symbol, source, ts, bid, ask, mid, last, mark, fundingRate, bybitTs };
     tickers.set(keyOf(source, symbol), ticker);
+    emitter.emit('tickerTick', { symbol, ts, source, ticker });
     return ticker;
   }
 
@@ -58,7 +62,14 @@ export function createMarketDataStore() {
     return out;
   }
 
-  return { upsertTicker, getTicker, getTickersArray, getTickersBySource };
+  return {
+    upsertTicker,
+    getTicker,
+    getTickersArray,
+    getTickersBySource,
+    onTickerTick: (fn) => emitter.on('tickerTick', fn),
+    offTickerTick: (fn) => emitter.off('tickerTick', fn),
+  };
 }
 
 export function toLegacySource() {
