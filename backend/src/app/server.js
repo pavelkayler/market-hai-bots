@@ -1348,11 +1348,15 @@ app.get("/ws", { websocket: true }, (conn) => {
       if (rpcMethod === 'momentum.continue') { rpcOk(await momentumManager.continue(params?.instanceId)); return; }
       if (rpcMethod === 'momentum.list') { rpcOk(momentumManager.list()); return; }
       if (rpcMethod === 'momentum.getState') { rpcOk(momentumManager.getState(params?.instanceId)); return; }
+      if (rpcMethod === 'momentum.getInstanceState') { rpcOk(momentumManager.getState(params?.instanceId)); return; }
       if (rpcMethod === 'momentum.getPositions') { rpcOk(momentumManager.getPositions(params?.instanceId)); return; }
       if (rpcMethod === 'momentum.getTrades') { rpcOk(await momentumManager.getTrades(params?.instanceId, params?.limit, params?.offset)); return; }
+      if (rpcMethod === 'momentum.getSignals') { rpcOk(await momentumManager.getSignals(params?.instanceId, params?.limit)); return; }
       if (rpcMethod === 'momentum.getMarketStatus') { rpcOk(momentumManager.getMarketStatus()); return; }
       if (rpcMethod === 'momentum.cancelEntry') { rpcOk(momentumManager.cancelEntry(params?.instanceId, params?.symbol)); return; }
       if (rpcMethod === 'momentum.getFixedSignals') { rpcOk(await momentumManager.getFixedSignals(params?.instanceId, params?.limit, params?.sinceMs, params?.symbol)); return; }
+      if (rpcMethod === 'momentum.updateInstanceConfig') { rpcOk(await momentumManager.updateInstanceConfig(params?.instanceId, params?.patch || {})); return; }
+      if (rpcMethod === 'momentum.deleteInstance') { rpcOk(await momentumManager.deleteInstance(params?.instanceId)); return; }
       if (rpcMethod === 'manual.placeDemoOrder') { rpcOk(await manualTradeService.placeDemoOrder(params || {})); return; }
       if (rpcMethod === 'manual.closeDemoPosition') { rpcOk(await manualTradeService.closeDemoPosition(params || {})); return; }
       if (rpcMethod === 'manual.cancelDemoOrders') { rpcOk(await manualTradeService.cancelDemoOrders(params || {})); return; }

@@ -7,6 +7,19 @@ function toNumber(v) {
 }
 
 function normalizeError(error) {
+  const notional = String(error?.message || '').match(/NOTIONAL_LIMIT_EXCEEDED:([0-9.]+)>([0-9.]+)/);
+  if (error?.code === 'NOTIONAL_LIMIT_EXCEEDED' || notional) {
+    const limit = Number(error?.limit ?? notional?.[2]);
+    const actualNotional = Number(error?.notional ?? notional?.[1]);
+    return {
+      message: 'NOTIONAL_LIMIT_EXCEEDED',
+      retCode: null,
+      retMsg: null,
+      code: 'NOTIONAL_LIMIT_EXCEEDED',
+      limit: Number.isFinite(limit) ? limit : null,
+      notional: Number.isFinite(actualNotional) ? actualNotional : null,
+    };
+  }
   const retCode = error?.payload?.response?.retCode;
   const retMsg = error?.payload?.response?.retMsg;
   return {
@@ -97,6 +110,9 @@ export function createManualTradeService({ tradeExecutor, marketData, logger = c
     } catch (error) {
       const normalized = normalizeError(error);
       logger?.warn?.({ error: normalized }, 'manual demo order failed');
+      if (normalized.code === 'NOTIONAL_LIMIT_EXCEEDED') {
+        return { ok: false, error: normalized.code, limit: normalized.limit, notional: normalized.notional };
+      }
       return { ok: false, error: normalized.message, retCode: normalized.retCode, retMsg: normalized.retMsg };
     }
   }
@@ -104,9 +120,19 @@ export function createManualTradeService({ tradeExecutor, marketData, logger = c
   async function closeDemoPosition({ symbol }) {
     if (!isDemo()) return { ok: false, error: 'DEMO_ONLY' };
     try {
-      return { ok: true, details: await (tradeExecutor.closePosition?.({ symbol: String(symbol || '').toUpperCase() }) || tradeExecutor.closePositionMarket?.({ symbol: String(symbol || '').toUpperCase() })) };
+      const normalizedSymbol = String(symbol || '').toUpperCase();
+      const closeFn = typeof tradeExecutor.closePosition === 'function'
+        ? tradeExecutor.closePosition.bind(tradeExecutor)
+        : typeof tradeExecutor.closePositionMarket === 'function'
+          ? tradeExecutor.closePositionMarket.bind(tradeExecutor)
+          : null;
+      if (!closeFn) return { ok: false, error: 'CLOSE_METHOD_UNAVAILABLE' };
+      return { ok: true, details: await closeFn({ symbol: normalizedSymbol }) };
     } catch (error) {
       const normalized = normalizeError(error);
+      if (normalized.code === 'NOTIONAL_LIMIT_EXCEEDED') {
+        return { ok: false, error: normalized.code, limit: normalized.limit, notional: normalized.notional };
+      }
       return { ok: false, error: normalized.message, retCode: normalized.retCode, retMsg: normalized.retMsg };
     }
   }
@@ -114,9 +140,19 @@ export function createManualTradeService({ tradeExecutor, marketData, logger = c
   async function cancelDemoOrders({ symbol }) {
     if (!isDemo()) return { ok: false, error: 'DEMO_ONLY' };
     try {
-      return { ok: true, details: await (tradeExecutor.cancelAllOrders?.({ symbol: String(symbol || '').toUpperCase() }) || tradeExecutor.cancelAll?.({ symbol: String(symbol || '').toUpperCase() })) };
+      const normalizedSymbol = String(symbol || '').toUpperCase();
+      const cancelFn = typeof tradeExecutor.cancelAllOrders === 'function'
+        ? tradeExecutor.cancelAllOrders.bind(tradeExecutor)
+        : typeof tradeExecutor.cancelAll === 'function'
+          ? tradeExecutor.cancelAll.bind(tradeExecutor)
+          : null;
+      if (!cancelFn) return { ok: false, error: 'CANCEL_METHOD_UNAVAILABLE' };
+      return { ok: true, details: await cancelFn({ symbol: normalizedSymbol }) };
     } catch (error) {
       const normalized = normalizeError(error);
+      if (normalized.code === 'NOTIONAL_LIMIT_EXCEEDED') {
+        return { ok: false, error: normalized.code, limit: normalized.limit, notional: normalized.notional };
+      }
       return { ok: false, error: normalized.message, retCode: normalized.retCode, retMsg: normalized.retMsg };
     }
   }

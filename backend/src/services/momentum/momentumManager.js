@@ -128,12 +128,18 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
 
   marketData.onTick(async (tick) => {
     for (const inst of instances.values()) {
-      const cfg = inst.getSnapshot?.()?.config || {};
-      const singleSymbol = String(cfg.singleSymbol || '').toUpperCase().trim();
-      const evalSymbols = cfg.scanMode === 'SINGLE' && singleSymbol
-        ? [singleSymbol]
-        : (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols : []);
-      await inst.onTick(tick, evalSymbols);
+      try {
+        const cfg = inst.getSnapshot?.()?.config || {};
+        const singleSymbol = String(cfg.singleSymbol || '').toUpperCase().trim();
+        const evalSymbols = cfg.scanMode === 'SINGLE' && singleSymbol
+          ? [singleSymbol]
+          : (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols : []);
+        await inst.onTick(tick, evalSymbols);
+      } catch (err) {
+        logger?.error?.({ err, instanceId: inst.getLight?.()?.id }, 'momentum onTick failed, stopping instance');
+        try { inst.stop?.(); } catch {}
+        persistInstance(inst, false).catch(() => {});
+      }
     }
     emitState();
   });
@@ -238,6 +244,49 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     return start(cfg, { reuseInstanceId: instanceId });
   }
 
+
+  async function updateInstanceConfig(instanceId, patch = {}) {
+    const inst = instances.get(instanceId);
+    if (!inst) return { ok: false, reason: 'NOT_FOUND' };
+    const sanitized = sanitizeConfigPatch(patch);
+    const nextConfig = { ...(inst.getSnapshot?.()?.config || {}), ...sanitized };
+    inst.setConfig?.(nextConfig);
+    await sqlite.updateInstanceConfig?.({ instanceId, config: nextConfig, updatedAtMs: Date.now() });
+    await persistInstance(inst, null);
+    emitState();
+    return { ok: true, config: nextConfig };
+  }
+
+  async function deleteInstance(instanceId) {
+    const inst = instances.get(instanceId);
+    if (inst) {
+      inst.stop?.();
+      instances.delete(instanceId);
+    }
+    await sqlite.deleteInstance?.(instanceId);
+    syncActiveIntervals();
+    syncSelectionPolicy();
+    syncPinnedSymbols();
+    emitState();
+    return { ok: true };
+  }
+
+
+  function sanitizeConfigPatch(patch = {}) {
+    const out = {};
+    const numericKeys = ['windowMinutes', 'turnover24hMin', 'vol24hMin', 'priceThresholdPct', 'oiThresholdPct', 'turnoverSpikePct', 'baselineFloorUSDT', 'holdSeconds', 'trendConfirmSeconds', 'oiMaxAgeSec', 'entryOffsetPct', 'marginUsd', 'leverage', 'tpRoiPct', 'slRoiPct'];
+    for (const key of numericKeys) {
+      if (!(key in patch)) continue;
+      const n = Number(patch[key]);
+      if (!Number.isFinite(n)) continue;
+      out[key] = n;
+    }
+    if (patch.mode) out.mode = String(patch.mode).toLowerCase() === 'demo' ? 'demo' : 'paper';
+    if (patch.directionMode) out.directionMode = normalizeDirection(patch.directionMode);
+    if (Array.isArray(patch.tierIndices)) out.tierIndices = patch.tierIndices.map((x) => Number(x)).filter(Number.isFinite);
+    return out;
+  }
+
   function cancelEntry(instanceId, symbol) {
     const inst = instances.get(instanceId);
     if (!inst) return { ok: false, reason: 'NOT_FOUND' };
@@ -261,6 +310,9 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       return { ok: true, positions: inst.getSnapshot().openPositions };
     },
     getTrades: async (instanceId, limit, offset) => ({ ok: true, ...(await sqlite.getTrades(instanceId, limit, offset)) }),
+    getSignals: async (instanceId, limit) => ({ ok: true, rows: await sqlite.getSignals?.(instanceId, limit) || [] }),
+    updateInstanceConfig: async (instanceId, patch) => updateInstanceConfig(instanceId, patch),
+    deleteInstance: async (instanceId) => deleteInstance(instanceId),
     getMarketStatus: () => ({ ok: true, ...getMarketStatus() }),
     getFixedSignals: async (instanceId, limit, sinceMs, symbol) => ({ ok: true, rows: await sqlite.getFixedSignals?.({ instanceId, limit, sinceMs, symbol }) || [] }),
     cancelEntry,

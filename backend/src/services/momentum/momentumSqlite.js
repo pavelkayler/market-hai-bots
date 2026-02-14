@@ -185,6 +185,28 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
     return rows.map((r) => ({ ...r, metrics: JSON.parse(r.metricsJson || '{}') }));
   }
 
+
+  async function updateInstanceConfig({ instanceId, config, updatedAtMs = Date.now() } = {}) {
+    if (!instanceId) return { changes: 0 };
+    return run('UPDATE momentum_instances SET configJson=?, updatedAtMs=? WHERE instanceId=?', [JSON.stringify(config || {}), Number(updatedAtMs) || Date.now(), String(instanceId)]);
+  }
+
+  async function deleteInstance(instanceId) {
+    const id = String(instanceId || '');
+    if (!id) return { ok: false, reason: 'INSTANCE_ID_REQUIRED' };
+    await run('DELETE FROM momentum_instances WHERE instanceId=?', [id]);
+    await run('DELETE FROM momentum_trades WHERE instanceId=?', [id]);
+    await run('DELETE FROM momentum_fixed_signals WHERE instanceId=?', [id]);
+    await run('DELETE FROM momentum_signals WHERE instanceId=?', [id]);
+    return { ok: true };
+  }
+
+  async function getSignals(instanceId, limit = 100) {
+    const lim = Math.max(1, Math.min(500, Number(limit) || 100));
+    const rows = await all('SELECT * FROM momentum_signals WHERE instanceId=? ORDER BY ts DESC LIMIT ?', [instanceId, lim]);
+    return rows;
+  }
+
   async function getTrades(instanceId, limit = 50, offset = 0) {
     const lim = Math.max(1, Math.min(500, Number(limit) || 50));
     const off = Math.max(0, Number(offset) || 0);
@@ -193,5 +215,5 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
     return { trades: rows, total: Number(totalRows?.[0]?.c || 0) };
   }
 
-  return { init, saveSignal, saveTrade, getTrades, saveInstance, getInstances, saveFixedSignal, getFixedSignals };
+  return { init, saveSignal, saveTrade, getTrades, getSignals, saveInstance, getInstances, updateInstanceConfig, deleteInstance, saveFixedSignal, getFixedSignals };
 }
