@@ -27,7 +27,7 @@ function makePrivateRest({ positions = [], accountInfo = {}, calls = {} } = {}) 
   };
 }
 
-test('ensureIsolated enforces isolated margin and caches success', async () => {
+test('ensureIsolated skips switch-isolated in demo mode', async () => {
   const calls = {};
   const privateRest = makePrivateRest({
     positions: [{ symbol: 'BTCUSDT', side: 'Buy', size: '0', positionIdx: 1, tradeMode: 0, marginMode: 'cross' }],
@@ -39,7 +39,8 @@ test('ensureIsolated enforces isolated margin and caches success', async () => {
   const second = await ex.ensureIsolated({ symbol: 'BTCUSDT' });
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
-  assert.equal(calls.switchIsolated, 1);
+  assert.equal(Boolean(first.skipped), true);
+  assert.equal(calls.switchIsolated || 0, 0);
 });
 
 test('ensureHedgeMode sets hedge mode when account is one-way', async () => {

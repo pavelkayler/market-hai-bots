@@ -25,6 +25,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   let lastBybitError = null;
   let lastBybitErrorLogAt = 0;
   let lastWarmupSummaryAt = 0;
+  let lastHistoryBootstrapNoteAt = 0;
+  const historyRetryAtBySymbol = new Map();
   const staleSinceBySymbol = new Map();
 
   function log(msg, extra = {}) {
@@ -443,6 +445,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     let entries = 0;
     let universeSeedAttempts = 0;
     let missingLastPriceCount = 0;
+    let missingHistoryCount = 0;
+    let historyFetchFailedCount = 0;
     const staleCutoffTs = ts - 30_000;
     for (const symbol of evalSymbols) {
       const snap = marketData.getSnapshot(symbol);
@@ -538,10 +542,21 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       const requiredHistorySec = Math.max(0, Number(cfg.trendConfirmSeconds) + 1);
       const historySecondsAvailable = Number(marketData.getHistorySecondsAvailable?.(symbol) || 0);
       if (cfg.trendConfirmSeconds > 0 && historySecondsAvailable < requiredHistorySec) {
-        logSkipReason(symbol, null, 'NOT_READY_NO_PRICE_HISTORY', { needSec: requiredHistorySec, haveSec: historySecondsAvailable }, 4000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_PRICE_HISTORY', message: `Need ${requiredHistorySec}s, have ${historySecondsAvailable}s`, historySecondsAvailable, trendConfirmSeconds: cfg.trendConfirmSeconds, throttleKey: `${symbol}:NOT_READY_NO_PRICE_HISTORY` }, 1500);
+        missingHistoryCount += 1;
+        const retryAt = Number(historyRetryAtBySymbol.get(symbol) || 0);
+        if (ts >= retryAt && marketData.bootstrapPriceHistory) {
+          historyRetryAtBySymbol.set(symbol, ts + 30_000);
+          const seeded = await marketData.bootstrapPriceHistory(symbol, cfg.windowMinutes, requiredHistorySec);
+          if (!seeded?.ok) {
+            historyFetchFailedCount += 1;
+            pushSignalNote({ ts, symbol, action: 'HISTORY_FETCH_FAILED', message: seeded?.error || seeded?.reason || 'history bootstrap failed', throttleKey: `${symbol}:HISTORY_FETCH_FAILED` }, 10_000);
+          } else {
+            historyRetryAtBySymbol.delete(symbol);
+          }
+        }
         continue;
       }
+      historyRetryAtBySymbol.delete(symbol);
 
       const priceChange = calcChange(snap.lastPrice, baseline.prevClose);
       const oiChange = calcChange(snap.oiValue, baseline.prevOiValue);
@@ -633,6 +648,11 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       lastWarmupSummaryAt = ts;
       log('WARMUP_MISSING_LASTPRICE', { missing: missingLastPriceCount, total: evalSymbols.length });
       pushSignalNote({ ts, action: 'WARMUP_MISSING_LASTPRICE', message: `${missingLastPriceCount}/${evalSymbols.length}` }, 0);
+    }
+
+    if ((missingHistoryCount > 0 || historyFetchFailedCount > 0) && (ts - lastHistoryBootstrapNoteAt) >= 5000) {
+      lastHistoryBootstrapNoteAt = ts;
+      pushSignalNote({ ts, action: 'WARMUP_HISTORY_BOOTSTRAP', message: `missing history ${missingHistoryCount}/${evalSymbols.length}${historyFetchFailedCount > 0 ? `, fetch failed ${historyFetchFailedCount}` : ''}` }, 0);
     }
 
     if (cfg.mode !== 'paper' && tradeExecutor?.enabled?.() && (ts - lastActiveSyncAt) >= 7000) {

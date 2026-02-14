@@ -46,9 +46,12 @@ export default function UniversePage() {
   const tiers = result?.outputs?.tiers || [];
   const selectedTier = tiers.find((t) => Number(t.tierIndex) === Number(selectedTierIndex)) || tiers[0] || null;
   const selectedTierSymbols = selectedTier?.symbols || [];
-  const existsCount = Number(state?.counters?.firstTickReceivedCount || result?.counters?.firstTickReceivedCount || 0);
+  const existsCount = Number(result?.outputs?.existsCount || state?.counters?.firstTickReceivedCount || result?.counters?.firstTickReceivedCount || 0);
   const tierSizeN = Number(result?.tierSizeN || result?.outputs?.tierSizeN || targetSizeN);
   const totalTiers = Number(result?.totalTiers || result?.outputs?.totalTiers || tiers.length || 0);
+  const noFirstTickTimeoutCount = Number(result?.outputs?.noFirstTickTimeoutCount || state?.counters?.timedOutNoFirstTickCount || result?.counters?.timedOutNoFirstTickCount || 0);
+  const candidatesTotal = Number(result?.outputs?.candidatesTotal || state?.counters?.candidatesTotal || result?.counters?.candidatesTotal || 0);
+  const status = String(state?.status || result?.outputs?.status || result?.status || 'IDLE');
   const running = ['STARTING', 'PHASE_A_EXISTS', 'PHASE_B_SPEED', 'STOPPING'].includes(String(state?.phase || '').toUpperCase());
   const pct = useMemo(() => {
     if (!state) return 0;
@@ -67,8 +70,8 @@ export default function UniversePage() {
         <Button variant="outline-danger" onClick={stopSearch} disabled={!running}>Stop</Button>
       </div>
       <ProgressBar now={pct} label={state?.phase || 'IDLE'} className="mb-2" />
-      <div>searchId: {state?.searchId || result?.searchId || '-'} | Last updated: {result?.endedAt || result?.startedAt || '-'}</div>
-      <div>Candidates: {state?.counters?.candidatesTotal || result?.counters?.candidatesTotal || 0} | Exists: {existsCount} | No first tick timeout: {state?.counters?.timedOutNoFirstTickCount || result?.counters?.timedOutNoFirstTickCount || 0} | Tier size N: {tierSizeN} | Total tiers: {totalTiers}</div>
+      <div>searchId: {state?.searchId || result?.searchId || '-'} | Status: {status} | Last updated: {result?.endedAt || result?.startedAt || '-'}</div>
+      <div>Candidates: {candidatesTotal} | Exists: {existsCount} | No first tick timeout: {noFirstTickTimeoutCount} | Tier size N: {tierSizeN} | Total tiers: {totalTiers}</div>
       {!result && <Alert variant="warning" className="mt-2">No persisted result yet.</Alert>}
     </Card.Body></Card></Col>
 
@@ -85,7 +88,7 @@ export default function UniversePage() {
           disabled={selectedTierSymbols.length === 0}
           onClick={() => navigator.clipboard?.writeText(selectedTierSymbols.join(', '))}
         >
-          Copy symbols
+          Copy tier symbols
         </Button>
       </div>
       <pre style={{ whiteSpace: 'pre-wrap' }}>{selectedTierSymbols.join(', ')}</pre>

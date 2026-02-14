@@ -117,18 +117,19 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
     const mode = String(config?.mode || 'demo').toLowerCase();
-    const configUniverseMode = String(config?.universeMode || '').toUpperCase();
-    const scanMode = String(config?.scanMode || '').toUpperCase() === 'SINGLE' || configUniverseMode === 'SINGLE' ? 'SINGLE' : 'UNIVERSE';
-    const rawTierIndex = Number(config?.universeTierIndex);
+    const universeMode = String(config?.universeMode || '').toUpperCase() === 'SINGLE' ? 'SINGLE' : 'TIER';
+    const scanMode = universeMode === 'SINGLE' ? 'SINGLE' : 'UNIVERSE';
+    const rawTierIndex = Number(config?.tierIndex ?? config?.universeTierIndex);
+    const tierFromSource = Number((String(config?.universeSource || '').match(/^TIER_(\d+)$/i) || [])[1] || 0);
     const tierIndex = Number.isInteger(rawTierIndex) && rawTierIndex > 0
       ? rawTierIndex
-      : Number((String(config?.universeSource || '').match(/^TIER_(\d+)$/i) || [])[1] || 1);
+      : (tierFromSource > 0 ? tierFromSource : 1);
     const universeSource = normalizeUniverseSource(`TIER_${tierIndex}`);
     let singleSymbol = String(config?.singleSymbol || '').trim().toUpperCase();
     let evalSymbols = [];
     if (scanMode === 'SINGLE') {
       if (!singleSymbol) {
-        return { ok: false, error: 'SINGLE_SYMBOL_REQUIRED', message: 'singleSymbol is required for scanMode=SINGLE' };
+        return { ok: false, error: 'SINGLE_SYMBOL_REQUIRED', message: 'singleSymbol is required when universeMode=SINGLE' };
       }
       if (!/^[A-Z0-9]{3,}USDT$/.test(singleSymbol)) {
         return { ok: false, error: 'INVALID_SINGLE_SYMBOL', message: 'singleSymbol must match /^[A-Z0-9]{3,}USDT$/' };
@@ -136,6 +137,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       if (marketData.hasInstrument && !marketData.hasInstrument(singleSymbol)) logger?.warn?.({ symbol: singleSymbol }, 'UNKNOWN_SYMBOL');
     } else {
       singleSymbol = null;
+      if (!(tierIndex > 0)) return { ok: false, error: 'TIER_INDEX_REQUIRED', message: 'tierIndex is required when universeMode=TIER' };
       evalSymbols = getUniverseBySource(universeSource);
       if (!Array.isArray(evalSymbols) || evalSymbols.length === 0) return { ok: false, error: 'UNIVERSE_SOURCE_EMPTY', message: 'Run Universe Search first.' };
     }
@@ -157,7 +159,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
     const normalizedUniverseMode = scanMode === 'SINGLE' ? 'SINGLE' : 'TIER';
-    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeMode: normalizedUniverseMode, universeTierIndex: tierIndex, universeSource, singleSymbol, evalSymbols }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
+    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeMode: normalizedUniverseMode, universeTierIndex: scanMode === 'SINGLE' ? null : tierIndex, universeSource, singleSymbol, evalSymbols }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
     syncSelectionPolicy();
