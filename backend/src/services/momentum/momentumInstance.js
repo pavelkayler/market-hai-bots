@@ -15,6 +15,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   const isolatedReadyBySymbol = new Map();
   const stats = { trades: 0, wins: 0, losses: 0, pnl: 0, fees: 0, signals1m: 0, signals5m: 0 };
   const signalViewBySymbol = new Map();
+  const signalNotifications = [];
+  const signalNoteAt = new Map();
   let status = MOMENTUM_STATUS.RUNNING;
   const startedAt = Date.now();
 
@@ -63,6 +65,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     st.holdCount.LONG = 0;
     st.holdCount.SHORT = 0;
     log('trigger created', { symbol, side, triggerPrice, markPrice: snap.markPrice, lastPrice: snap.lastPrice, entryPriceSource: entrySource });
+    pushSignalNote({ ts: nowMs, symbol, side, lastPrice: snap.lastPrice, markPrice: snap.markPrice, action: 'TRIGGER_CREATED', message: `Trigger ${triggerPrice} from ${entrySource}` });
     return true;
   }
 
@@ -247,6 +250,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       slOrderId: st.pos.slOrderId,
     });
     log('trigger filled', { symbol, side: st.pos.side, triggerPrice: st.pos.triggerPrice, actualEntryPrice: st.pos.actualEntryPrice, tpSlStatus: st.pos.tpSlStatus });
+    pushSignalNote({ ts, symbol, side: st.pos.side, lastPrice: snap.lastPrice, markPrice: snap.markPrice, action: 'TRIGGER_FILLED', message: `Trigger ${st.pos.triggerPrice} filled at ${st.pos.actualEntryPrice || st.pos.entryPrice}` });
   }
 
   function saveManualCancelTrade(symbol, pending, ts, outcome) {
@@ -279,6 +283,35 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     sqlite.saveSignal?.({ ...base, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, baselineFloorUSDT: cfg.baselineFloorUSDT, holdSeconds: cfg.holdSeconds, trendConfirmSeconds: cfg.trendConfirmSeconds, oiMaxAgeSec: cfg.oiMaxAgeSec });
   }
 
+  function pushSignalNote(note = {}, throttleMs = 0) {
+    const key = note?.throttleKey;
+    const now = Date.now();
+    if (key && throttleMs > 0) {
+      const prev = Number(signalNoteAt.get(key) || 0);
+      if ((now - prev) < throttleMs) return;
+      signalNoteAt.set(key, now);
+    }
+    const clean = {
+      ts: Number(note.ts || now),
+      symbol: note.symbol || null,
+      side: note.side || null,
+      windowMinutes: cfg.windowMinutes,
+      lastPrice: Number(note.lastPrice || 0) || null,
+      markPrice: Number(note.markPrice || 0) || null,
+      priceChangePct: Number.isFinite(Number(note.priceChange)) ? Number(note.priceChange) * 100 : null,
+      oiChangePct: Number.isFinite(Number(note.oiChange)) ? Number(note.oiChange) * 100 : null,
+      oiAgeSec: Number.isFinite(Number(note.oiAgeSec)) ? Number(note.oiAgeSec) : null,
+      turnoverPrevUSDT: Number.isFinite(Number(note.turnoverPrevUSDT)) ? Number(note.turnoverPrevUSDT) : null,
+      turnoverCurUSDT: Number.isFinite(Number(note.turnoverCurUSDT)) ? Number(note.turnoverCurUSDT) : null,
+      turnoverMedianUSDT: Number.isFinite(Number(note.turnoverMedianUSDT)) ? Number(note.turnoverMedianUSDT) : null,
+      turnoverBaselineUSDT: Number.isFinite(Number(note.turnoverBaselineUSDT)) ? Number(note.turnoverBaselineUSDT) : null,
+      action: note.action || 'INFO',
+      message: note.message || '',
+    };
+    signalNotifications.unshift(clean);
+    if (signalNotifications.length > 200) signalNotifications.length = 200;
+  }
+
   async function onTick({ ts, sec }, eligibleSymbols) {
     if (status !== MOMENTUM_STATUS.RUNNING) return;
     const windowSec = cfg.windowMinutes * 60;
@@ -288,22 +321,26 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       if (!snap || !(snap.markPrice > 0 && snap.lastPrice > 0 && snap.oiValue > 0)) {
         logSkipReason(symbol, null, 'NOT_READY_NO_PRICE_HISTORY', {}, 10_000);
         saveSignalBase({ instanceId: id, symbol, side: null, ts, windowMinutes: cfg.windowMinutes, priceChange: null, oiChange: null, markNow: snap?.markPrice || null, markPrev: null, lastNow: snap?.lastPrice || null, lastPrev: null, oiNow: snap?.oiValue || null, oiPrev: null, turnover24h: snap?.turnover24h || 0, vol24h: snap?.vol24h || 0, action: 'NOT_READY_NO_PRICE_HISTORY' });
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_HISTORY', message: 'Missing price history', throttleKey: `${symbol}:NOT_READY_NO_HISTORY` }, 10000);
         continue;
       }
       if (marketData.isDataFresh && !marketData.isDataFresh()) {
         logSkipReason(symbol, null, 'NOT_READY_WS_DISCONNECTED', {}, 10_000);
         saveSignalBase({ instanceId: id, symbol, side: null, ts, windowMinutes: cfg.windowMinutes, priceChange: null, oiChange: null, markNow: snap.markPrice, markPrev: null, lastNow: snap.lastPrice, lastPrev: null, oiNow: snap.oiValue, oiPrev: null, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'NOT_READY_WS_DISCONNECTED' });
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_WS_DISCONNECTED', message: 'Market WS not fresh', throttleKey: `${symbol}:NOT_READY_WS_DISCONNECTED` }, 10000);
         continue;
       }
       const prev = marketData.getAtWindow(symbol, sec - windowSec);
       if (!prev || !(prev.lastPrice > 0)) {
         logSkipReason(symbol, null, 'NOT_READY_NO_PRICE_HISTORY', {}, 10_000);
         saveSignalBase({ instanceId: id, symbol, side: null, ts, windowMinutes: cfg.windowMinutes, priceChange: null, oiChange: null, markNow: snap.markPrice, markPrev: null, lastNow: snap.lastPrice, lastPrev: null, oiNow: snap.oiValue, oiPrev: null, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'NOT_READY_NO_PRICE_HISTORY' });
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_HISTORY', message: 'Missing price history', throttleKey: `${symbol}:NOT_READY_NO_HISTORY` }, 10000);
         continue;
       }
       if (!(prev.oiValue > 0)) {
         logSkipReason(symbol, null, 'NOT_READY_NO_OI_HISTORY', {}, 10_000);
         saveSignalBase({ instanceId: id, symbol, side: null, ts, windowMinutes: cfg.windowMinutes, priceChange: null, oiChange: null, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'NOT_READY_NO_OI_HISTORY' });
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_HISTORY', message: 'Missing OI history', throttleKey: `${symbol}:NOT_READY_NO_OI_HISTORY` }, 10000);
         continue;
       }
       const st = stateFor(symbol);
@@ -339,6 +376,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       if (st.state === SYMBOL_STATE.COOLDOWN && ts >= st.cooldownUntil) st.state = SYMBOL_STATE.IDLE;
       if (st.state === SYMBOL_STATE.TRIGGER_PENDING || st.state === SYMBOL_STATE.IN_POSITION) {
         saveSignalBase({ instanceId: id, symbol, side: st.pending?.side || st.pos?.side || null, ts, windowMinutes: cfg.windowMinutes, priceChange: null, oiChange: null, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'SYMBOL_BUSY' });
+        pushSignalNote({ ts, symbol, side: st.pending?.side || st.pos?.side || null, action: 'SYMBOL_BUSY', message: 'Symbol already pending/in-position', throttleKey: `${symbol}:SYMBOL_BUSY` }, 5000);
         continue;
       }
       if (entries >= cfg.maxNewEntriesPerTick) continue;
@@ -359,39 +397,52 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         const priceOk = side === SIDE.LONG ? priceChange >= (cfg.priceThresholdPct / 100) : priceChange <= -(cfg.priceThresholdPct / 100);
         const oiOk = side === SIDE.LONG ? oiChange >= (cfg.oiThresholdPct / 100) : oiChange <= -(cfg.oiThresholdPct / 100);
         const trendOk = marketData.getTrendOk?.(symbol, cfg.trendConfirmSeconds, side) || false;
+        if (priceOk && oiOk) {
+          pushSignalNote({ ts, symbol, side, lastPrice: snap.lastPrice, markPrice: snap.markPrice, priceChange, oiChange, oiAgeSec, action: 'IMPULSE_DETECTED', message: 'Price/OI impulse detected', throttleKey: `${symbol}:${side}:IMPULSE_DETECTED` }, 2000);
+        }
         if (!oiFresh) {
           st.holdCount[side] = 0;
           logSkipReason(symbol, side, 'OI_STALE', { oiAgeSec });
           saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'OI_STALE', oiAgeSec });
+          pushSignalNote({ ts, symbol, side, oiAgeSec, lastPrice: snap.lastPrice, markPrice: snap.markPrice, priceChange, oiChange, action: 'SKIP_OI_STALE', message: `OI stale ${Number(oiAgeSec).toFixed(1)}s`, throttleKey: `${symbol}:${side}:SKIP_OI_STALE` }, 5000);
           continue;
         }
         if (!trendOk) {
           st.holdCount[side] = 0;
           saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'TREND_FAIL' });
+          pushSignalNote({ ts, symbol, side, lastPrice: snap.lastPrice, markPrice: snap.markPrice, priceChange, oiChange, action: 'SKIP_TREND_FAIL', message: 'Trend confirmation failed', throttleKey: `${symbol}:${side}:SKIP_TREND_FAIL` }, 5000);
           continue;
         }
 
         let turnoverOk = true;
         let turnover = null;
         if (side === SIDE.LONG) {
-          turnover = getLongTurnoverGate(symbol);
-          if (!(turnover.prev > 0)) {
-            logSkipReason(symbol, side, 'NO_PREV_CANDLE', {}, 10_000);
-            saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'NO_PREV_CANDLE' });
-            st.holdCount[side] = 0;
-            continue;
-          }
-          if (!(turnover.median > 0)) {
-            logSkipReason(symbol, side, 'NOT_READY_NO_TURNOVER_MEDIAN', {}, 10_000);
-            saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'NOT_READY_NO_TURNOVER_MEDIAN', prevTurnoverUSDT: turnover.prev, curTurnoverUSDT: turnover.cur, medianTurnoverUSDT: turnover.median, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: 0 });
-            st.holdCount[side] = 0;
-            continue;
-          }
-          turnoverOk = turnover.passed;
-          if (!turnoverOk) {
-            st.holdCount[side] = 0;
-            saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'TURNOVER_GATE_FAIL', prevTurnoverUSDT: turnover.prev, curTurnoverUSDT: turnover.cur, medianTurnoverUSDT: turnover.median, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: 0 });
-            continue;
+          if (Number(cfg.turnoverSpikePct) <= 0) {
+            turnoverOk = true;
+            saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'TURNOVER_GATE_SKIPPED' });
+          } else {
+            turnover = getLongTurnoverGate(symbol);
+            if (!(turnover.prev > 0)) {
+              logSkipReason(symbol, side, 'NO_PREV_CANDLE', {}, 10_000);
+              saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'NO_PREV_CANDLE' });
+              pushSignalNote({ ts, symbol, side, action: 'NOT_READY_NO_HISTORY', message: 'No previous turnover candle', throttleKey: `${symbol}:${side}:NO_PREV_CANDLE` }, 10000);
+              st.holdCount[side] = 0;
+              continue;
+            }
+            if (!(turnover.median > 0)) {
+              logSkipReason(symbol, side, 'NOT_READY_NO_TURNOVER_MEDIAN', {}, 10_000);
+              saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'NOT_READY_NO_TURNOVER_MEDIAN', prevTurnoverUSDT: turnover.prev, curTurnoverUSDT: turnover.cur, medianTurnoverUSDT: turnover.median, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: 0 });
+              pushSignalNote({ ts, symbol, side, action: 'NOT_READY_NO_HISTORY', message: 'No turnover median yet', throttleKey: `${symbol}:${side}:NO_TURNOVER_MEDIAN` }, 10000);
+              st.holdCount[side] = 0;
+              continue;
+            }
+            turnoverOk = turnover.passed;
+            if (!turnoverOk) {
+              st.holdCount[side] = 0;
+              saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'TURNOVER_GATE_FAIL', prevTurnoverUSDT: turnover.prev, curTurnoverUSDT: turnover.cur, medianTurnoverUSDT: turnover.median, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: 0 });
+              pushSignalNote({ ts, symbol, side, lastPrice: snap.lastPrice, markPrice: snap.markPrice, priceChange, oiChange, turnoverPrevUSDT: turnover.prev, turnoverCurUSDT: turnover.cur, turnoverMedianUSDT: turnover.median, turnoverBaselineUSDT: turnover.baseline, action: 'SKIP_TURNOVER_GATE_FAIL', message: 'Turnover gate failed', throttleKey: `${symbol}:${side}:SKIP_TURNOVER_GATE_FAIL` }, 5000);
+              continue;
+            }
           }
         }
 
@@ -400,6 +451,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         if (allOk && st.holdCount[side] < cfg.holdSeconds) {
           logSkipReason(symbol, side, 'HOLD_NOT_MET', { hold: st.holdCount[side], holdSeconds: cfg.holdSeconds }, 2000);
           saveSignalBase({ instanceId: id, symbol, side, ts, windowMinutes: cfg.windowMinutes, priceChange, oiChange, markNow: snap.markPrice, markPrev: prev.markPrice, lastNow: snap.lastPrice, lastPrev: prev.lastPrice, oiNow: snap.oiValue, oiPrev: prev.oiValue, turnover24h: snap.turnover24h || 0, vol24h: snap.vol24h || 0, action: 'HOLD_NOT_MET' });
+          pushSignalNote({ ts, symbol, side, lastPrice: snap.lastPrice, markPrice: snap.markPrice, priceChange, oiChange, action: 'SKIP_HOLDING', message: `Holding ${st.holdCount[side]}/${cfg.holdSeconds}`, throttleKey: `${symbol}:${side}:SKIP_HOLDING` }, 2000);
         }
         if (st.holdCount[side] >= cfg.holdSeconds && createTrigger(symbol, side, snap, ts, st)) {
           entries += 1;
@@ -420,7 +472,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       if (st.state === SYMBOL_STATE.COOLDOWN) cooldownCount += 1;
     }
     const signalView = [...signalViewBySymbol.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);
-    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null };
+    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView, signalNotifications: signalNotifications.slice(0, 50), marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null };
   }
 
   return {

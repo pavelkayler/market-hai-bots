@@ -1,3 +1,4 @@
+import { MOMENTUM_UNIVERSE_LIMIT_OPTIONS } from './momentumTypes.js';
 import { EventEmitter } from 'events';
 import { createMomentumInstance } from './momentumInstance.js';
 
@@ -41,6 +42,29 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     marketData.setActiveIntervals?.(intervals);
   }
 
+  function syncSelectionPolicy() {
+    if (instances.size === 0) return;
+    const lights = [...instances.values()].map((x) => x.getSnapshot?.()?.config).filter(Boolean);
+    if (!lights.length) return;
+    const cap = lights.reduce((maxCap, cfg) => {
+      const n = Number(cfg?.universeLimit);
+      return Number.isFinite(n) ? Math.max(maxCap, n) : maxCap;
+    }, 200);
+    const turnover24hMin = lights.reduce((minTurnover, cfg) => {
+      const n = Number(cfg?.turnover24hMin);
+      return Number.isFinite(n) ? Math.min(minTurnover, n) : minTurnover;
+    }, Number.POSITIVE_INFINITY);
+    const vol24hMin = lights.reduce((minVol, cfg) => {
+      const n = Number(cfg?.vol24hMin);
+      return Number.isFinite(n) ? Math.min(minVol, n) : minVol;
+    }, Number.POSITIVE_INFINITY);
+    marketData.setSelectionPolicy?.({
+      cap,
+      turnover24hMin: Number.isFinite(turnover24hMin) ? turnover24hMin : undefined,
+      vol24hMin: Number.isFinite(vol24hMin) ? vol24hMin : undefined,
+    });
+  }
+
   marketData.onTick(async (tick) => {
     const eligible = marketData.getEligibleSymbols();
     for (const inst of instances.values()) await inst.onTick(tick, eligible);
@@ -54,6 +78,10 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
     const mode = String(config?.mode || 'paper').toLowerCase();
+    const universeLimit = Number(config?.universeLimit ?? 200);
+    if (!MOMENTUM_UNIVERSE_LIMIT_OPTIONS.includes(universeLimit)) {
+      return { ok: false, error: 'INVALID_UNIVERSE_LIMIT', message: `universeLimit must be one of: ${MOMENTUM_UNIVERSE_LIMIT_OPTIONS.join(', ')}` };
+    }
     let isolatedPreflight = { ok: true, skipped: true };
     if ((mode === 'demo' || mode === 'real') && tradeExecutor?.enabled?.()) {
       const hedge = await tradeExecutor.ensureHedgeMode({});
@@ -69,6 +97,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     const inst = createMomentumInstance({ id, config, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
+    syncSelectionPolicy();
     emitState();
     return { ok: true, instanceId: id, stateSnapshot: inst.getSnapshot() };
   }
@@ -79,6 +108,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     inst.stop();
     instances.delete(instanceId);
     syncActiveIntervals();
+    syncSelectionPolicy();
     emitState();
     return { ok: true };
   }

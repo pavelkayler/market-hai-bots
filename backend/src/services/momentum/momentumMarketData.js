@@ -5,6 +5,8 @@ import { calcVol24h } from './momentumUtils.js';
 const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
 const ALLOWED_INTERVALS = new Set([1, 3, 5]);
 const TURNOVER_HISTORY_SIZE = 20;
+const MIN_SELECTION_CAP = 10;
+const MAX_SELECTION_CAP = 1500;
 
 function chunk(arr, n = 100) {
   const out = [];
@@ -36,6 +38,11 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   const activeIntervals = new Set([1]);
   const turnoverStore = new Map();
   const oiLastUpdateTsMs = new Map();
+  const selectionPolicy = {
+    cap: Math.max(MIN_SELECTION_CAP, Math.min(MAX_SELECTION_CAP, Math.trunc(Number(cap) || 200))),
+    turnover24hMin: Math.max(0, Number(turnover24hMin) || 0),
+    vol24hMin: Math.max(0, Number(vol24hMin) || 0),
+  };
 
   const getTurnoverKey = (symbol, interval) => `${symbol}:${interval}`;
 
@@ -70,6 +77,51 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
             });
           }
         }
+      }
+      cursor = data?.result?.nextPageCursor || '';
+    } while (cursor);
+  }
+
+  async function fetchTickersBootstrap() {
+    let cursor = '';
+    do {
+      const url = new URL('https://api.bybit.com/v5/market/tickers');
+      url.searchParams.set('category', 'linear');
+      url.searchParams.set('limit', '1000');
+      if (cursor) url.searchParams.set('cursor', cursor);
+      const res = await fetch(url);
+      const data = await res.json();
+      const list = data?.result?.list || [];
+      for (const row of list) {
+        const symbol = String(row?.symbol || '');
+        if (!instruments.has(symbol)) continue;
+        const meta = instrumentMeta.get(symbol) || {};
+        const markPrice = Number(row.markPrice);
+        const lastPrice = Number(row.lastPrice ?? row.last);
+        const openInterestQty = Number(row.openInterest);
+        const oiValueFromTicker = Number(row.openInterestValue ?? row.openInterestValueUSDT ?? row.open_interest_value);
+        const canDeriveOiValue = Number.isFinite(openInterestQty) && openInterestQty > 0
+          && Number.isFinite(lastPrice) && lastPrice > 0
+          && Number.isFinite(meta.contractMultiplier) && meta.contractMultiplier > 0;
+        const oiValue = Number.isFinite(oiValueFromTicker) && oiValueFromTicker > 0
+          ? oiValueFromTicker
+          : (canDeriveOiValue ? (openInterestQty * lastPrice * meta.contractMultiplier) : null);
+        const tsMs = Date.now();
+        if (Number.isFinite(oiValue) && oiValue > 0) oiLastUpdateTsMs.set(symbol, tsMs);
+        current.set(symbol, {
+          markPrice,
+          lastPrice,
+          openInterestQty,
+          oiValue,
+          turnover24h: Number(row.turnover24h),
+          highPrice24h: Number(row.highPrice24h),
+          lowPrice24h: Number(row.lowPrice24h),
+          price24hPcnt: Number(row.price24hPcnt),
+          ts: tsMs,
+          tickSize: Number(meta.tickSize) || null,
+          contractMultiplier: Number(meta.contractMultiplier) || null,
+          oiLastUpdateTsMs: oiLastUpdateTsMs.get(symbol) || null,
+        });
       }
       cursor = data?.result?.nextPageCursor || '';
     } while (cursor);
@@ -215,7 +267,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     return false;
   }
 
-  function getEligibleSymbols({ turnoverMin = turnover24hMin, volMin = vol24hMin } = {}) {
+  function getEligibleSymbols({ turnoverMin = selectionPolicy.turnover24hMin, volMin = selectionPolicy.vol24hMin, cap: limit = selectionPolicy.cap } = {}) {
     const rows = [];
     for (const sym of instruments) {
       const s = current.get(sym);
@@ -225,7 +277,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
       rows.push({ symbol: sym, turnover24h: Number(s.turnover24h) || 0 });
     }
     rows.sort((a, b) => b.turnover24h - a.turnover24h);
-    return rows.slice(0, cap).map((r) => r.symbol);
+    return rows.slice(0, limit).map((r) => r.symbol);
   }
 
   async function sendTopicOps(op, topics = []) {
@@ -237,7 +289,11 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
 
   async function reconcileSubscriptions() {
     if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
-    const desiredSymbols = getEligibleSymbols();
+    const desiredSymbols = getEligibleSymbols({
+      turnoverMin: selectionPolicy.turnover24hMin,
+      volMin: selectionPolicy.vol24hMin,
+      cap: selectionPolicy.cap,
+    });
     const desiredTickerTopics = new Set(desiredSymbols.map((s) => `tickers.${s}`));
     const desiredKlineTopics = new Set();
     for (const symbol of desiredSymbols) {
@@ -276,6 +332,16 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     reconcileSubscriptions().catch((e) => logger.warn?.({ err: e }, 'momentum active intervals reconcile failed'));
   }
 
+  function setSelectionPolicy({ cap: nextCap, turnover24hMin: nextTurnoverMin, vol24hMin: nextVolMin } = {}) {
+    const parsedCap = Math.trunc(Number(nextCap));
+    if (Number.isFinite(parsedCap)) selectionPolicy.cap = Math.max(MIN_SELECTION_CAP, Math.min(MAX_SELECTION_CAP, parsedCap));
+    const parsedTurnover = Number(nextTurnoverMin);
+    if (Number.isFinite(parsedTurnover)) selectionPolicy.turnover24hMin = Math.max(0, parsedTurnover);
+    const parsedVol = Number(nextVolMin);
+    if (Number.isFinite(parsedVol)) selectionPolicy.vol24hMin = Math.max(0, parsedVol);
+    reconcileSubscriptions().catch((e) => logger.warn?.({ err: e }, 'momentum selection policy reconcile failed'));
+  }
+
   function getOiAgeSec(symbol) {
     const ts = oiLastUpdateTsMs.get(symbol);
     if (!(ts > 0)) return Number.POSITIVE_INFINITY;
@@ -292,7 +358,13 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
 
   async function start() {
     await fetchUniverse();
+    try {
+      await fetchTickersBootstrap();
+    } catch (err) {
+      logger.warn?.({ err }, 'momentum tickers bootstrap failed');
+    }
     connect();
+    reconcileSubscriptions().catch((e) => logger.warn?.({ err: e }, 'momentum initial reconcile failed'));
     setInterval(() => onTick(Date.now()), 1000);
     setInterval(() => { fetchUniverse().catch((e) => logger.warn?.({ err: e }, 'momentum universe refresh failed')); }, 15 * 60 * 1000);
     setInterval(() => { reconcileSubscriptions().catch((e) => logger.warn?.({ err: e }, 'momentum sub reconcile failed')); }, 45 * 1000);
@@ -311,12 +383,16 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     getEligibleSymbols,
     getTurnoverGate,
     setActiveIntervals,
+    setSelectionPolicy,
     getStatus: () => ({
       wsConnected: connected,
       subscribedCount: subscribedTickers.size,
       eligibleCount: getEligibleSymbols().length,
       universeCount: instruments.size,
-      cap,
+      cap: selectionPolicy.cap,
+      selectionCap: selectionPolicy.cap,
+      selectionTurnoverMin: selectionPolicy.turnover24hMin,
+      selectionVolMin: selectionPolicy.vol24hMin,
       lastTickTs,
       tickDriftMs,
       activeIntervals: [...activeIntervals].sort((a, b) => a - b),
