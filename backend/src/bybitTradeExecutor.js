@@ -424,7 +424,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   async function sync({ symbol, closedPnlLimit = 20 } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const [positionRes, ordersRes, pnlRes] = await Promise.all([
-      privateRest.getPositions({ category: "linear", symbol }),
+      privateRest.getPositions({ symbol }),
       privateRest.getOrdersRealtime({ category: "linear", symbol }),
       privateRest.getClosedPnl({ category: "linear", symbol, limit: String(closedPnlLimit) }),
     ]);
@@ -448,7 +448,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
 
   async function getPositionsRaw({ symbol } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
-    const res = await privateRest.getPositions({ category: "linear", symbol });
+    const res = await privateRest.getPositions({ symbol });
     return (res?.result?.list || []).map(normalizePosition);
   }
 

@@ -36,6 +36,24 @@ function isRetryableBybitError(retCode) {
   return [10000, 10002, 10006, 30034, 30084].includes(Number(retCode));
 }
 
+function normalizeLinearPositionQuery({ symbol = null, settleCoin = "USDT" } = {}) {
+  const normalizedSymbol = symbol ? String(symbol).toUpperCase() : null;
+  const normalizedSettleCoin = settleCoin ? String(settleCoin).toUpperCase() : null;
+  const query = { category: "linear" };
+
+  if (normalizedSymbol) {
+    query.symbol = normalizedSymbol;
+    return query;
+  }
+
+  if (!normalizedSettleCoin) {
+    throw new Error("getPositions requires either symbol or settleCoin");
+  }
+
+  query.settleCoin = normalizedSettleCoin;
+  return query;
+}
+
 export function createBybitPrivateRest({
   apiKey,
   apiSecret,
@@ -118,7 +136,9 @@ export function createBybitPrivateRest({
     getOrdersRealtime: (query) => request("GET", "/v5/order/realtime", { query }),
     getOrderHistory: (query) => request("GET", "/v5/order/history", { query }),
     getExecutions: (query) => request("GET", "/v5/execution/list", { query }),
-    getPositions: (query) => request("GET", "/v5/position/list", { query }),
+    getPositions: ({ symbol = null, settleCoin = "USDT" } = {}) => request("GET", "/v5/position/list", {
+      query: normalizeLinearPositionQuery({ symbol, settleCoin }),
+    }),
     setTradingStop: (body) => request("POST", "/v5/position/trading-stop", { body }),
     getClosedPnl: (query) => request("GET", "/v5/position/closed-pnl", { query }),
     setLeverage: (body) => request("POST", "/v5/position/set-leverage", { body }),
