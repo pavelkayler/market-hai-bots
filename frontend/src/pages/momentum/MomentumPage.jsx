@@ -119,13 +119,14 @@ export default function MomentumPage() {
   return <Row className="g-3">
     <Col md={12}><Card><Card.Body><Card.Title>Market status</Card.Title>
       {!market && <Alert variant="secondary">Loading...</Alert>}
-      {market?.lastHedgeModeError && <Alert variant="danger" className="mb-2">{market.lastHedgeModeError}</Alert>}
+      {form.mode !== 'paper' && market?.hedgeRequired && market?.lastHedgeModeError && <Alert variant="danger" className="mb-2">{market.lastHedgeModeError}</Alert>}
+      {form.mode !== 'paper' && market?.hedgeRequired && (market?.hedgeMode || 'UNKNOWN') === 'UNKNOWN' && !market?.lastHedgeModeError && <Alert variant="warning" className="mb-2">Cannot verify hedge mode right now; if you trade both directions, ensure Hedge (dual-side) is enabled in Bybit.</Alert>}
       {market?.lastMarginModeError && <Alert variant="warning" className="mb-2">{market.lastMarginModeError}</Alert>}
       {market && <div>
-        WS: {String(market.wsConnected)} | Universe: {market.universeCount} | Eligible: {market.eligibleCount} | Subscribed: {market.subscribedCount}/{market.selectionCap || market.cap}
+        WS: {String(market.wsConnected)} | Universe(Bybit linear USDT perps): {market.universeCount} | Eligible: {market.eligibleCount} | Subscribed: {market.subscribedCount}/{market.desiredCount}
         {' '}| SnapshotAge: {marketDiagnostics.snapshotAgeSec ?? '-'}s | Bootstrap: {market.inBootstrapGrace ? `ON (${market.bootstrapAgeSec}s)` : `OFF (${market.bootstrapAgeSec}s)`}
         {' '}| Kline topics: {market.klineSubscribedCount || 0} | Active intervals: {(market.activeIntervals || []).join(', ') || '-'}
-        {' '}| Selection: cap={market.selectionCap || market.cap}, turnover≥{market.selectionTurnoverMin}, vol≥{market.selectionVolMin}% | Drift: {market.tickDriftMs}ms
+        {' '}| Filters: cap={market.selectionCap || market.cap}, turnover≥{market.selectionTurnoverMin}, vol≥{market.selectionVolMin}% | Drift: {market.tickDriftMs}ms
         {' '}| Hedge: {market.hedgeMode || 'UNKNOWN'} | Margin: {market.marginMode || 'UNKNOWN'}
         {marketDiagnostics.topDropReasons.length > 0 && (market.eligibleCount || 0) < (market.selectionCap || market.cap)
           ? <span>{' '}| Drop reasons: {marketDiagnostics.topDropReasons.map(([reason, count]) => `${reason}=${count}`).join(', ')}</span>

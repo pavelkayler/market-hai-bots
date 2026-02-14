@@ -56,3 +56,28 @@ test('ensureHedgeMode sets hedge mode when account is one-way', async () => {
   assert.equal(out.mode, 'HEDGE');
   assert.equal(calls.switchPositionMode, 1);
 });
+
+
+test('getHedgeModeSnapshot caches mode for ttl window', async () => {
+  const calls = { positions: 0 };
+  const privateRest = {
+    enabled: true,
+    getPositions: async () => { calls.positions += 1; return { result: { list: [{ symbol: 'BTCUSDT', positionIdx: 1, tradeMode: 1, marginMode: 'isolated' }] } }; },
+    getOrdersRealtime: async () => ({ result: { list: [] } }),
+    getClosedPnl: async () => ({ result: { list: [] } }),
+    placeOrder: async () => ({ result: { orderId: 'oid' } }),
+    setTradingStop: async () => ({ result: {} }),
+    setLeverage: async () => ({ result: {} }),
+    cancelAll: async () => ({ result: {} }),
+    switchIsolated: async () => ({ result: {} }),
+    switchPositionMode: async () => ({ result: {} }),
+    getAccountInfo: async () => ({ result: { list: [{ unifiedMarginStatus: 1 }] } }),
+  };
+  const ex = createBybitTradeExecutor({ privateRest, instruments: null });
+  ex.setExecutionMode('demo');
+  const a = await ex.getHedgeModeSnapshot({ symbol: 'BTCUSDT' });
+  const b = await ex.getHedgeModeSnapshot({ symbol: 'BTCUSDT' });
+  assert.equal(a.mode, 'HEDGE');
+  assert.equal(b.mode, 'HEDGE');
+  assert.equal(calls.positions, 1);
+});

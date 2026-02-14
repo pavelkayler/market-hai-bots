@@ -80,6 +80,8 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   const isolatedCache = new Map();
   const isolatedInFlight = new Map();
   const isolatedTtlMs = 60 * 1000;
+  const hedgeModeTtlMs = 30 * 1000;
+  let hedgeSnapshot = { mode: 'UNKNOWN', checkedAt: 0, source: 'bybit', error: null };
   let hedgeInFlight = null;
 
   async function getOrderById({ symbol, orderId } = {}) {
@@ -215,13 +217,11 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     if (hedgeInFlight) return hedgeInFlight;
     hedgeInFlight = (async () => {
       try {
-        let mode = await detectPositionMode(symbol);
-        if (mode === "UNKNOWN") mode = await getPositionModeFromAccount();
+        let mode = await getHedgeModeSnapshot({ symbol, force: true }).then((x) => x.mode);
         if (mode !== "HEDGE" && privateRest.switchPositionMode) {
           await privateRest.switchPositionMode({ category: "linear", mode: 3, symbol: symbol || undefined, coin: "USDT" });
           await new Promise((r) => setTimeout(r, 150));
-          mode = await detectPositionMode(symbol);
-          if (mode === "UNKNOWN") mode = await getPositionModeFromAccount();
+          mode = await getHedgeModeSnapshot({ symbol, force: true }).then((x) => x.mode);
         }
         preflight.lastHedgeModeCheckTs = Date.now();
         preflight.hedgeMode = mode;
@@ -241,6 +241,32 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       }
     })();
     return hedgeInFlight;
+  }
+
+  async function getHedgeModeSnapshot({ symbol, force = false } = {}) {
+    if (state.executionMode === 'paper') {
+      preflight.lastHedgeModeCheckTs = Date.now();
+      preflight.hedgeMode = 'UNKNOWN';
+      preflight.lastHedgeModeError = null;
+      return { mode: 'UNKNOWN', checkedAt: preflight.lastHedgeModeCheckTs, source: 'bybit', skipped: true };
+    }
+    const now = Date.now();
+    if (!force && hedgeSnapshot.checkedAt > 0 && (now - hedgeSnapshot.checkedAt) <= hedgeModeTtlMs) {
+      return { ...hedgeSnapshot };
+    }
+    let mode = 'UNKNOWN';
+    let error = null;
+    try {
+      mode = await detectPositionMode(symbol);
+      if (mode === 'UNKNOWN') mode = await getPositionModeFromAccount();
+    } catch (err) {
+      error = String(err?.message || err || 'unknown');
+    }
+    hedgeSnapshot = { mode, checkedAt: now, source: 'bybit', error };
+    preflight.lastHedgeModeCheckTs = now;
+    preflight.hedgeMode = mode;
+    preflight.lastHedgeModeError = error;
+    return { ...hedgeSnapshot };
   }
 
   async function ensureIsolated({ symbol } = {}) {
@@ -548,6 +574,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     closePositionMarket,
     panicClose,
     detectPositionMode,
+    getHedgeModeSnapshot,
     ensureHedgeMode,
     ensureIsolated,
     getPreflightStatus,
