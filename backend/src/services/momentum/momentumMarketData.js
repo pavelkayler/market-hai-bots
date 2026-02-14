@@ -1,9 +1,11 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import { createBybitRest } from '../../bybitRest.js';
 
 const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
 const ALLOWED_INTERVALS = new Set([1, 3, 5]);
-const TURNOVER_HISTORY_SIZE = 20;
+const TURNOVER_HISTORY_SIZE = 10;
+const TURNOVER_MEDIAN_WINDOW = 5;
 const MIN_SELECTION_CAP = 10;
 const MAX_SELECTION_CAP = 1500;
 
@@ -34,9 +36,12 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   const universeSymbols = instruments;
   const subscribedTickers = new Set();
   const subscribedKlines = new Set();
+  const pinnedSymbols = new Set();
   const instrumentMeta = new Map();
   const activeIntervals = new Set([1]);
   const turnoverStore = new Map();
+  const bybitRest = createBybitRest({ logger });
+  const seededKlineKeys = new Set();
   const oiLastUpdateTsMs = new Map();
   const tickers24h = new Map();
   let tickersSnapshotTsMs = 0;
@@ -153,7 +158,14 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
           ? oiValueFromTicker
           : (canDeriveOiValue ? (openInterestQty * lastPrice * meta.contractMultiplier) : null);
         const tsMs = Date.now();
-        if (Number.isFinite(oiValue) && oiValue > 0) oiLastUpdateTsMs.set(symbol, tsMs);
+        if (Number.isFinite(oiValue) && oiValue > 0) {
+            oiLastUpdateTsMs.set(symbol, tsMs);
+            for (const interval of activeIntervals) {
+              const key = getTurnoverKey(symbol, interval);
+              const row = turnoverStore.get(key);
+              if (row && !(Number(row.prevOiValue) > 0)) row.prevOiValue = oiValue;
+            }
+          }
         current.set(symbol, {
           markPrice,
           lastPrice,
@@ -177,30 +189,66 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     logger.info?.({ tickersSnapshotCount, tickersSnapshotMissingFieldsCount }, 'momentum tickers snapshot refreshed');
   }
 
-  function upsertTurnover({ symbol, interval, candleStartMs, turnoverUSDT, updateMs }) {
+  function computeTurnoverMedian(history = []) {
+    const sample = history.slice(-TURNOVER_MEDIAN_WINDOW);
+    return median(sample);
+  }
+
+  function upsertTurnover({ symbol, interval, candleStartMs, closePrice, turnoverUSDT, updateMs }) {
     const key = getTurnoverKey(symbol, interval);
     const cur = turnoverStore.get(key) || {
-      prevTurnoverUSDT: null,
-      curTurnoverUSDT: null,
-      curCandleStartMs: null,
-      lastUpdateMs: 0,
-      history: [],
+      prevCandle: null,
+      curCandle: null,
+      historyTurnover: [],
       medianTurnoverUSDT: null,
+      prevOiValue: null,
+      lastUpdateMs: 0,
     };
-    if (cur.curCandleStartMs === null || candleStartMs > cur.curCandleStartMs) {
-      if (cur.curCandleStartMs !== null && Number.isFinite(cur.curTurnoverUSDT)) {
-        cur.prevTurnoverUSDT = cur.curTurnoverUSDT;
-        cur.history.push(cur.curTurnoverUSDT);
-        if (cur.history.length > TURNOVER_HISTORY_SIZE) cur.history.shift();
-        cur.medianTurnoverUSDT = median(cur.history);
+
+    if (!cur.curCandle || candleStartMs > cur.curCandle.startMs) {
+      if (cur.curCandle && Number.isFinite(cur.curCandle.turnover)) {
+        cur.prevCandle = { ...cur.curCandle };
+        cur.historyTurnover.push(cur.curCandle.turnover);
+        if (cur.historyTurnover.length > TURNOVER_HISTORY_SIZE) cur.historyTurnover.shift();
+        cur.medianTurnoverUSDT = computeTurnoverMedian(cur.historyTurnover);
+        const oiNow = Number(current.get(symbol)?.oiValue);
+        if (Number.isFinite(oiNow) && oiNow > 0) cur.prevOiValue = oiNow;
       }
-      cur.curCandleStartMs = candleStartMs;
-      cur.curTurnoverUSDT = turnoverUSDT;
-    } else if (candleStartMs === cur.curCandleStartMs) {
-      cur.curTurnoverUSDT = turnoverUSDT;
+      cur.curCandle = { startMs: candleStartMs, close: closePrice, turnover: turnoverUSDT };
+    } else if (cur.curCandle && candleStartMs === cur.curCandle.startMs) {
+      if (Number.isFinite(closePrice) && closePrice > 0) cur.curCandle.close = closePrice;
+      if (Number.isFinite(turnoverUSDT) && turnoverUSDT >= 0) cur.curCandle.turnover = turnoverUSDT;
     }
+
     cur.lastUpdateMs = updateMs;
     turnoverStore.set(key, cur);
+  }
+
+  async function seedKlineBaseline(symbol, interval, force = false) {
+    const key = getTurnoverKey(symbol, interval);
+    if (!force && seededKlineKeys.has(key)) return;
+    try {
+      const candles = await bybitRest.getKlines({ symbol, interval, limit: 2 });
+      if (!Array.isArray(candles) || candles.length === 0) return;
+      const row = turnoverStore.get(key) || { prevCandle: null, curCandle: null, historyTurnover: [], medianTurnoverUSDT: null, prevOiValue: null, lastUpdateMs: 0 };
+      const prev = candles.length >= 2 ? candles[candles.length - 2] : null;
+      const cur = candles[candles.length - 1];
+      if (prev) {
+        row.prevCandle = { startMs: prev.t, close: Number(prev.c), turnover: Number(prev.turnover || 0) };
+        row.historyTurnover = [...row.historyTurnover, Number(prev.turnover || 0)].filter((x) => Number.isFinite(x) && x >= 0).slice(-TURNOVER_HISTORY_SIZE);
+        row.medianTurnoverUSDT = computeTurnoverMedian(row.historyTurnover);
+      }
+      if (cur) row.curCandle = { startMs: cur.t, close: Number(cur.c), turnover: Number(cur.turnover || 0) };
+      if (!(Number(row.prevOiValue) > 0)) {
+        const oiNow = Number(current.get(symbol)?.oiValue);
+        if (Number.isFinite(oiNow) && oiNow > 0) row.prevOiValue = oiNow;
+      }
+      row.lastUpdateMs = Date.now();
+      turnoverStore.set(key, row);
+      seededKlineKeys.add(key);
+    } catch (err) {
+      logger.debug?.({ err, symbol, interval }, 'momentum kline seed failed');
+    }
   }
 
   function parseKline(msg) {
@@ -214,9 +262,10 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     if (!row) return null;
     const candleStartMs = Number(row.start ?? row.startTime);
     const turnoverUSDT = Number(row.turnover);
+    const closePrice = Number(row.close);
     if (!Number.isFinite(candleStartMs) || candleStartMs <= 0) return null;
     if (!Number.isFinite(turnoverUSDT) || turnoverUSDT < 0) return null;
-    return { symbol, interval, candleStartMs, turnoverUSDT };
+    return { symbol, interval, candleStartMs, closePrice, turnoverUSDT };
   }
 
   function connect() {
@@ -242,7 +291,14 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
           const oiValue = Number.isFinite(oiValueFromTicker) && oiValueFromTicker > 0
             ? oiValueFromTicker
             : (canDeriveOiValue ? (openInterestQty * lastPrice * meta.contractMultiplier) : null);
-          if (Number.isFinite(oiValue) && oiValue > 0) oiLastUpdateTsMs.set(symbol, tsMs);
+          if (Number.isFinite(oiValue) && oiValue > 0) {
+            oiLastUpdateTsMs.set(symbol, tsMs);
+            for (const interval of activeIntervals) {
+              const key = getTurnoverKey(symbol, interval);
+              const row = turnoverStore.get(key);
+              if (row && !(Number(row.prevOiValue) > 0)) row.prevOiValue = oiValue;
+            }
+          }
           pending.set(symbol, {
             markPrice,
             lastPrice,
@@ -400,11 +456,12 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   async function reconcileSubscriptions(reason = 'periodic') {
     if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
     const now = Date.now();
-    const desiredSymbols = getEligibleSymbols({
+    const eligibleSymbols = getEligibleSymbols({
       turnoverMin: selectionPolicy.turnover24hMin,
       volMin: selectionPolicy.vol24hMin,
       cap: selectionPolicy.cap,
     });
+    const desiredSymbols = [...new Set([...eligibleSymbols, ...pinnedSymbols])];
     const desiredTickerTopics = new Set(desiredSymbols.map((s) => `tickers.${s}`));
     const desiredKlineTopics = new Set();
     for (const symbol of desiredSymbols) {
@@ -453,16 +510,66 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     await sendTopicOps('unsubscribe', toUnKlines);
     toUnKlines.forEach((t) => subscribedKlines.delete(t));
 
-    logger.debug?.({ reason, desiredCount: desiredSymbols.length, subscribedTickers: subscribedTickers.size, bootstrapGrace: inBootstrapGrace() }, 'momentum reconcile complete');
+    for (const topic of toSubKlines) {
+      const parts = String(topic).split('.');
+      if (parts.length >= 3) seedKlineBaseline(parts[2], Number(parts[1])).catch(() => {});
+    }
+
+    logger.debug?.({ reason, desiredCount: desiredSymbols.length, subscribedTickers: subscribedTickers.size, bootstrapGrace: inBootstrapGrace(), pinnedCount: pinnedSymbols.size }, 'momentum reconcile complete');
   }
 
   function getTurnoverGate(symbol, interval) {
+    const base = getCandleBaseline(symbol, interval);
+    if (!base?.ok) return { prevTurnoverUSDT: null, curTurnoverUSDT: null, medianTurnoverUSDT: null, curCandleStartMs: null, ready: false };
+    const ready = Number(base.prevTurnoverUSDT) > 0 && Number(base.curCandleStartMs) > 0;
+    return { prevTurnoverUSDT: base.prevTurnoverUSDT, curTurnoverUSDT: base.curTurnoverUSDT, medianTurnoverUSDT: base.medianPrevTurnoverUSDT, curCandleStartMs: base.curCandleStartMs, ready };
+  }
+
+
+  function setPinnedSymbols(symbols = []) {
+    const next = new Set();
+    for (const raw of symbols || []) {
+      const sym = String(raw || '').toUpperCase().trim();
+      if (/^[A-Z0-9]{3,}USDT$/.test(sym)) next.add(sym);
+    }
+    pinnedSymbols.clear();
+    for (const sym of next) pinnedSymbols.add(sym);
+    for (const sym of pinnedSymbols) {
+      for (const interval of activeIntervals) seedKlineBaseline(sym, interval, true).catch(() => {});
+    }
+    reconcileSubscriptions('pinnedChange').catch((e) => logger.warn?.({ err: e }, 'momentum pinned reconcile failed'));
+  }
+
+  function getPinnedSymbols() {
+    return [...pinnedSymbols];
+  }
+
+  function hasInstrument(symbol) {
+    return instruments.has(String(symbol || '').toUpperCase());
+  }
+
+  function getCandleBaseline(symbol, interval) {
     const nInterval = Number(interval);
-    if (!ALLOWED_INTERVALS.has(nInterval)) return { prevTurnoverUSDT: null, curTurnoverUSDT: null, medianTurnoverUSDT: null, curCandleStartMs: null, ready: false };
+    if (!ALLOWED_INTERVALS.has(nInterval)) return { ok: false, reason: 'INVALID_INTERVAL' };
     const row = turnoverStore.get(getTurnoverKey(symbol, nInterval));
-    if (!row) return { prevTurnoverUSDT: null, curTurnoverUSDT: null, medianTurnoverUSDT: null, curCandleStartMs: null, ready: false };
-    const ready = Number(row.prevTurnoverUSDT) > 0 && Number(row.curCandleStartMs) > 0;
-    return { prevTurnoverUSDT: row.prevTurnoverUSDT, curTurnoverUSDT: row.curTurnoverUSDT, medianTurnoverUSDT: row.medianTurnoverUSDT, curCandleStartMs: row.curCandleStartMs, ready };
+    if (!row) return { ok: false, reason: 'NO_PREV_CANDLE' };
+    const prevClose = Number(row.prevCandle?.close);
+    if (!(prevClose > 0)) return { ok: false, reason: 'NO_PREV_CANDLE' };
+    const prevTurnoverUSDT = Number(row.prevCandle?.turnover);
+    const medianPrevTurnoverUSDT = Number(row.medianTurnoverUSDT);
+    const curTurnoverUSDT = Number(row.curCandle?.turnover);
+    const prevOiValue = Number(row.prevOiValue);
+    return {
+      ok: true,
+      prevClose,
+      prevTurnoverUSDT: Number.isFinite(prevTurnoverUSDT) ? prevTurnoverUSDT : null,
+      medianPrevTurnoverUSDT: Number.isFinite(medianPrevTurnoverUSDT) ? medianPrevTurnoverUSDT : null,
+      curTurnoverUSDT: Number.isFinite(curTurnoverUSDT) ? curTurnoverUSDT : null,
+      prevOiValue: Number.isFinite(prevOiValue) ? prevOiValue : null,
+      curCandleStartMs: Number(row.curCandle?.startMs || 0) || null,
+      prevCandleStartMs: Number(row.prevCandle?.startMs || 0) || null,
+      baselineSource: 'PREV_CLOSE',
+    };
   }
 
   function setActiveIntervals(intervals = []) {
@@ -470,6 +577,9 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     if (next.size === 0) next.add(1);
     activeIntervals.clear();
     for (const i of next) activeIntervals.add(i);
+    for (const sym of pinnedSymbols) {
+      for (const i of activeIntervals) seedKlineBaseline(sym, i, true).catch(() => {});
+    }
     reconcileSubscriptions('activeIntervals').catch((e) => logger.warn?.({ err: e }, 'momentum active intervals reconcile failed'));
   }
 
@@ -527,13 +637,17 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     isDataFresh,
     getEligibleSymbols,
     getTurnoverGate,
+    getCandleBaseline,
     setActiveIntervals,
+    setPinnedSymbols,
+    getPinnedSymbols,
+    hasInstrument,
     setSelectionPolicy,
     reconcileSubscriptions,
     getStatus: () => ({
       wsConnected: connected,
       subscribedCount: subscribedTickers.size,
-      eligibleCount: getEligibleSymbols().length,
+      eligibleCount: lastEligibility.eligibleCount,
       ineligibleCounts: { ...lastEligibility.ineligibleCounts },
       universeCount: instruments.size,
       cap: selectionPolicy.cap,
@@ -553,6 +667,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
       inBootstrapGrace: inBootstrapGrace(),
       activeIntervals: [...activeIntervals].sort((a, b) => a - b),
       klineSubscribedCount: subscribedKlines.size,
+      pinnedCount: pinnedSymbols.size,
     }),
   };
 }

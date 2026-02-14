@@ -70,9 +70,23 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     marketData.reconcileSubscriptions?.('policyChange').catch?.(() => {});
   }
 
+
+  function syncPinnedSymbols() {
+    const pinned = new Set();
+    for (const inst of instances.values()) {
+      const sym = String(inst.getSnapshot?.()?.config?.singleSymbol || '').toUpperCase().trim();
+      if (sym) pinned.add(sym);
+    }
+    marketData.setPinnedSymbols?.([...pinned]);
+  }
+
   marketData.onTick(async (tick) => {
     const eligible = marketData.getEligibleSymbols();
-    for (const inst of instances.values()) await inst.onTick(tick, eligible);
+    for (const inst of instances.values()) {
+      const singleSymbol = String(inst.getSnapshot?.()?.config?.singleSymbol || '').toUpperCase().trim();
+      const symbols = singleSymbol ? [singleSymbol] : eligible;
+      await inst.onTick(tick, symbols);
+    }
     emitState();
   });
 
@@ -87,6 +101,15 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     if (!MOMENTUM_UNIVERSE_LIMIT_OPTIONS.includes(universeLimit)) {
       return { ok: false, error: 'INVALID_UNIVERSE_LIMIT', message: `universeLimit must be one of: ${MOMENTUM_UNIVERSE_LIMIT_OPTIONS.join(', ')}` };
     }
+    let singleSymbol = String(config?.singleSymbol || '').trim().toUpperCase();
+    if (singleSymbol) {
+      if (!/^[A-Z0-9]{3,}USDT$/.test(singleSymbol)) {
+        return { ok: false, error: 'INVALID_SINGLE_SYMBOL', message: 'singleSymbol must match /^[A-Z0-9]{3,}USDT$/' };
+      }
+      if (marketData.hasInstrument && !marketData.hasInstrument(singleSymbol)) logger?.warn?.({ symbol: singleSymbol }, 'UNKNOWN_SYMBOL');
+    } else {
+      singleSymbol = null;
+    }
     let isolatedPreflight = { ok: true, skipped: true };
     if ((mode === 'demo' || mode === 'real') && tradeExecutor?.enabled?.()) {
       const hedge = await tradeExecutor.ensureHedgeMode({});
@@ -99,10 +122,11 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };
       if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
-    const inst = createMomentumInstance({ id, config, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
+    const inst = createMomentumInstance({ id, config: { ...config, singleSymbol }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
     syncSelectionPolicy();
+    syncPinnedSymbols();
     emitState();
     return { ok: true, instanceId: id, stateSnapshot: inst.getSnapshot() };
   }
@@ -114,6 +138,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     instances.delete(instanceId);
     syncActiveIntervals();
     syncSelectionPolicy();
+    syncPinnedSymbols();
     emitState();
     return { ok: true };
   }

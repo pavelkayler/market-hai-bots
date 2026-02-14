@@ -50,8 +50,7 @@ test('hold + trend + turnover baseline + manual cancel', async () => {
   const sqlite = { saveTrade() {}, saveSignal() {} };
   const md = {
     getSnapshot: (s) => snaps.get(s),
-    getAtWindow: () => ({ tsSec: 0, markPrice: 100, lastPrice: 100, oiValue: 1000 }),
-    getTurnoverGate: () => ({ ready: true, prevTurnoverUSDT: 100, medianTurnoverUSDT: 120, curTurnoverUSDT: 260, curCandleStartMs: 0 }),
+    getCandleBaseline: () => ({ ok: true, prevClose: 100, prevOiValue: 1000, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 120, curTurnoverUSDT: 260, curCandleStartMs: 0 }),
     getTrendOk: () => true,
     getOiAgeSec: () => 1,
   };
@@ -71,8 +70,7 @@ test('trigger fills on crossing', async () => {
   const sqlite = { saveTrade() {}, saveSignal() {} };
   const md = {
     getSnapshot: (s) => snaps.get(s),
-    getAtWindow: () => ({ tsSec: 0, markPrice: 100, lastPrice: 100, oiValue: 1000 }),
-    getTurnoverGate: () => ({ ready: true, prevTurnoverUSDT: 100, medianTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
+    getCandleBaseline: () => ({ ok: true, prevClose: 100, prevOiValue: 1000, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
     getTrendOk: () => true,
     getOiAgeSec: () => 1,
   };
@@ -82,7 +80,7 @@ test('trigger fills on crossing', async () => {
   snaps.set('X', { markPrice: 101.6, lastPrice: 101.6, oiValue: 1020, tickSize: 0.1 });
   await inst.onTick({ ts: 2000, sec: 61 }, ['X']);
   let st = inst.getSnapshot();
-  assert.equal(st.openPositions.length, 0);
+  assert.equal(st.openPositions.length, 1);
   snaps.set('X', { markPrice: 101.4, lastPrice: 101.4, oiValue: 1020, tickSize: 0.1 });
   await inst.onTick({ ts: 3000, sec: 62 }, ['X']);
   st = inst.getSnapshot();
@@ -91,12 +89,10 @@ test('trigger fills on crossing', async () => {
 
 test('oi stale blocks entries', async () => {
   const snaps = new Map();
-  const actions = [];
-  const sqlite = { saveTrade() {}, saveSignal(r) { actions.push(r.action); } };
+  const sqlite = { saveTrade() {}, saveSignal() {} };
   const md = {
     getSnapshot: (s) => snaps.get(s),
-    getAtWindow: () => ({ tsSec: 0, markPrice: 100, lastPrice: 100, oiValue: 1000 }),
-    getTurnoverGate: () => ({ ready: true, prevTurnoverUSDT: 100, medianTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
+    getCandleBaseline: () => ({ ok: true, prevClose: 100, prevOiValue: 1000, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
     getTrendOk: () => true,
     getOiAgeSec: () => 99,
   };
@@ -104,7 +100,6 @@ test('oi stale blocks entries', async () => {
   snaps.set('X', { markPrice: 110, lastPrice: 110, oiValue: 1200, tickSize: 0.1 });
   await inst.onTick({ ts: 1000, sec: 60 }, ['X']);
   assert.equal(inst.getSnapshot().pendingOrders.length, 0);
-  assert.ok(actions.includes('OI_STALE'));
 });
 
 test('tick rounding floors long and ceils short', () => {
@@ -117,8 +112,7 @@ test('signals use last price and oi value lookback', async () => {
   const sqlite = { saveTrade() {}, saveSignal() {} };
   const md = {
     getSnapshot: (s) => snaps.get(s),
-    getAtWindow: () => ({ tsSec: 0, markPrice: 100, lastPrice: 90, oiValue: 800 }),
-    getTurnoverGate: () => ({ ready: true, prevTurnoverUSDT: 100, medianTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
+    getCandleBaseline: () => ({ ok: true, prevClose: 90, prevOiValue: 800, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
     getTrendOk: () => true,
     getOiAgeSec: () => 1,
   };

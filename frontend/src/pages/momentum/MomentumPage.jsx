@@ -5,10 +5,11 @@ import { useWs } from '../../shared/api/ws.js';
 const UNIVERSE_OPTIONS = [50, 100, 200, 300, 500, 800, 1000];
 
 const DEFAULT_FORM = {
-  mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, universeLimit: 200, priceThresholdPct: 0.2, oiThresholdPct: 0,
+  mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, universeLimit: 200, priceThresholdPct: 0.05, oiThresholdPct: 0,
   turnover24hMin: 0, vol24hMin: 0, leverage: 3, marginUsd: 10, tpRoiPct: 2, slRoiPct: 2,
   entryOffsetPct: -0.01, turnoverSpikePct: 0, baselineFloorUSDT: 0, holdSeconds: 1, trendConfirmSeconds: 1, oiMaxAgeSec: 120,
   globalSymbolLock: false,
+  singleSymbol: '',
 };
 
 const numericFieldDefs = [
@@ -24,7 +25,7 @@ const numericFieldDefs = [
   { key: 'turnoverSpikePct', label: 'Turnover spike required (LONG only)', unit: '%', placeholder: '0' },
   { key: 'baselineFloorUSDT', label: 'Min turnover baseline floor', unit: 'USDT', placeholder: '0' },
   { key: 'holdSeconds', label: 'Conditions must hold', unit: 'sec', placeholder: '1' },
-  { key: 'trendConfirmSeconds', label: 'Trend confirm (same-direction ticks)', unit: 'sec', placeholder: '1' },
+  { key: 'trendConfirmSeconds', label: 'Trend confirm (same-direction ticks)', unit: 'ticks', placeholder: '1' },
   { key: 'oiMaxAgeSec', label: 'Max OI staleness', unit: 'sec', placeholder: '120' },
 ];
 
@@ -90,7 +91,7 @@ export default function MomentumPage() {
   }, [market]);
 
 
-  async function onStart(e) {
+  async function onStart(e, { single = false } = {}) {
     e.preventDefault();
     const nextErrors = {};
     const numFields = numericFieldDefs.map((x) => x.key);
@@ -100,6 +101,9 @@ export default function MomentumPage() {
       if (!Number.isFinite(n)) nextErrors[k] = `${k} must be a valid number.`;
       else nextConfig[k] = n;
     }
+    if (single && !String(nextConfig.singleSymbol || '').trim()) nextErrors.singleSymbol = 'singleSymbol is required for Start Single.';
+    if (single) nextConfig.singleSymbol = String(nextConfig.singleSymbol || '').trim().toUpperCase();
+    else nextConfig.singleSymbol = '';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     const out = await ws.request('momentum.start', { config: nextConfig });
@@ -143,9 +147,19 @@ export default function MomentumPage() {
           <InputGroup><Form.Select value={form.universeLimit} onChange={(e) => setForm({ ...form, universeLimit: Number(e.target.value) })}>{UNIVERSE_OPTIONS.map((v) => <option key={v} value={v}>{v}</option>)}</Form.Select><InputGroup.Text>symbols</InputGroup.Text></InputGroup>
         </Form.Group>
         {numericFieldDefs.map((field) => <Form.Group className="mb-2" key={field.key}><Form.Label>{field.label}</Form.Label><InputGroup><Form.Control value={form[field.key]} onChange={(e) => setForm({ ...form, [field.key]: e.target.value })} isInvalid={Boolean(errors[field.key])} placeholder={field.placeholder} /><InputGroup.Text>{field.unit}</InputGroup.Text></InputGroup>{field.help ? <Form.Text muted>{field.help}</Form.Text> : null}</Form.Group>)}
+
+        <Form.Group className="mb-2"><Form.Label>Single symbol (debug)</Form.Label>
+          <Form.Control value={form.singleSymbol} placeholder="AZTECUSDT" onChange={(e) => setForm({ ...form, singleSymbol: e.target.value.toUpperCase() })} />
+          <Form.Text muted>When set, bot evaluates ONLY this symbol and forces subscriptions for it.</Form.Text>
+          {errors.singleSymbol && <Form.Text className="text-danger d-block">{errors.singleSymbol}</Form.Text>}
+        </Form.Group>
+
         <Form.Check className="mb-2" checked={form.globalSymbolLock} onChange={(e) => setForm({ ...form, globalSymbolLock: e.target.checked })} label="Global symbol lock" />
         <Form.Text className="d-block mb-2" muted>Debug defaults: low thresholds, 1s hold/trend, turnover gate off for LONG.</Form.Text>
-        <Button type="submit">Start</Button>
+        <div className="d-flex gap-2">
+          <Button type="submit">Start</Button>
+          <Button type="button" variant="outline-info" onClick={(e) => onStart(e, { single: true })}>Start Single</Button>
+        </div>
       </Form>
     </Card.Body></Card></Col>
 
@@ -172,10 +186,11 @@ export default function MomentumPage() {
       <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: 8, marginBottom: 12 }}>
         {(detail?.signalNotifications || []).slice(0, 30).map((n, idx) => (
           <div key={`${n.ts}_${n.symbol || 'NA'}_${idx}`} style={{ fontSize: 12, padding: '6px 4px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <strong>{new Date(n.ts).toLocaleTimeString()}</strong> {n.symbol || '-'} {n.side || '-'} W{n.windowMinutes} 
-            | ΔP {Number(n.priceChangePct || 0).toFixed(3)}% | ΔOI {Number(n.oiChangePct || 0).toFixed(3)}%
-            {' '}<Badge bg={String(n.action || '').startsWith('SKIP') || String(n.action || '').startsWith('NOT_READY') ? 'secondary' : 'info'}>{n.action}</Badge>
-            {n.turnoverBaselineUSDT ? ` | turn ${Number(n.turnoverCurUSDT || 0).toFixed(0)}/${Number(n.turnoverBaselineUSDT || 0).toFixed(0)}` : ''}
+            <strong>{new Date(n.ts).toLocaleTimeString()}</strong> {n.symbol || '-'} {n.side || '-'} W{n.windowMinutes}
+            | prevClose {n.prevClose ? Number(n.prevClose).toFixed(6) : '-'} | ΔP {Number(n.priceChangePct || 0).toFixed(3)}% | ΔOI {Number(n.oiChangePct || 0).toFixed(3)}%
+            {' '}<Badge bg={String(n.action || '').startsWith('TRIGGER') ? 'success' : (String(n.action || '').startsWith('SKIP') || String(n.action || '').startsWith('NOT_READY') ? 'warning' : 'info')}>{n.action}</Badge>
+            {(n.turnoverPrevUSDT || n.turnoverMedianUSDT || n.turnoverCurUSDT) ? ` | turn prev ${Number(n.turnoverPrevUSDT || 0).toFixed(0)} med ${Number(n.turnoverMedianUSDT || 0).toFixed(0)} cur ${Number(n.turnoverCurUSDT || 0).toFixed(0)}` : ''}
+            {n.candleStartMs ? <div className="text-muted">Candle: {new Date(n.candleStartMs).toLocaleTimeString()}</div> : null}
             {n.message ? <div className="text-muted">{n.message}</div> : null}
           </div>
         ))}
