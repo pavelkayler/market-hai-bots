@@ -32,6 +32,8 @@ function normalizePosition(row) {
     unrealisedPnl: row?.unrealisedPnl || row?.unrealisedPnlValue || null,
     marginMode: normalizedMarginMode === 'isolated' ? 'isolated' : tradeMode === 1 ? "isolated" : "cross",
     positionIdx: Number(row?.positionIdx ?? 0),
+    stopLoss: num(row?.stopLoss),
+    takeProfit: num(row?.takeProfit),
   };
 }
 
@@ -67,7 +69,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     activeSymbol: null,
     maxNotional: Number(process.env.TRADE_MAX_NOTIONAL || 100),
     maxLeverage: Number(process.env.TRADE_MAX_LEVERAGE || 10),
-    maxActivePositions: Number(process.env.TRADE_MAX_ACTIVE_POSITIONS || 1),
+    maxActivePositions: Number(process.env.TRADE_MAX_ACTIVE_POSITIONS || 10),
   };
   const preflight = {
     hedgeMode: "UNKNOWN",
@@ -316,12 +318,18 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     if (state.executionMode === "paper") return { ok: true, reasons };
     if (state.killSwitch && !reduceOnly) reasons.push("KILL_SWITCH_ENABLED");
     if (state.activeSymbol && symbol && String(symbol).toUpperCase() !== state.activeSymbol) reasons.push("ACTIVE_SYMBOL_MISMATCH");
+    let activePositionsCount = null;
+    let effectiveMaxActivePositions = null;
     if (state.executionMode === "demo" || state.executionMode === "real") {
       if (state.executionMode === "demo" && !/api-demo\.bybit\.com/i.test(tradeBaseUrl)) reasons.push("DEMO_BASE_URL_REQUIRED");
       if (state.executionMode === "real" && !/api\.bybit\.com/i.test(tradeBaseUrl)) reasons.push("REAL_BASE_URL_REQUIRED");
       const rows = await getPositions({});
       const active = rows.filter((r) => Number(r?.size || 0) > 0);
-      if (active.length >= state.maxActivePositions && !active.some((r) => r.symbol === symbol)) reasons.push("MAX_ONE_POSITION_GLOBAL");
+      const hardCap = 10;
+      const effectiveMax = Math.min(Number(state.maxActivePositions || hardCap), hardCap);
+      activePositionsCount = active.length;
+      effectiveMaxActivePositions = effectiveMax;
+      if (active.length >= effectiveMax && !active.some((r) => r.symbol === symbol)) reasons.push("MAX_ACTIVE_POSITIONS_GLOBAL");
       const pxHint = Number(priceHint);
       if (Number.isFinite(pxHint) && pxHint > 0) {
         const notional = Math.abs(Number(qty || 0) * pxHint);
@@ -330,7 +338,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       if (active.some((r) => String(r?.marginMode || '').toLowerCase() !== 'isolated')) reasons.push("ISOLATED_MARGIN_REQUIRED");
     }
     const ok = reasons.length === 0;
-    logger?.info?.({ symbol, side, mode: state.executionMode, reasons, ok }, ok ? "PRE-TRADE CHECK PASSED" : "PRE-TRADE CHECK FAILED");
+    logger?.info?.({ symbol, side, mode: state.executionMode, reasons, ok, activePositionsCount, effectiveMaxActivePositions }, ok ? "PRE-TRADE CHECK PASSED" : "PRE-TRADE CHECK FAILED");
     return { ok, reasons };
   }
 
@@ -414,7 +422,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
           tpslMode: "Full",
           slOrderType: "Market",
           slTriggerBy: "MarkPrice",
-          sl: String(sl),
+          stopLoss: String(sl),
           positionIdx: resolvedPositionIdx,
         });
         slSet = true;
@@ -426,9 +434,27 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     const tpRows = Array.isArray(tps) ? tps.slice(0, 3) : [];
     const step = filters?.qtyStep;
 
-    const firstLegs = [q * 0.4, q * 0.3].map((x) => (Number.isFinite(step) && step > 0 ? roundToStep(x, step, "floor") : x));
-    const remQtyRaw = q - sumNums(firstLegs);
-    const tpQtys = [firstLegs[0], firstLegs[1], Number.isFinite(step) && step > 0 ? roundToStep(remQtyRaw, step, "floor") : remQtyRaw];
+    function buildTpQtys(totalQty, legCount) {
+      if (!(Number.isFinite(totalQty) && totalQty > 0) || legCount <= 0) return [];
+      if (legCount === 1) return [totalQty];
+      const ratios = legCount === 2 ? [0.5, 0.5] : [0.4, 0.3, 0.3];
+      const out = [];
+      let allocated = 0;
+      for (let i = 0; i < legCount; i += 1) {
+        if (i === legCount - 1) {
+          out.push(Math.max(0, totalQty - allocated));
+          continue;
+        }
+        const raw = totalQty * ratios[i];
+        const rounded = Number.isFinite(step) && step > 0 ? roundToStep(raw, step, "floor") : raw;
+        const safe = Math.max(0, rounded);
+        out.push(safe);
+        allocated += safe;
+      }
+      return out;
+    }
+
+    const tpQtys = buildTpQtys(q, tpRows.length);
 
     for (let i = 0; i < tpRows.length; i += 1) {
       const tp = tpRows[i];
@@ -603,7 +629,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       }
       return results;
     },
-    setStopLoss: async (botName, symbol, side, slPrice) => privateRest.setTradingStop({ category: "linear", symbol, tpslMode: "Full", slOrderType: "Market", sl: String(slPrice), positionIdx: await resolvePositionIdx({ symbol, side }) }),
+    setStopLoss: async (botName, symbol, side, slPrice) => privateRest.setTradingStop({ category: "linear", symbol, tpslMode: "Full", slOrderType: "Market", slTriggerBy: "MarkPrice", stopLoss: String(slPrice), positionIdx: await resolvePositionIdx({ symbol, side }) }),
     fetchPositions: getPositions,
     fetchOrders: getOpenOrders,
     fetchHistory: getClosedPnl,
