@@ -21,7 +21,7 @@ export const MOMENTUM_UNIVERSE_LIMIT_OPTIONS = [50, 100, 200, 300, 500, 800, 100
 export const DEFAULT_MOMENTUM_CONFIG = {
   scanMode: 'UNIVERSE',
   singleSymbol: null,
-  mode: 'paper',
+  mode: 'demo',
   directionMode: 'BOTH',
   windowMinutes: 1,
   universeLimit: 200,

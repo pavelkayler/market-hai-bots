@@ -19,6 +19,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   const signalNoteAt = new Map();
   let status = MOMENTUM_STATUS.RUNNING;
   const startedAt = Date.now();
+  let lastNoEvalNoteAt = 0;
+  let lastActiveSyncAt = 0;
 
   function log(msg, extra = {}) {
     const line = { ts: Date.now(), msg, ...extra };
@@ -61,7 +63,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     const triggerPrice = getTriggerPrice({ side, signalPrice: sourcePrice, tickSize: snap.tickSize });
     if (!(triggerPrice > 0)) return false;
     st.state = SYMBOL_STATE.TRIGGER_PENDING;
-    st.pending = { side, triggerPrice, createdAtMs: nowMs, holdProgress: cfg.holdSeconds, trendProgress: cfg.trendConfirmSeconds, entryOffsetPct: cfg.entryOffsetPct, lastPriceAtTrigger: snap.lastPrice, markPriceAtTrigger: snap.markPrice };
+    st.pending = { side, triggerPrice, createdAtMs: nowMs, holdProgress: cfg.holdSeconds, trendProgress: cfg.trendConfirmSeconds, entryOffsetPct: cfg.entryOffsetPct, lastPriceAtTrigger: snap.lastPrice, markPriceAtTrigger: snap.markPrice, currentPrice: snap.lastPrice };
     st.holdCount.LONG = 0;
     st.holdCount.SHORT = 0;
     log('trigger created', { symbol, side, triggerPrice, markPrice: snap.markPrice, lastPrice: snap.lastPrice, entryPriceSource: entrySource });
@@ -255,6 +257,77 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     pushSignalNote({ ts, symbol, side: st.pos.side, lastPrice: snap.lastPrice, markPrice: snap.markPrice, action: 'TRIGGER_FILLED', message: `Trigger ${st.pos.triggerPrice} filled at ${st.pos.actualEntryPrice || st.pos.entryPrice}` });
   }
 
+
+
+  function getExitOutcome(side, currentPrice, tpPrice, slPrice) {
+    if (!(Number(currentPrice) > 0)) return 'EXIT';
+    if (side === SIDE.LONG) {
+      if (Number(tpPrice) > 0 && currentPrice >= tpPrice) return 'TP_HIT';
+      if (Number(slPrice) > 0 && currentPrice <= slPrice) return 'SL_HIT';
+    } else {
+      if (Number(tpPrice) > 0 && currentPrice <= tpPrice) return 'TP_HIT';
+      if (Number(slPrice) > 0 && currentPrice >= slPrice) return 'SL_HIT';
+    }
+    return 'EXIT';
+  }
+
+  function isExitCrossed(side, currentPrice, tpPrice, slPrice) {
+    if (!(Number(currentPrice) > 0)) return false;
+    if (side === SIDE.LONG) return (Number(tpPrice) > 0 && currentPrice >= tpPrice) || (Number(slPrice) > 0 && currentPrice <= slPrice);
+    return (Number(tpPrice) > 0 && currentPrice <= tpPrice) || (Number(slPrice) > 0 && currentPrice >= slPrice);
+  }
+
+  function finalizePositionClose(symbol, st, ts, currentPrice, outcomeOverride = null) {
+    if (!st?.pos) return;
+    const pos = st.pos;
+    const entryPx = Number(pos.actualEntryPrice || pos.entryPrice || pos.triggerPrice || 0);
+    const exitPx = Number(currentPrice || pos.currentPrice || entryPx || 0);
+    const qty = (cfg.marginUsd * cfg.leverage) / Math.max(1e-9, entryPx || 1);
+    const pnl = pos.side === SIDE.LONG ? ((exitPx - entryPx) * qty) : ((entryPx - exitPx) * qty);
+    const outcome = outcomeOverride || getExitOutcome(pos.side, exitPx, pos.tpPrice, pos.slPrice);
+    sqlite.saveTrade({
+      instanceId: id,
+      mode: cfg.mode,
+      symbol,
+      side: pos.side,
+      windowMinutes: cfg.windowMinutes,
+      priceThresholdPct: cfg.priceThresholdPct,
+      oiThresholdPct: cfg.oiThresholdPct,
+      turnover24hMin: cfg.turnover24hMin,
+      vol24hMin: cfg.vol24hMin,
+      leverage: cfg.leverage,
+      marginUsd: cfg.marginUsd,
+      entryTs: pos.createdAtMs,
+      triggerPrice: pos.triggerPrice,
+      entryPrice: pos.entryPrice,
+      actualEntryPrice: pos.actualEntryPrice || null,
+      exitTs: ts,
+      exitPrice: exitPx,
+      outcome,
+      pnlUsd: Number.isFinite(pnl) ? pnl : 0,
+      feesUsd: 0,
+      durationSec: Math.max(0, Math.round((ts - Number(pos.openedAt || pos.createdAtMs || ts)) / 1000)),
+      entryOffsetPct: cfg.entryOffsetPct,
+      turnoverSpikePct: cfg.turnoverSpikePct,
+      baselineFloorUSDT: cfg.baselineFloorUSDT,
+      holdSeconds: cfg.holdSeconds,
+      trendConfirmSeconds: cfg.trendConfirmSeconds,
+      oiMaxAgeSec: cfg.oiMaxAgeSec,
+      tpPrice: pos.tpPrice,
+      slPrice: pos.slPrice,
+      lastPriceAtTrigger: pos.lastPriceAtTrigger ?? null,
+      markPriceAtTrigger: pos.markPriceAtTrigger ?? null,
+    });
+    stats.trades += 1;
+    stats.pnl += Number.isFinite(pnl) ? pnl : 0;
+    if ((Number.isFinite(pnl) ? pnl : 0) >= 0) stats.wins += 1;
+    else stats.losses += 1;
+    st.pos = null;
+    st.state = SYMBOL_STATE.IDLE;
+    log('position closed', { symbol, outcome, exitPrice: exitPx });
+    pushSignalNote({ ts, symbol, action: outcome, message: `Closed at ${exitPx}` }, 0);
+  }
+
   function saveManualCancelTrade(symbol, pending, ts, outcome) {
     sqlite.saveTrade({ instanceId: id, mode: cfg.mode, symbol, side: pending.side, windowMinutes: cfg.windowMinutes, priceThresholdPct: cfg.priceThresholdPct, oiThresholdPct: cfg.oiThresholdPct, turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin, leverage: cfg.leverage, marginUsd: cfg.marginUsd, entryTs: pending.createdAtMs, triggerPrice: pending.triggerPrice, entryPrice: pending.triggerPrice, actualEntryPrice: null, exitTs: ts, exitPrice: pending.triggerPrice, outcome, pnlUsd: 0, feesUsd: 0, durationSec: Math.max(0, Math.round((ts - pending.createdAtMs) / 1000)), entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, baselineFloorUSDT: cfg.baselineFloorUSDT, holdSeconds: cfg.holdSeconds, trendConfirmSeconds: cfg.trendConfirmSeconds, oiMaxAgeSec: cfg.oiMaxAgeSec, lastPriceAtTrigger: pending.lastPriceAtTrigger ?? null, markPriceAtTrigger: pending.markPriceAtTrigger ?? null });
   }
@@ -326,23 +399,69 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
 
   async function onTick({ ts }, eligibleSymbols) {
     if (status !== MOMENTUM_STATUS.RUNNING) return;
+    const evalSymbols = Array.isArray(eligibleSymbols) ? eligibleSymbols : [];
+    if (evalSymbols.length === 0) {
+      if ((ts - lastNoEvalNoteAt) >= 10000) {
+        lastNoEvalNoteAt = ts;
+        pushSignalNote({ ts, action: 'NOT_READY_NO_EVAL_SYMBOLS', message: 'No symbols in evaluation set' }, 0);
+      }
+      return;
+    }
     let entries = 0;
     let universeSeedAttempts = 0;
-    for (const symbol of eligibleSymbols) {
+    for (const symbol of evalSymbols) {
       const snap = marketData.getSnapshot(symbol);
       if (!snap) {
-        logSkipReason(symbol, null, 'NOT_READY_NO_SNAPSHOT', {}, 4000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_SNAPSHOT', message: 'No ticker snapshot yet', throttleKey: `${symbol}:NOT_READY_NO_SNAPSHOT` }, 2500);
+        if (!marketData.isSymbolInDesiredSet?.(symbol) || !marketData.isSymbolSubscribed?.(symbol)) continue;
+        logSkipReason(symbol, null, 'NOT_READY_NO_SNAPSHOT', {}, 10000);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_SNAPSHOT', message: 'No ticker snapshot yet', throttleKey: `${symbol}:NOT_READY_NO_SNAPSHOT` }, 10000);
         continue;
       }
       if (!(Number(snap.lastPrice) > 0)) {
-        logSkipReason(symbol, null, 'NOT_READY_NO_LASTPRICE', {}, 4000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_LASTPRICE', message: 'Snapshot present but lastPrice missing', throttleKey: `${symbol}:NOT_READY_NO_LASTPRICE` }, 2500);
+        if (!marketData.isSymbolInDesiredSet?.(symbol) || !marketData.isSymbolSubscribed?.(symbol)) continue;
+        logSkipReason(symbol, null, 'NOT_READY_NO_LASTPRICE', {}, 10000);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_LASTPRICE', message: 'Snapshot present but lastPrice missing', throttleKey: `${symbol}:NOT_READY_NO_LASTPRICE` }, 10000);
         continue;
       }
       if (marketData.isDataFresh && !marketData.isDataFresh()) {
         logSkipReason(symbol, null, 'NOT_READY_WS_DISCONNECTED', {}, 10_000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_WS_DISCONNECTED', message: 'Market WS not fresh', throttleKey: `${symbol}:NOT_READY_WS_DISCONNECTED` }, 5000);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_WS_DISCONNECTED', message: 'Market WS not fresh', throttleKey: `${symbol}:NOT_READY_WS_DISCONNECTED` }, 10000);
+        continue;
+      }
+
+      const st = stateFor(symbol);
+      const currentPrice = Number(snap.lastPrice);
+      if (st.pending) st.pending.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pending.currentPrice;
+      if (st.pos) st.pos.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pos.currentPrice;
+
+      if (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) {
+        const prevLast = Number(st.lastLastPrice);
+        if (crossed(prevLast, currentPrice, st.pending.triggerPrice)) await openPosition(symbol, st, snap, ts);
+        st.lastLastPrice = currentPrice;
+        continue;
+      }
+
+      if (st.state === SYMBOL_STATE.IN_POSITION && st.pos) {
+        const crossedExit = isExitCrossed(st.pos.side, currentPrice, st.pos.tpPrice, st.pos.slPrice);
+        if (cfg.mode === 'paper' && crossedExit) {
+          finalizePositionClose(symbol, st, ts, currentPrice);
+          st.lastLastPrice = currentPrice;
+          continue;
+        }
+        if (cfg.mode !== 'paper' && crossedExit && tradeExecutor?.enabled?.()) {
+          const now = Date.now();
+          if (!st.pos.exitTriggeredLocalAt) st.pos.exitTriggeredLocalAt = now;
+          if (!st.pos.lastExitAttemptAt || (now - st.pos.lastExitAttemptAt) >= 5000) {
+            st.pos.lastExitAttemptAt = now;
+            try {
+              await tradeExecutor.closePositionMarket({ symbol });
+              pushSignalNote({ ts, symbol, action: 'EXIT_TRIGGERED_LOCAL', message: 'Local TP/SL watcher requested close' }, 0);
+            } catch (err) {
+              log('EXIT_CLOSE_REQUEST_FAILED', { symbol, error: String(err?.message || err) });
+            }
+          }
+        }
+        st.lastLastPrice = currentPrice;
         continue;
       }
 
@@ -359,18 +478,18 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       if (!baseline.ok) {
         const reason = baseline.reason === 'NO_PREV_CANDLE' ? 'NOT_READY_NO_PREV_CANDLE' : 'NOT_READY_BASELINE_MISSING';
         logSkipReason(symbol, null, reason, {}, 4000);
-        pushSignalNote({ ts, symbol, action: reason, message: baseline.reason || 'No baseline yet', throttleKey: `${symbol}:${reason}` }, 2500);
+        pushSignalNote({ ts, symbol, action: reason, message: baseline.reason || 'No baseline yet', throttleKey: `${symbol}:${reason}` }, 10000);
         continue;
       }
 
       if (!(Number(snap.oiValue) > 0)) {
         logSkipReason(symbol, null, 'NOT_READY_NO_OI', {}, 4000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_OI', message: 'Snapshot present but oiValue missing', throttleKey: `${symbol}:NOT_READY_NO_OI` }, 2500);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_OI', message: 'Snapshot present but oiValue missing', throttleKey: `${symbol}:NOT_READY_NO_OI` }, 10000);
         continue;
       }
       if (!(Number(baseline.prevOiValue) > 0)) {
         logSkipReason(symbol, null, 'NOT_READY_NO_PREV_OI', {}, 4000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_PREV_OI', message: 'No previous OI baseline', throttleKey: `${symbol}:NOT_READY_NO_PREV_OI` }, 2500);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_PREV_OI', message: 'No previous OI baseline', throttleKey: `${symbol}:NOT_READY_NO_PREV_OI` }, 10000);
         continue;
       }
 
@@ -388,7 +507,6 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       const oiFresh = oiAgeSec <= cfg.oiMaxAgeSec;
       signalViewBySymbol.set(symbol, { symbol, ts, markPrice: snap.markPrice, lastPrice: snap.lastPrice, priceChange, oiValueNow: snap.oiValue, oiChange });
 
-      const st = stateFor(symbol);
       if (st.state === SYMBOL_STATE.TRIGGER_PENDING || st.state === SYMBOL_STATE.IN_POSITION) {
         pushSignalNote({ ts, symbol, side: st.pending?.side || st.pos?.side || null, action: 'SYMBOL_BUSY', message: 'Symbol already pending/in-position', throttleKey: `${symbol}:SYMBOL_BUSY` }, 3000);
         continue;
@@ -468,6 +586,28 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
 
       st.lastLastPrice = Number(snap.lastPrice);
     }
+
+    if (cfg.mode !== 'paper' && tradeExecutor?.enabled?.() && (ts - lastActiveSyncAt) >= 7000) {
+      lastActiveSyncAt = ts;
+      const activeSymbols = [...symbols.entries()]
+        .filter(([, st]) => (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) || (st.state === SYMBOL_STATE.IN_POSITION && st.pos))
+        .map(([symbol]) => symbol);
+      for (const symbol of activeSymbols) {
+        const st = stateFor(symbol);
+        try {
+          const pos = await tradeExecutor.getPosition?.({ symbol });
+          await tradeExecutor.getOpenOrders?.({ symbol });
+          if (st.state === SYMBOL_STATE.IN_POSITION && st.pos) {
+            const size = Number(pos?.size || 0);
+            if (!(size > 0) && st.pos.exitTriggeredLocalAt) {
+              finalizePositionClose(symbol, st, ts, Number(st.pos.currentPrice || marketData.getSnapshot(symbol)?.lastPrice || 0), 'DEMO_SYNC_CLOSE');
+            }
+          }
+        } catch (err) {
+          log('ACTIVE_SYNC_FAILED', { symbol, error: String(err?.message || err) });
+        }
+      }
+    }
   }
 
 
@@ -481,7 +621,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       if (st.state === SYMBOL_STATE.COOLDOWN) cooldownCount += 1;
     }
     const signalView = [...signalViewBySymbol.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);
-    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView, signalNotifications: signalNotifications.slice(0, 200), marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null };
+    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView, signalNotifications: signalNotifications.slice(0, 50), marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null };
   }
 
   return {

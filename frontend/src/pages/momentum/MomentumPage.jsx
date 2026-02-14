@@ -5,7 +5,7 @@ import { useWs } from '../../shared/api/ws.js';
 const UNIVERSE_OPTIONS = [50, 100, 200, 300, 500, 800, 1000];
 
 const DEFAULT_FORM = {
-  mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, universeLimit: 200, priceThresholdPct: 0.2, oiThresholdPct: 0,
+  mode: 'demo', directionMode: 'BOTH', windowMinutes: 1, universeLimit: 200, priceThresholdPct: 0.2, oiThresholdPct: 0,
   turnover24hMin: 0, vol24hMin: 0, leverage: 3, marginUsd: 10, tpRoiPct: 2, slRoiPct: 2,
   entryOffsetPct: -0.01, turnoverSpikePct: 0, baselineFloorUSDT: 0, holdSeconds: 1, trendConfirmSeconds: 1, oiMaxAgeSec: 9999,
   globalSymbolLock: false,
@@ -134,7 +134,7 @@ export default function MomentumPage() {
     </Card.Body></Card></Col>
 
     <Col md={5}><Card><Card.Body><Card.Title>Create new bot instance</Card.Title>
-      <Form onSubmit={onStart}>
+      <Form>
         <Form.Group className="mb-2"><Form.Label>Execution mode</Form.Label>
           <Form.Select value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })}><option value="paper">Paper</option><option value="demo">Demo</option><option value="real">Real</option></Form.Select>
         </Form.Group>
@@ -158,7 +158,7 @@ export default function MomentumPage() {
         <Form.Check className="mb-2" checked={form.globalSymbolLock} onChange={(e) => setForm({ ...form, globalSymbolLock: e.target.checked })} label="Global symbol lock" />
         <Form.Text className="d-block mb-2" muted>Debug defaults: low thresholds, 1s hold/trend, turnover gate off for LONG.</Form.Text>
         <div className="d-flex gap-2">
-          <Button type="submit">Start</Button>
+          <Button type="button" onClick={(e) => onStart(e, { single: false })}>Start</Button>
           <Button type="button" variant="outline-info" onClick={(e) => onStart(e, { single: true })}>Start Single</Button>
         </div>
       </Form>
@@ -174,9 +174,9 @@ export default function MomentumPage() {
       <Form.Select className="mb-2" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setTradePage(0); }}><option value="">Select...</option>{options}</Form.Select>
       {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending triggers: {detail.pendingOrders?.length || 0} | Scan: {detail?.config?.scanMode || 'UNIVERSE'}{detail?.config?.singleSymbol ? ` (${detail.config.singleSymbol})` : ''} | W: {detail?.config?.windowMinutes}m | Hedge: {detail?.hedgeMode || 'UNKNOWN'} | Margin desired: {detail?.marginModeDesired || 'ISOLATED'} | Isolated preflight: {detail?.isolatedPreflightOk ? 'OK' : (detail?.isolatedPreflightError || 'N/A')} | Trades: {detail?.stats?.trades || 0} | Wins: {detail?.stats?.wins || 0} | Losses: {detail?.stats?.losses || 0} | Winrate: {(detail?.stats?.trades ? ((detail.stats.wins / detail.stats.trades) * 100) : 0).toFixed(1)}% | PnL: {Number(detail?.stats?.pnl || 0).toFixed(2)} | Fees: {Number(detail?.stats?.fees || 0).toFixed(2)}</div>}
 
-      {detail && <><h6>Open Orders / Pending Triggers</h6><Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>State</th><th>Side</th><th>Trigger/Entry</th><th>TP/SL</th><th>TP/SL Status</th><th>Created</th><th>Age</th><th>Actions</th></tr></thead><tbody>
-        {(detail.pendingOrders || []).map((p) => <tr key={`pending_${p.symbol}`}><td>{p.symbol}</td><td>TRIGGER_PENDING</td><td>{p.side}</td><td>{p.triggerPrice}</td><td>-</td><td>-</td><td>{new Date(p.createdAtMs).toLocaleTimeString()}</td><td>{p.ageSec}s</td><td><Button size="sm" variant="outline-warning" onClick={() => onCancelEntry(p.symbol)}>Cancel entry</Button></td></tr>)}
-        {(detail.openPositions || []).map((p) => <tr key={`pos_${p.symbol}`}><td>{p.symbol}</td><td>IN_POSITION</td><td>{p.side}</td><td>{p.entryPriceActual || p.entryPrice}</td><td><div>TP {Number(p.tpRoiPct ?? detail?.config?.tpRoiPct ?? 0)}% / SL {Number(p.slRoiPct ?? detail?.config?.slRoiPct ?? 0)}%</div><div className="text-muted" style={{ fontSize: 11 }}>{p.tpPrice} / {p.slPrice}</div></td><td>{p.tpSlStatus || 'PENDING'}</td><td>-</td><td>-</td><td>-</td></tr>)}
+      {detail && <><h6>Open Orders / Pending Triggers</h6><Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>State</th><th>Side</th><th>Trigger/Entry</th><th>Current</th><th>TP/SL</th><th>TP/SL Status</th><th>Created</th><th>Age</th><th>Actions</th></tr></thead><tbody>
+        {(detail.pendingOrders || []).map((p) => <tr key={`pending_${p.symbol}`}><td>{p.symbol}</td><td>TRIGGER_PENDING</td><td>{p.side}</td><td>{p.triggerPrice}</td><td>{Number(p.currentPrice || 0).toFixed(6)}</td><td>-</td><td>-</td><td>{new Date(p.createdAtMs).toLocaleTimeString()}</td><td>{p.ageSec}s</td><td><Button size="sm" variant="outline-warning" onClick={() => onCancelEntry(p.symbol)}>Cancel entry</Button></td></tr>)}
+        {(detail.openPositions || []).map((p) => <tr key={`pos_${p.symbol}`}><td>{p.symbol}</td><td>IN_POSITION</td><td>{p.side}</td><td>{p.entryPriceActual || p.entryPrice}</td><td>{Number(p.currentPrice || 0).toFixed(6)}</td><td><div>TP {Number(p.tpRoiPct ?? detail?.config?.tpRoiPct ?? 0)}% / SL {Number(p.slRoiPct ?? detail?.config?.slRoiPct ?? 0)}%</div><div className="text-muted" style={{ fontSize: 11 }}>{p.tpPrice} / {p.slPrice}</div></td><td>{p.tpSlStatus || 'PENDING'}</td><td>-</td><td>-</td><td>-</td></tr>)}
       </tbody></Table></>}
 
       {detail?.logs?.length > 0 && <Table size="sm"><thead><tr><th>Time</th><th>Message</th></tr></thead><tbody>

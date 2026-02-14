@@ -62,7 +62,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   const REAL_ACK = process.env.I_UNDERSTAND_REAL_RISK === "1";
   const tradeBaseUrl = String(process.env.BYBIT_TRADE_BASE_URL || "https://api-demo.bybit.com");
   const state = {
-    executionMode: "paper",
+    executionMode: "demo",
     killSwitch: false,
     activeSymbol: null,
     maxNotional: Number(process.env.TRADE_MAX_NOTIONAL || 100),

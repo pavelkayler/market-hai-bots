@@ -41,7 +41,7 @@ export function calcTpSl({ side, entryPrice, tpRoiPct, slRoiPct, leverage }) {
 
 export function normalizeMomentumConfig(raw = {}) {
   const c = { ...DEFAULT_MOMENTUM_CONFIG, ...(raw || {}) };
-  c.mode = ['paper', 'demo', 'real'].includes(String(c.mode)) ? String(c.mode) : 'paper';
+  c.mode = ['paper', 'demo', 'real'].includes(String(c.mode)) ? String(c.mode) : 'demo';
   c.directionMode = ['LONG', 'SHORT', 'BOTH'].includes(String(c.directionMode).toUpperCase()) ? String(c.directionMode).toUpperCase() : 'BOTH';
   c.scanMode = ['UNIVERSE', 'SINGLE'].includes(String(c.scanMode).toUpperCase()) ? String(c.scanMode).toUpperCase() : 'UNIVERSE';
   c.singleSymbol = String(c.singleSymbol || '').trim().toUpperCase() || null;
