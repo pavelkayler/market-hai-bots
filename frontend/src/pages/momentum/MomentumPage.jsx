@@ -2,28 +2,30 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Col, Form, InputGroup, Row, Table } from 'react-bootstrap';
 import { useWs } from '../../shared/api/ws.js';
 
+const UNIVERSE_OPTIONS = [50, 100, 200, 300, 500, 800, 1000];
+
 const DEFAULT_FORM = {
-  mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, priceThresholdPct: 5, oiThresholdPct: 1,
-  turnover24hMin: 5000000, vol24hMin: 0.1, leverage: 10, marginUsd: 100, tpRoiPct: 10, slRoiPct: 10,
-  entryOffsetPct: -0.01, turnoverSpikePct: 100, baselineFloorUSDT: 100000, holdSeconds: 3, trendConfirmSeconds: 3, oiMaxAgeSec: 10,
+  mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, universeLimit: 200, priceThresholdPct: 0.2, oiThresholdPct: 0,
+  turnover24hMin: 0, vol24hMin: 0, leverage: 3, marginUsd: 10, tpRoiPct: 2, slRoiPct: 2,
+  entryOffsetPct: -0.01, turnoverSpikePct: 0, baselineFloorUSDT: 0, holdSeconds: 1, trendConfirmSeconds: 1, oiMaxAgeSec: 120,
   globalSymbolLock: false,
 };
 
 const numericFieldDefs = [
-  { key: 'turnover24hMin', label: 'Min 24h turnover', unit: 'USDT', placeholder: '5000000', help: 'Filter by liquidity.' },
-  { key: 'vol24hMin', label: 'Min 24h volatility', unit: '%', placeholder: '0.1', help: '24h volatility threshold.' },
-  { key: 'priceThresholdPct', label: 'Price change threshold over W', unit: '%', placeholder: '5' },
-  { key: 'oiThresholdPct', label: 'OI value change threshold over W', unit: '%', placeholder: '1' },
-  { key: 'marginUsd', label: 'Margin per trade', unit: 'USDT', placeholder: '100' },
-  { key: 'leverage', label: 'Leverage', unit: 'x', placeholder: '10' },
-  { key: 'tpRoiPct', label: 'Take profit (ROI)', unit: '%', placeholder: '10' },
-  { key: 'slRoiPct', label: 'Stop loss (ROI)', unit: '%', placeholder: '10' },
+  { key: 'turnover24hMin', label: 'Min 24h turnover', unit: 'USDT', placeholder: '0', help: 'Filter by liquidity.' },
+  { key: 'vol24hMin', label: 'Min 24h volatility', unit: '%', placeholder: '0', help: '24h volatility threshold.' },
+  { key: 'priceThresholdPct', label: 'Price change threshold over W', unit: '%', placeholder: '0.2' },
+  { key: 'oiThresholdPct', label: 'OI value change threshold over W', unit: '%', placeholder: '0' },
+  { key: 'marginUsd', label: 'Margin per trade', unit: 'USDT', placeholder: '10' },
+  { key: 'leverage', label: 'Leverage', unit: 'x', placeholder: '3' },
+  { key: 'tpRoiPct', label: 'Take profit (ROI)', unit: '%', placeholder: '2' },
+  { key: 'slRoiPct', label: 'Stop loss (ROI)', unit: '%', placeholder: '2' },
   { key: 'entryOffsetPct', label: 'Entry trigger offset from price source', unit: '%', placeholder: '-0.01' },
-  { key: 'turnoverSpikePct', label: 'Turnover spike required (LONG only)', unit: '%', placeholder: '100' },
-  { key: 'baselineFloorUSDT', label: 'Min turnover baseline floor', unit: 'USDT', placeholder: '100000' },
-  { key: 'holdSeconds', label: 'Conditions must hold', unit: 'sec', placeholder: '3' },
-  { key: 'trendConfirmSeconds', label: 'Trend confirm (same-direction ticks)', unit: 'sec', placeholder: '3' },
-  { key: 'oiMaxAgeSec', label: 'Max OI staleness', unit: 'sec', placeholder: '10' },
+  { key: 'turnoverSpikePct', label: 'Turnover spike required (LONG only)', unit: '%', placeholder: '0' },
+  { key: 'baselineFloorUSDT', label: 'Min turnover baseline floor', unit: 'USDT', placeholder: '0' },
+  { key: 'holdSeconds', label: 'Conditions must hold', unit: 'sec', placeholder: '1' },
+  { key: 'trendConfirmSeconds', label: 'Trend confirm (same-direction ticks)', unit: 'sec', placeholder: '1' },
+  { key: 'oiMaxAgeSec', label: 'Max OI staleness', unit: 'sec', placeholder: '120' },
 ];
 
 export default function MomentumPage() {
@@ -44,7 +46,9 @@ export default function MomentumPage() {
       if (parsed?.type !== 'event') return;
       if (parsed.topic === 'momentum.state') {
         setMarket(parsed.payload?.market || null);
-        setInstances(parsed.payload?.instances || []);
+        const nextInstances = parsed.payload?.instances || [];
+        setInstances(nextInstances);
+        if (nextInstances.length > 0) setSelectedId((cur) => cur || nextInstances[0].id);
       }
     });
     ws.subscribeTopics(['momentum.*']);
@@ -54,7 +58,11 @@ export default function MomentumPage() {
   useEffect(() => {
     const timer = setInterval(async () => {
       const st = await ws.request('momentum.list', {});
-      if (st?.ok) setInstances(st.instances || []);
+      if (st?.ok) {
+        const nextInstances = st.instances || [];
+        setInstances(nextInstances);
+        if (nextInstances.length > 0) setSelectedId((cur) => cur || nextInstances[0].id);
+      }
       const ms = await ws.request('momentum.getMarketStatus', {});
       if (ms?.ok) setMarket(ms);
       if (selectedId) {
@@ -69,11 +77,12 @@ export default function MomentumPage() {
 
   const options = useMemo(() => instances.map((i) => <option key={i.id} value={i.id}>{i.id}</option>), [instances]);
 
+
   async function onStart(e) {
     e.preventDefault();
     const nextErrors = {};
     const numFields = numericFieldDefs.map((x) => x.key);
-    const nextConfig = { ...form, windowMinutes: Number(form.windowMinutes) };
+    const nextConfig = { ...form, windowMinutes: Number(form.windowMinutes), universeLimit: Number(form.universeLimit) };
     for (const k of numFields) {
       const n = Number(nextConfig[k]);
       if (!Number.isFinite(n)) nextErrors[k] = `${k} must be a valid number.`;
@@ -95,7 +104,7 @@ export default function MomentumPage() {
       {!market && <Alert variant="secondary">Loading...</Alert>}
       {market?.lastHedgeModeError && <Alert variant="danger" className="mb-2">{market.lastHedgeModeError}</Alert>}
       {market?.lastMarginModeError && <Alert variant="warning" className="mb-2">{market.lastMarginModeError}</Alert>}
-      {market && <div>WS: {String(market.wsConnected)} | Universe: {market.universeCount} | Eligible: {market.eligibleCount} | Subscribed: {market.subscribedCount}/{market.cap} | Kline topics: {market.klineSubscribedCount || 0} | Active intervals: {(market.activeIntervals || []).join(', ') || '-'} | Drift: {market.tickDriftMs}ms | Hedge: {market.hedgeMode || 'UNKNOWN'} | Margin: {market.marginMode || 'UNKNOWN'}</div>}
+      {market && <div>WS: {String(market.wsConnected)} | Universe: {market.universeCount} | Eligible: {market.eligibleCount} | Subscribed: {market.subscribedCount}/{market.selectionCap || market.cap} | Kline topics: {market.klineSubscribedCount || 0} | Active intervals: {(market.activeIntervals || []).join(', ') || '-'} | Selection: cap={market.selectionCap || market.cap}, turnover≥{market.selectionTurnoverMin}, vol≥{market.selectionVolMin}% | Drift: {market.tickDriftMs}ms | Hedge: {market.hedgeMode || 'UNKNOWN'} | Margin: {market.marginMode || 'UNKNOWN'}</div>}
     </Card.Body></Card></Col>
 
     <Col md={5}><Card><Card.Body><Card.Title>Create new bot instance</Card.Title>
@@ -109,16 +118,19 @@ export default function MomentumPage() {
         <Form.Group className="mb-2"><Form.Label>Lookback window (minutes)</Form.Label>
           <InputGroup><Form.Select value={form.windowMinutes} onChange={(e) => setForm({ ...form, windowMinutes: Number(e.target.value) })}><option value={1}>1</option><option value={3}>3</option><option value={5}>5</option></Form.Select><InputGroup.Text>min</InputGroup.Text></InputGroup>
         </Form.Group>
+        <Form.Group className="mb-2"><Form.Label>Universe size (symbols)</Form.Label>
+          <InputGroup><Form.Select value={form.universeLimit} onChange={(e) => setForm({ ...form, universeLimit: Number(e.target.value) })}>{UNIVERSE_OPTIONS.map((v) => <option key={v} value={v}>{v}</option>)}</Form.Select><InputGroup.Text>symbols</InputGroup.Text></InputGroup>
+        </Form.Group>
         {numericFieldDefs.map((field) => <Form.Group className="mb-2" key={field.key}><Form.Label>{field.label}</Form.Label><InputGroup><Form.Control value={form[field.key]} onChange={(e) => setForm({ ...form, [field.key]: e.target.value })} isInvalid={Boolean(errors[field.key])} placeholder={field.placeholder} /><InputGroup.Text>{field.unit}</InputGroup.Text></InputGroup>{field.help ? <Form.Text muted>{field.help}</Form.Text> : null}</Form.Group>)}
         <Form.Check className="mb-2" checked={form.globalSymbolLock} onChange={(e) => setForm({ ...form, globalSymbolLock: e.target.checked })} label="Global symbol lock" />
-        <Form.Text className="d-block mb-2" muted>Defaults: entry offset -0.01%, turnover spike 100%.</Form.Text>
+        <Form.Text className="d-block mb-2" muted>Debug defaults: low thresholds, 1s hold/trend, turnover gate off for LONG.</Form.Text>
         <Button type="submit">Start</Button>
       </Form>
     </Card.Body></Card></Col>
 
     <Col md={7}><Card><Card.Body><Card.Title>Running bots</Card.Title>
       <Table size="sm"><thead><tr><th>ID</th><th>Mode</th><th>Direction</th><th>W</th><th>Offset</th><th>Turnover gate</th><th>Hedge</th><th>Margin</th><th>Isolated preflight</th><th>Uptime</th><th>Trades</th><th>PNL</th><th /></tr></thead><tbody>
-        {instances.map((i) => <tr key={i.id}><td>{i.id.slice(0, 12)}</td><td>{i.mode}</td><td>{i.direction}</td><td>{i.windowMinutes}m</td><td>{Number(i.entryOffsetPct || 0)}%</td><td>{Number(i.turnoverSpikePct || 100)}%</td><td>{i.hedgeMode || 'UNKNOWN'}</td><td>{i.marginMode || 'UNKNOWN'}</td><td>{i.isolatedPreflightOk ? 'OK' : (i.isolatedPreflightError || 'N/A')}</td><td>{i.uptimeSec}s</td><td>{i.trades}</td><td>{Number(i.pnl || 0).toFixed(2)}</td><td><Button size="sm" variant="outline-danger" onClick={() => ws.request('momentum.stop', { instanceId: i.id })}>Stop</Button></td></tr>)}
+        {instances.map((i) => <tr key={i.id}><td>{i.id.slice(0, 12)}</td><td>{i.mode}</td><td>{i.direction}</td><td>{i.windowMinutes}m</td><td>{Number(i.entryOffsetPct || 0)}%</td><td>{Number(i.turnoverSpikePct ?? 0)}%</td><td>{i.hedgeMode || 'UNKNOWN'}</td><td>{i.marginMode || 'UNKNOWN'}</td><td>{i.isolatedPreflightOk ? 'OK' : (i.isolatedPreflightError || 'N/A')}</td><td>{i.uptimeSec}s</td><td>{i.trades}</td><td>{Number(i.pnl || 0).toFixed(2)}</td><td><Button size="sm" variant="outline-danger" onClick={() => ws.request('momentum.stop', { instanceId: i.id })}>Stop</Button></td></tr>)}
       </tbody></Table>
     </Card.Body></Card></Col>
 
@@ -134,6 +146,20 @@ export default function MomentumPage() {
       {detail?.logs?.length > 0 && <Table size="sm"><thead><tr><th>Time</th><th>Message</th></tr></thead><tbody>
         {detail.logs.map((l, idx) => <tr key={`${l.ts}_${idx}`}><td>{new Date(l.ts).toLocaleTimeString()}</td><td>{`${l.msg}${l.symbol ? `: ${l.symbol}` : ''}`}</td></tr>)}
       </tbody></Table>}
+
+      <h6>Signal notifications</h6>
+      <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: 8, marginBottom: 12 }}>
+        {(detail?.signalNotifications || []).slice(0, 30).map((n, idx) => (
+          <div key={`${n.ts}_${n.symbol || 'NA'}_${idx}`} style={{ fontSize: 12, padding: '6px 4px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            <strong>{new Date(n.ts).toLocaleTimeString()}</strong> {n.symbol || '-'} {n.side || '-'} W{n.windowMinutes} 
+            | ΔP {Number(n.priceChangePct || 0).toFixed(3)}% | ΔOI {Number(n.oiChangePct || 0).toFixed(3)}%
+            {' '}<Badge bg={String(n.action || '').startsWith('SKIP') || String(n.action || '').startsWith('NOT_READY') ? 'secondary' : 'info'}>{n.action}</Badge>
+            {n.turnoverBaselineUSDT ? ` | turn ${Number(n.turnoverCurUSDT || 0).toFixed(0)}/${Number(n.turnoverBaselineUSDT || 0).toFixed(0)}` : ''}
+            {n.message ? <div className="text-muted">{n.message}</div> : null}
+          </div>
+        ))}
+        {(!detail?.signalNotifications || detail.signalNotifications.length === 0) ? <div className="text-muted">No notifications yet.</div> : null}
+      </div>
 
       <div className="d-flex gap-2 align-items-center mb-2"><Button size="sm" variant="outline-secondary" disabled={tradePage <= 0} onClick={() => setTradePage((p) => Math.max(0, p - 1))}>Prev</Button><Button size="sm" variant="outline-secondary" disabled={(tradePage + 1) * tradePageSize >= tradeTotal} onClick={() => setTradePage((p) => p + 1)}>Next</Button><span>Page {tradePage + 1} / {Math.max(1, Math.ceil(tradeTotal / tradePageSize))}</span></div>
       <Table size="sm"><thead><tr><th>Symbol</th><th>Side</th><th>Trigger</th><th>Entry</th><th>TP / SL</th><th>Offset</th><th>Outcome</th><th>PNL</th></tr></thead><tbody>{trades.map((t) => <tr key={t.id}><td>{t.symbol}</td><td>{t.side}</td><td>{t.triggerPrice}</td><td>{t.entryPriceActual || t.actualEntryPrice || t.entryPrice || 'pending'}{!(t.entryPriceActual > 0 || t.actualEntryPrice > 0) ? <Badge bg="warning" text="dark" className="ms-2">unconfirmed</Badge> : null}</td><td>{t.tpPrice || '-'} / {t.slPrice || '-'}</td><td>{Number(t.entryOffsetPct || 0)}%</td><td>{t.outcome}</td><td>{Number(t.pnlUsd || 0).toFixed(3)}</td></tr>)}</tbody></Table>

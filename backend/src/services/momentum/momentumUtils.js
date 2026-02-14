@@ -1,4 +1,4 @@
-import { DEFAULT_MOMENTUM_CONFIG } from './momentumTypes.js';
+import { DEFAULT_MOMENTUM_CONFIG, MOMENTUM_UNIVERSE_LIMIT_OPTIONS } from './momentumTypes.js';
 
 export function parseFloatSafe(v, fallback = null) {
   const n = Number(v);
@@ -45,20 +45,22 @@ export function normalizeMomentumConfig(raw = {}) {
   c.directionMode = ['LONG', 'SHORT', 'BOTH'].includes(String(c.directionMode).toUpperCase()) ? String(c.directionMode).toUpperCase() : 'BOTH';
   c.windowMinutes = Math.trunc(parseFloatSafe(c.windowMinutes, 1));
   if (![1, 3, 5].includes(c.windowMinutes)) c.windowMinutes = 1;
-  c.priceThresholdPct = Math.max(0.01, parseFloatSafe(c.priceThresholdPct, 5));
-  c.oiThresholdPct = Math.max(0.01, parseFloatSafe(c.oiThresholdPct, 1));
-  c.turnover24hMin = Math.max(0, parseFloatSafe(c.turnover24hMin, 5_000_000));
-  c.vol24hMin = Math.max(0, parseFloatSafe(c.vol24hMin, 0.1));
-  c.leverage = Math.max(1, parseFloatSafe(c.leverage, 10));
-  c.marginUsd = Math.max(1, parseFloatSafe(c.marginUsd, 100));
-  c.tpRoiPct = Math.max(0.1, parseFloatSafe(c.tpRoiPct, 10));
-  c.slRoiPct = Math.max(0.1, parseFloatSafe(c.slRoiPct, 10));
+  c.priceThresholdPct = Math.max(0.01, parseFloatSafe(c.priceThresholdPct, 0.2));
+  c.oiThresholdPct = Math.max(0, parseFloatSafe(c.oiThresholdPct, 0));
+  c.turnover24hMin = Math.max(0, parseFloatSafe(c.turnover24hMin, 0));
+  c.vol24hMin = Math.max(0, parseFloatSafe(c.vol24hMin, 0));
+  c.universeLimit = Math.trunc(parseFloatSafe(c.universeLimit, 200));
+  if (!MOMENTUM_UNIVERSE_LIMIT_OPTIONS.includes(c.universeLimit)) c.universeLimit = 200;
+  c.leverage = Math.max(1, parseFloatSafe(c.leverage, 3));
+  c.marginUsd = Math.max(1, parseFloatSafe(c.marginUsd, 10));
+  c.tpRoiPct = Math.max(0.1, parseFloatSafe(c.tpRoiPct, 2));
+  c.slRoiPct = Math.max(0.1, parseFloatSafe(c.slRoiPct, 2));
   c.entryOffsetPct = parseFloatSafe(c.entryOffsetPct, -0.01);
-  c.turnoverSpikePct = Math.max(0, parseFloatSafe(c.turnoverSpikePct, 100));
-  c.baselineFloorUSDT = Math.max(0, parseFloatSafe(c.baselineFloorUSDT, 100_000));
-  c.holdSeconds = Math.max(1, Math.trunc(parseFloatSafe(c.holdSeconds, 3)));
-  c.trendConfirmSeconds = Math.max(1, Math.trunc(parseFloatSafe(c.trendConfirmSeconds, 3)));
-  c.oiMaxAgeSec = Math.max(1, parseFloatSafe(c.oiMaxAgeSec, 10));
+  c.turnoverSpikePct = Math.max(0, parseFloatSafe(c.turnoverSpikePct, 0));
+  c.baselineFloorUSDT = Math.max(0, parseFloatSafe(c.baselineFloorUSDT, 0));
+  c.holdSeconds = Math.max(1, Math.trunc(parseFloatSafe(c.holdSeconds, 1)));
+  c.trendConfirmSeconds = Math.max(1, Math.trunc(parseFloatSafe(c.trendConfirmSeconds, 1)));
+  c.oiMaxAgeSec = Math.max(1, parseFloatSafe(c.oiMaxAgeSec, 120));
   c.cooldownMinutes = Math.max(1, Math.trunc(parseFloatSafe(c.cooldownMinutes, 60)));
   c.maxNewEntriesPerTick = Math.max(1, Math.trunc(parseFloatSafe(c.maxNewEntriesPerTick, 5)));
   c.entryPriceSource = ['MARK', 'LAST'].includes(String(c.entryPriceSource).toUpperCase()) ? String(c.entryPriceSource).toUpperCase() : 'LAST';
