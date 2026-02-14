@@ -347,8 +347,12 @@ const momentumManager = createMomentumManager({
   getUniverseBySource: (source) => {
     const result = universeSearch.getLatestResult?.();
     if (!result?.outputs) return [];
-    if (source === 'FAST') return result.outputs.fastUniverseSymbols || [];
-    if (source === 'SLOW') return result.outputs.slowUniverseSymbols || [];
+    const tierMatch = String(source || '').toUpperCase().match(/^TIER_(\d+)$/);
+    if (tierMatch) {
+      const tierIndex = Number(tierMatch[1]);
+      const tier = (result.outputs.tiers || []).find((x) => Number(x?.tierIndex) === tierIndex);
+      return Array.isArray(tier?.symbols) ? tier.symbols : [];
+    }
     return [];
   },
 });
@@ -1195,7 +1199,17 @@ app.post('/api/universe-search/start', async (req) => {
 });
 app.post('/api/universe-search/stop', async () => universeSearch.stop());
 app.get('/api/universe-search/state', async () => universeSearch.getState());
-app.get('/api/universe-search/result', async () => universeSearch.getLatestResult() || { ok: false, error: 'NO_RESULT' });
+app.get('/api/universe-search/result', async () => {
+  const result = universeSearch.getLatestResult();
+  if (!result) return { ok: false, error: 'NO_RESULT' };
+  const tiers = Array.isArray(result?.outputs?.tiers) ? result.outputs.tiers : [];
+  return {
+    ...result,
+    tierSizeN: Number(result?.outputs?.tierSizeN || result?.config?.targetSizeN || 0),
+    totalTiers: Number(result?.outputs?.totalTiers || tiers.length),
+    tiersSummary: tiers.map((tier) => ({ tierIndex: Number(tier?.tierIndex || 0), size: Number(tier?.size || (tier?.symbols || []).length) })),
+  };
+});
 app.get("/api/trade/status", async () => ({ tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
 app.get("/api/trade/state", async () => getTradeStatePayload());
 app.get("/api/trade/positions", async (req) => {

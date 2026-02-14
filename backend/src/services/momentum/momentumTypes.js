@@ -22,7 +22,7 @@ export const DEFAULT_MOMENTUM_CONFIG = {
   mode: 'demo',
   directionMode: 'BOTH',
   windowMinutes: 1,
-  universeSource: 'FAST',
+  universeSource: 'TIER_1',
   turnoverSpikePct: 0,
   baselineFloorUSDT: 0,
   holdSeconds: 1,

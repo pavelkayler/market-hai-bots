@@ -8,9 +8,61 @@ const DEFAULTS = {
   subscribeChunkSize: 50,
 };
 
+const NO_SECOND_TICK_BASE_PENALTY = 10000;
+
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 function nowIso() { return new Date().toISOString(); }
+
+function buildTiers(symbols = [], tierSizeN = 100) {
+  const size = Math.max(1, Number(tierSizeN) || 100);
+  const tiers = [];
+  for (let i = 0; i < symbols.length; i += size) {
+    const chunk = symbols.slice(i, i + size);
+    tiers.push({ tierIndex: tiers.length + 1, size: chunk.length, symbols: chunk });
+  }
+  return tiers;
+}
+
+function normalizeLegacyResult(result) {
+  if (!result || typeof result !== 'object') return result;
+  const outputs = result.outputs || {};
+  if (Array.isArray(outputs.tiers)) {
+    const tierSizeN = Number(outputs.tierSizeN || result?.config?.targetSizeN || 100);
+    const tiers = outputs.tiers.map((tier, idx) => {
+      const symbols = Array.isArray(tier?.symbols) ? tier.symbols : [];
+      return {
+        tierIndex: Number(tier?.tierIndex || idx + 1),
+        size: Number(tier?.size || symbols.length),
+        symbols,
+      };
+    });
+    return {
+      ...result,
+      outputs: {
+        ...outputs,
+        tierSizeN,
+        tiers,
+        totalTiers: Number(outputs.totalTiers || tiers.length),
+      },
+    };
+  }
+
+  const fast = Array.isArray(outputs.fastUniverseSymbols) ? outputs.fastUniverseSymbols : [];
+  const slow = Array.isArray(outputs.slowUniverseSymbols) ? outputs.slowUniverseSymbols : [];
+  const legacyTiers = [];
+  if (fast.length > 0) legacyTiers.push({ tierIndex: 1, size: fast.length, symbols: fast });
+  if (slow.length > 0) legacyTiers.push({ tierIndex: 2, size: slow.length, symbols: slow });
+  return {
+    ...result,
+    outputs: {
+      ...outputs,
+      tierSizeN: Number(outputs.tierSizeN || result?.config?.targetSizeN || fast.length || 100),
+      tiers: legacyTiers,
+      totalTiers: legacyTiers.length,
+    },
+  };
+}
 
 export function createUniverseSearchService({ marketData, subscriptions, bybitRest, logger = console, persistPath = 'backend/data/universe_search_latest.json', emitState = () => {}, emitResult = () => {} } = {}) {
   const emitter = new EventEmitter();
@@ -26,7 +78,7 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
     try {
       const raw = await fs.readFile(persistPath, 'utf8');
       const parsed = JSON.parse(raw);
-      latestResult = parsed;
+      latestResult = normalizeLegacyResult(parsed);
       state.latestResult = latestResult;
     } catch {}
   }
@@ -61,13 +113,17 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
         elapsedSec,
       },
       counters,
+      tierSizeN: Number(latestResult?.outputs?.tierSizeN || latestResult?.config?.targetSizeN || 0),
+      totalTiers: Number(latestResult?.outputs?.totalTiers || latestResult?.outputs?.tiers?.length || 0),
+      tiersSummary: (latestResult?.outputs?.tiers || []).map((tier) => ({ tierIndex: tier.tierIndex, size: tier.size })),
       latestResultSummary: latestResult ? {
         searchId: latestResult.searchId,
         startedAt: latestResult.startedAt,
         endedAt: latestResult.endedAt,
         status: latestResult.status,
-        fastCount: latestResult.outputs?.fastUniverseSymbols?.length || 0,
-        slowCount: latestResult.outputs?.slowUniverseSymbols?.length || 0,
+        tierSizeN: Number(latestResult.outputs?.tierSizeN || latestResult.config?.targetSizeN || 0),
+        totalTiers: Number(latestResult.outputs?.totalTiers || latestResult.outputs?.tiers?.length || 0),
+        tiersSummary: (latestResult.outputs?.tiers || []).map((tier) => ({ tierIndex: tier.tierIndex, size: tier.size })),
       } : null,
     };
   }
@@ -118,8 +174,9 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
       perSymbolStats: [],
       outputs: {
         existsAllSymbols: [],
-        fastUniverseSymbols: [],
-        slowUniverseSymbols: [],
+        tierSizeN: Number(config?.targetSizeN || 100),
+        tiers: [],
+        totalTiers: 0,
       },
       progress: { phase: 'STARTING', elapsedSec: 0, etaSec: null },
     };
@@ -191,44 +248,49 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
       while (!run.stopping && Date.now() < bDeadline) await sleep(200);
       subscriptions.releaseFeed('universe-search');
 
-      const fast = [];
-      const slowMissingSecond = [];
-      const slowWithDelta = [];
+      const scoreNow = Date.now();
+      const rankedRows = [];
       for (const sym of existsOrdered) {
         const row = run.stats.get(sym);
-        if (row.phaseBSecondTickAt && Number.isFinite(row.secondTickDeltaMs)) {
+        const hasSecondTick = Boolean(row.phaseBSecondTickAt && Number.isFinite(row.secondTickDeltaMs));
+        let responsivenessScore = NO_SECOND_TICK_BASE_PENALTY;
+        if (hasSecondTick) {
           row.status = 'FAST_SECOND_TICK';
-          fast.push(sym);
-          continue;
-        }
-        if (row.phaseBFirstTickAt) {
+          responsivenessScore = Number(row.secondTickDeltaMs || 0);
+        } else if (row.phaseBFirstTickAt) {
           row.status = 'SLOW_NO_SECOND_TICK';
-          slowMissingSecond.push(sym);
-          continue;
+          responsivenessScore = NO_SECOND_TICK_BASE_PENALTY + Math.max(0, scoreNow - row.phaseBFirstTickAt);
+        } else {
+          row.status = 'SLOW_NO_SECOND_TICK';
+          responsivenessScore = NO_SECOND_TICK_BASE_PENALTY * 2;
         }
-        row.status = 'SLOW_NO_SECOND_TICK';
-        slowWithDelta.push(sym);
+        rankedRows.push({ sym, row, hasSecondTick, responsivenessScore });
       }
-      fast.sort((a, b) => Number(run.stats.get(a)?.secondTickDeltaMs || Infinity) - Number(run.stats.get(b)?.secondTickDeltaMs || Infinity));
-      const fastUniverseSymbols = fast.slice(0, config.targetSizeN);
-      const remaining = existsOrdered.filter((s) => !fastUniverseSymbols.includes(s));
-      const slowOrdered = [...remaining.filter((s) => slowMissingSecond.includes(s)), ...remaining.filter((s) => !slowMissingSecond.includes(s))];
-      const slowUniverseSymbols = slowOrdered.slice(0, config.targetSizeN);
 
-      run.result.counters.secondTickOkCount = fast.length;
-      run.result.counters.secondTickMissingCount = Math.max(0, existsOrdered.length - fast.length);
-      run.result.outputs.fastUniverseSymbols = fastUniverseSymbols;
-      run.result.outputs.slowUniverseSymbols = slowUniverseSymbols;
-      run.result.perSymbolStats = existsOrdered.map((s) => {
-        const row = run.stats.get(s);
-        return {
-          symbol: s,
-          firstTickAt: row.firstTickAt,
-          secondTickAt: row.phaseBSecondTickAt || null,
-          secondTickDeltaMs: row.secondTickDeltaMs,
-          status: row.status,
-        };
+      rankedRows.sort((a, b) => {
+        const byScore = Number(a.responsivenessScore) - Number(b.responsivenessScore);
+        if (byScore !== 0) return byScore;
+        return Number(a.row.firstTickAt || 0) - Number(b.row.firstTickAt || 0);
       });
+
+      const rankedSymbols = rankedRows.map((x) => x.sym);
+      const tiers = buildTiers(rankedSymbols, config.targetSizeN);
+      run.result.outputs.tierSizeN = config.targetSizeN;
+      run.result.outputs.tiers = tiers;
+      run.result.outputs.totalTiers = tiers.length;
+
+      run.result.counters.secondTickOkCount = rankedRows.filter((x) => x.hasSecondTick).length;
+      run.result.counters.secondTickMissingCount = Math.max(0, existsOrdered.length - run.result.counters.secondTickOkCount);
+      run.result.perSymbolStats = rankedRows.map(({ sym, row, hasSecondTick, responsivenessScore }) => ({
+        symbol: sym,
+        firstTickAt: row.firstTickAt,
+        phaseBFirstTickAt: row.phaseBFirstTickAt || null,
+        phaseBSecondTickAt: row.phaseBSecondTickAt || null,
+        phaseBSecondTickDeltaMs: row.secondTickDeltaMs,
+        hasSecondTick,
+        responsivenessScore,
+        status: row.status,
+      }));
 
       run.result.status = 'FINISHED';
       run.result.endedAt = nowIso();
@@ -263,7 +325,7 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
     return { ok: true };
   }
 
-  function getLatestResult() { return latestResult; }
+  function getLatestResult() { return normalizeLegacyResult(latestResult); }
 
   marketData.onTickerTick?.(onTicker);
   ensureLoaded().catch(() => {});

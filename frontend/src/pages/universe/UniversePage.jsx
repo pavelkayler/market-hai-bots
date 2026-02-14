@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Col, Form, ProgressBar, Row } from 'react-bootstrap';
+import { Alert, Badge, Button, Card, Col, Form, ProgressBar, Row } from 'react-bootstrap';
 import { useWs } from '../../shared/api/ws.js';
 
 const SIZE_OPTIONS = [50, 100, 200, 500, 1000];
@@ -8,6 +8,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 export default function UniversePage() {
   const ws = useWs();
   const [targetSizeN, setTargetSizeN] = useState(100);
+  const [selectedTierIndex, setSelectedTierIndex] = useState(1);
   const [state, setState] = useState(null);
   const [result, setResult] = useState(null);
 
@@ -20,7 +21,7 @@ export default function UniversePage() {
     if (outRes && !outRes.error) setResult(outRes);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { const t = setTimeout(() => { load(); }, 0); return () => clearTimeout(t); }, []);
 
   useEffect(() => {
     const unsub = ws.subscribe((_, parsed) => {
@@ -32,6 +33,7 @@ export default function UniversePage() {
     return () => { unsub(); ws.unsubscribeTopics(['universeSearch.*']); };
   }, [ws]);
 
+
   async function startSearch() {
     await fetch(`${API_BASE}/api/universe-search/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetSizeN }) });
     await load();
@@ -41,9 +43,12 @@ export default function UniversePage() {
     await load();
   }
 
-  const fast = result?.outputs?.fastUniverseSymbols || [];
-  const slow = result?.outputs?.slowUniverseSymbols || [];
+  const tiers = result?.outputs?.tiers || [];
+  const selectedTier = tiers.find((t) => Number(t.tierIndex) === Number(selectedTierIndex)) || tiers[0] || null;
+  const selectedTierSymbols = selectedTier?.symbols || [];
   const existsCount = Number(state?.counters?.firstTickReceivedCount || result?.counters?.firstTickReceivedCount || 0);
+  const tierSizeN = Number(result?.tierSizeN || result?.outputs?.tierSizeN || targetSizeN);
+  const totalTiers = Number(result?.totalTiers || result?.outputs?.totalTiers || tiers.length || 0);
   const running = ['STARTING', 'PHASE_A_EXISTS', 'PHASE_B_SPEED', 'STOPPING'].includes(String(state?.phase || '').toUpperCase());
   const pct = useMemo(() => {
     if (!state) return 0;
@@ -63,10 +68,27 @@ export default function UniversePage() {
       </div>
       <ProgressBar now={pct} label={state?.phase || 'IDLE'} className="mb-2" />
       <div>searchId: {state?.searchId || result?.searchId || '-'} | Last updated: {result?.endedAt || result?.startedAt || '-'}</div>
-      <div>Candidates: {state?.counters?.candidatesTotal || result?.counters?.candidatesTotal || 0} | Exists: {existsCount} | No first tick timeout: {state?.counters?.timedOutNoFirstTickCount || result?.counters?.timedOutNoFirstTickCount || 0} | Fast: {fast.length} | Slow: {slow.length}</div>
+      <div>Candidates: {state?.counters?.candidatesTotal || result?.counters?.candidatesTotal || 0} | Exists: {existsCount} | No first tick timeout: {state?.counters?.timedOutNoFirstTickCount || result?.counters?.timedOutNoFirstTickCount || 0} | Tier size N: {tierSizeN} | Total tiers: {totalTiers}</div>
       {!result && <Alert variant="warning" className="mt-2">No persisted result yet.</Alert>}
     </Card.Body></Card></Col>
-    <Col md={6}><Card><Card.Body><Card.Title>Fast Universe ({fast.length})</Card.Title><pre style={{ whiteSpace: 'pre-wrap' }}>{fast.join(', ')}</pre></Card.Body></Card></Col>
-    <Col md={6}><Card><Card.Body><Card.Title>Slow Universe ({slow.length})</Card.Title><pre style={{ whiteSpace: 'pre-wrap' }}>{slow.join(', ')}</pre></Card.Body></Card></Col>
+
+    <Col md={12}><Card><Card.Body>
+      <div className="d-flex gap-2 align-items-center mb-2">
+        <Form.Select style={{ maxWidth: 220 }} value={selectedTierIndex} onChange={(e) => setSelectedTierIndex(Number(e.target.value))}>
+          {tiers.map((tier) => <option key={tier.tierIndex} value={tier.tierIndex}>{`Tier ${tier.tierIndex} (${tier.size || tier.symbols?.length || 0})`}</option>)}
+          {tiers.length === 0 ? <option value={1}>No tiers yet</option> : null}
+        </Form.Select>
+        <Badge bg="secondary">Count: {selectedTierSymbols.length}</Badge>
+        <Button
+          variant="outline-secondary"
+          size="sm"
+          disabled={selectedTierSymbols.length === 0}
+          onClick={() => navigator.clipboard?.writeText(selectedTierSymbols.join(', '))}
+        >
+          Copy symbols
+        </Button>
+      </div>
+      <pre style={{ whiteSpace: 'pre-wrap' }}>{selectedTierSymbols.join(', ')}</pre>
+    </Card.Body></Card></Col>
   </Row>;
 }
