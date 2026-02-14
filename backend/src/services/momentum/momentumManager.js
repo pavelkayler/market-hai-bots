@@ -5,6 +5,34 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   const emitter = new EventEmitter();
   const instances = new Map();
 
+  async function persistInstance(inst, wasRunning = null) {
+    const snap = inst.getSnapshot?.() || {};
+    const light = inst.getLight?.() || {};
+    await sqlite.saveInstance?.({
+      instanceId: light.id || snap.id,
+      createdAtMs: Number(snap.startedAt || Date.now()),
+      updatedAtMs: Date.now(),
+      configJson: JSON.stringify(snap.config || {}),
+      lastSnapshotJson: JSON.stringify({ stats: snap.stats, signalView: (snap.signalView || []).slice(0, 50), signalNotifications: (snap.signalNotifications || []).slice(0, 100), pendingOrders: (snap.pendingOrders || []).slice(0, 100), openPositions: (snap.openPositions || []).slice(0, 50) }),
+      wasRunning: wasRunning == null ? (String(light.status || '').toUpperCase() === 'RUNNING') : Boolean(wasRunning),
+      lastStoppedAtMs: String(light.status || '').toUpperCase() === 'STOPPED' ? Date.now() : null,
+    });
+  }
+
+  async function hydratePersistedInstances() {
+    const rows = await sqlite.getInstances?.() || [];
+    for (const row of rows) {
+      try {
+        const config = JSON.parse(row.configJson || '{}');
+        const inst = createMomentumInstance({ id: row.instanceId, config, marketData, sqlite, tradeExecutor, logger });
+        inst.stop();
+        instances.set(row.instanceId, inst);
+      } catch (err) {
+        logger?.warn?.({ err, instanceId: row.instanceId }, 'failed to hydrate momentum instance');
+      }
+    }
+  }
+
 
   function normalizeUniverseSource(universeSource) {
     const raw = String(universeSource || 'TIER_1').toUpperCase();
@@ -110,8 +138,8 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     emitState();
   });
 
-  async function start(config) {
-    const id = `mom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  async function start(config, { reuseInstanceId = null } = {}) {
+    const id = reuseInstanceId || `mom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const windowMinutes = Number(config?.windowMinutes);
     if (![1, 3, 5].includes(windowMinutes)) {
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
@@ -175,6 +203,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     const normalizedUniverseMode = scanMode === 'SINGLE' ? 'SINGLE' : 'TIERS';
     const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeMode: normalizedUniverseMode, universeTierIndex: scanMode === 'SINGLE' ? null : tierIndices[0], universeSource, singleSymbol, evalSymbols, tierIndices: scanMode === 'SINGLE' ? [] : tierIndices, resolvedSymbolsCount }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
+    await persistInstance(inst, true);
     syncActiveIntervals();
     syncSelectionPolicy();
     syncPinnedSymbols();
@@ -182,16 +211,31 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     return { ok: true, instanceId: id, stateSnapshot: inst.getSnapshot() };
   }
 
-  function stop(instanceId) {
+  async function stop(instanceId) {
     const inst = instances.get(instanceId);
     if (!inst) return { ok: false, reason: 'NOT_FOUND' };
     inst.stop();
-    instances.delete(instanceId);
+    persistInstance(inst, false).catch(() => {});
     syncActiveIntervals();
     syncSelectionPolicy();
     syncPinnedSymbols();
     emitState();
     return { ok: true };
+  }
+
+  async function cont(instanceId) {
+    const existing = instances.get(instanceId);
+    if (existing) {
+      existing.start?.();
+      await persistInstance(existing, true);
+      emitState();
+      return { ok: true, instanceId, stateSnapshot: existing.getSnapshot() };
+    }
+    const rows = await sqlite.getInstances?.() || [];
+    const row = rows.find((x) => x.instanceId === instanceId);
+    if (!row) return { ok: false, reason: 'NOT_FOUND' };
+    const cfg = JSON.parse(row.configJson || '{}');
+    return start(cfg, { reuseInstanceId: instanceId });
   }
 
   function cancelEntry(instanceId, symbol) {
@@ -201,7 +245,9 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   }
 
   return {
+    init: hydratePersistedInstances,
     start,
+    continue: cont,
     stop,
     list: () => ({ ok: true, instances: [...instances.values()].map((x) => withPreflight(x.getLight())) }),
     getState: (instanceId) => {
@@ -216,6 +262,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     },
     getTrades: async (instanceId, limit, offset) => ({ ok: true, ...(await sqlite.getTrades(instanceId, limit, offset)) }),
     getMarketStatus: () => ({ ok: true, ...getMarketStatus() }),
+    getFixedSignals: async (instanceId, limit, sinceMs, symbol) => ({ ok: true, rows: await sqlite.getFixedSignals?.({ instanceId, limit, sinceMs, symbol }) || [] }),
     cancelEntry,
     onState: (fn) => emitter.on('state', fn),
   };

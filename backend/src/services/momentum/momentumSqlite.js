@@ -88,6 +88,36 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
     await ensureColumn('momentum_signals', 'oiAgeSec', 'REAL');
     await run('CREATE INDEX IF NOT EXISTS idx_momentum_trades_instance_entry ON momentum_trades(instanceId, entryTs)');
     await run('CREATE INDEX IF NOT EXISTS idx_momentum_trades_symbol_entry ON momentum_trades(symbol, entryTs)');
+    await ensureColumn('momentum_trades', 'qty', 'REAL');
+    await ensureColumn('momentum_trades', 'pnlGross', 'REAL');
+    await ensureColumn('momentum_trades', 'pnlNet', 'REAL');
+    await ensureColumn('momentum_trades', 'feeEntry', 'REAL');
+    await ensureColumn('momentum_trades', 'feeExit', 'REAL');
+    await ensureColumn('momentum_trades', 'makerFeeRate', 'REAL');
+    await ensureColumn('momentum_trades', 'takerFeeRate', 'REAL');
+
+    await run(`CREATE TABLE IF NOT EXISTS momentum_instances (
+      instanceId TEXT PRIMARY KEY,
+      createdAtMs INTEGER,
+      updatedAtMs INTEGER,
+      configJson TEXT NOT NULL,
+      lastSnapshotJson TEXT,
+      wasRunning INTEGER DEFAULT 0,
+      lastStoppedAtMs INTEGER
+    )`);
+
+    await run(`CREATE TABLE IF NOT EXISTS momentum_fixed_signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tsMs INTEGER,
+      instanceId TEXT,
+      symbol TEXT,
+      side TEXT,
+      windowMinutes INTEGER,
+      action TEXT,
+      reason TEXT,
+      metricsJson TEXT NOT NULL
+    )`);
+    await run('CREATE INDEX IF NOT EXISTS idx_momentum_fixed_signals_instance_ts ON momentum_fixed_signals(instanceId, tsMs DESC)');
   }
 
   function enqueueWrite(task) {
@@ -112,8 +142,35 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
   }
 
   function saveTrade(row) {
-    enqueueWrite(() => run(`INSERT INTO momentum_trades(instanceId, mode, symbol, side, windowMinutes, priceThresholdPct, oiThresholdPct, turnover24hMin, vol24hMin, leverage, marginUsd, entryTs, triggerPrice, entryPrice, actualEntryPrice, exitTs, exitPrice, outcome, pnlUsd, feesUsd, durationSec, entryOffsetPct, turnoverSpikePct, baselineFloorUSDT, holdSeconds, trendConfirmSeconds, oiMaxAgeSec, lastPriceAtTrigger, markPriceAtTrigger, entryOrderId, entryPriceActual, entryQtyActual, entryFillTs, tpPrice, slPrice, tpSlStatus, tpOrderId, slOrderId)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.mode, row.symbol, row.side, row.windowMinutes, row.priceThresholdPct, row.oiThresholdPct, row.turnover24hMin, row.vol24hMin, row.leverage, row.marginUsd, row.entryTs, row.triggerPrice ?? null, row.entryPrice, row.actualEntryPrice ?? null, row.exitTs, row.exitPrice, row.outcome, row.pnlUsd, row.feesUsd, row.durationSec, row.entryOffsetPct ?? 0, row.turnoverSpikePct ?? 100, row.baselineFloorUSDT ?? 100000, row.holdSeconds ?? 3, row.trendConfirmSeconds ?? 3, row.oiMaxAgeSec ?? 10, row.lastPriceAtTrigger ?? null, row.markPriceAtTrigger ?? null, row.entryOrderId ?? null, row.entryPriceActual ?? null, row.entryQtyActual ?? null, row.entryFillTs ?? null, row.tpPrice ?? null, row.slPrice ?? null, row.tpSlStatus ?? null, row.tpOrderId ?? null, row.slOrderId ?? null]));
+    enqueueWrite(() => run(`INSERT INTO momentum_trades(instanceId, mode, symbol, side, windowMinutes, priceThresholdPct, oiThresholdPct, turnover24hMin, vol24hMin, leverage, marginUsd, entryTs, triggerPrice, entryPrice, actualEntryPrice, exitTs, exitPrice, outcome, pnlUsd, feesUsd, durationSec, entryOffsetPct, turnoverSpikePct, baselineFloorUSDT, holdSeconds, trendConfirmSeconds, oiMaxAgeSec, lastPriceAtTrigger, markPriceAtTrigger, entryOrderId, entryPriceActual, entryQtyActual, entryFillTs, tpPrice, slPrice, tpSlStatus, tpOrderId, slOrderId, qty, pnlGross, pnlNet, feeEntry, feeExit, makerFeeRate, takerFeeRate)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [row.instanceId, row.mode, row.symbol, row.side, row.windowMinutes, row.priceThresholdPct, row.oiThresholdPct, row.turnover24hMin, row.vol24hMin, row.leverage, row.marginUsd, row.entryTs, row.triggerPrice ?? null, row.entryPrice, row.actualEntryPrice ?? null, row.exitTs, row.exitPrice, row.outcome, row.pnlUsd, row.feesUsd, row.durationSec, row.entryOffsetPct ?? 0, row.turnoverSpikePct ?? 100, row.baselineFloorUSDT ?? 100000, row.holdSeconds ?? 3, row.trendConfirmSeconds ?? 3, row.oiMaxAgeSec ?? 10, row.lastPriceAtTrigger ?? null, row.markPriceAtTrigger ?? null, row.entryOrderId ?? null, row.entryPriceActual ?? null, row.entryQtyActual ?? null, row.entryFillTs ?? null, row.tpPrice ?? null, row.slPrice ?? null, row.tpSlStatus ?? null, row.tpOrderId ?? null, row.slOrderId ?? null, row.qty ?? null, row.pnlGross ?? null, row.pnlNet ?? null, row.feeEntry ?? null, row.feeExit ?? null, row.makerFeeRate ?? null, row.takerFeeRate ?? null]));
+  }
+
+
+
+  function saveInstance(row) {
+    enqueueWrite(() => run(`INSERT INTO momentum_instances(instanceId, createdAtMs, updatedAtMs, configJson, lastSnapshotJson, wasRunning, lastStoppedAtMs)
+      VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(instanceId) DO UPDATE SET updatedAtMs=excluded.updatedAtMs, configJson=excluded.configJson, lastSnapshotJson=excluded.lastSnapshotJson, wasRunning=excluded.wasRunning, lastStoppedAtMs=excluded.lastStoppedAtMs`,
+    [row.instanceId, row.createdAtMs, row.updatedAtMs, row.configJson, row.lastSnapshotJson ?? null, row.wasRunning ? 1 : 0, row.lastStoppedAtMs ?? null]));
+  }
+
+  async function getInstances() {
+    return all('SELECT * FROM momentum_instances ORDER BY createdAtMs ASC');
+  }
+
+  function saveFixedSignal(row) {
+    enqueueWrite(() => run(`INSERT INTO momentum_fixed_signals(tsMs, instanceId, symbol, side, windowMinutes, action, reason, metricsJson) VALUES(?,?,?,?,?,?,?,?)`, [row.tsMs, row.instanceId, row.symbol, row.side, row.windowMinutes, row.action, row.reason ?? null, JSON.stringify(row.metrics || {})]));
+  }
+
+  async function getFixedSignals({ instanceId, limit = 100, sinceMs = 0, symbol = null } = {}) {
+    const lim = Math.max(1, Math.min(500, Number(limit) || 100));
+    const params = [instanceId, Number(sinceMs) || 0];
+    let sql = 'SELECT * FROM momentum_fixed_signals WHERE instanceId=? AND tsMs>=?';
+    if (symbol) { sql += ' AND symbol=?'; params.push(String(symbol).toUpperCase()); }
+    sql += ' ORDER BY tsMs DESC LIMIT ?'; params.push(lim);
+    const rows = await all(sql, params);
+    return rows.map((r) => ({ ...r, metrics: JSON.parse(r.metricsJson || '{}') }));
   }
 
   async function getTrades(instanceId, limit = 50, offset = 0) {
@@ -124,5 +181,5 @@ export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', 
     return { trades: rows, total: Number(totalRows?.[0]?.c || 0) };
   }
 
-  return { init, saveSignal, saveTrade, getTrades };
+  return { init, saveSignal, saveTrade, getTrades, saveInstance, getInstances, saveFixedSignal, getFixedSignals };
 }

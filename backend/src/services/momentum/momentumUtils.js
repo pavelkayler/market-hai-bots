@@ -23,6 +23,31 @@ export function calcChange(now, prev) {
   return (now / prev) - 1;
 }
 
+
+export const BYBIT_STANDARD_FEES = {
+  makerFeeRate: 0.0002,
+  takerFeeRate: 0.00055,
+};
+
+export function calcPaperPnlWithFees({ side, qty, entryPrice, exitPrice } = {}) {
+  const q = Math.abs(parseFloatSafe(qty, 0));
+  const ep = parseFloatSafe(entryPrice, 0);
+  const xp = parseFloatSafe(exitPrice, 0);
+  if (!(q > 0) || !(ep > 0) || !(xp > 0)) {
+    return { pnlGross: 0, feeEntry: 0, feeExit: 0, pnlNet: 0, ...BYBIT_STANDARD_FEES };
+  }
+  const pnlGross = String(side).toUpperCase() === 'LONG' ? ((xp - ep) * q) : ((ep - xp) * q);
+  const feeEntry = q * ep * BYBIT_STANDARD_FEES.takerFeeRate;
+  const feeExit = q * xp * BYBIT_STANDARD_FEES.makerFeeRate;
+  return {
+    pnlGross,
+    feeEntry,
+    feeExit,
+    pnlNet: pnlGross - feeEntry - feeExit,
+    ...BYBIT_STANDARD_FEES,
+  };
+}
+
 export function roiToMovePct(roiPct, leverage) {
   const r = parseFloatSafe(roiPct, 0);
   const l = parseFloatSafe(leverage, 1);
@@ -58,16 +83,16 @@ export function normalizeMomentumConfig(raw = {}) {
   c.universeMode = String(c.universeMode || (c.scanMode === 'SINGLE' ? 'SINGLE' : 'TIERS')).toUpperCase() === 'SINGLE' ? 'SINGLE' : 'TIERS';
   c.tierIndices = [...new Set((Array.isArray(c.tierIndices) ? c.tierIndices : [c.universeTierIndex]).map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))].sort((a, b) => a - b);
   c.resolvedSymbolsCount = Math.max(0, Number(c.resolvedSymbolsCount || 0));
-  c.leverage = Math.max(1, parseFloatSafe(c.leverage, 3));
-  c.marginUsd = Math.max(1, parseFloatSafe(c.marginUsd, 10));
-  c.tpRoiPct = Math.max(0.1, parseFloatSafe(c.tpRoiPct, 2));
-  c.slRoiPct = Math.max(0.1, parseFloatSafe(c.slRoiPct, 2));
+  c.leverage = Math.max(1, parseFloatSafe(c.leverage, 10));
+  c.marginUsd = Math.max(1, parseFloatSafe(c.marginUsd, 100));
+  c.tpRoiPct = Math.max(0.1, parseFloatSafe(c.tpRoiPct, 5));
+  c.slRoiPct = Math.max(0.1, parseFloatSafe(c.slRoiPct, 5));
   c.entryOffsetPct = parseFloatSafe(c.entryOffsetPct, -0.01);
   c.turnoverSpikePct = Math.max(0, parseFloatSafe(c.turnoverSpikePct, 0));
   c.baselineFloorUSDT = Math.max(0, parseFloatSafe(c.baselineFloorUSDT, 0));
   c.holdSeconds = Math.max(1, Math.trunc(parseFloatSafe(c.holdSeconds, 1)));
   c.trendConfirmSeconds = Math.max(1, Math.trunc(parseFloatSafe(c.trendConfirmSeconds, 1)));
-  c.oiMaxAgeSec = Math.max(1, parseFloatSafe(c.oiMaxAgeSec, 120));
+  c.oiMaxAgeSec = Math.max(1, parseFloatSafe(c.oiMaxAgeSec, 1800));
   c.cooldownMinutes = Math.max(1, Math.trunc(parseFloatSafe(c.cooldownMinutes, 60)));
   c.maxNewEntriesPerTick = Math.max(1, Math.trunc(parseFloatSafe(c.maxNewEntriesPerTick, 5)));
   c.entryPriceSource = ['MARK', 'LAST'].includes(String(c.entryPriceSource).toUpperCase()) ? String(c.entryPriceSource).toUpperCase() : 'LAST';
