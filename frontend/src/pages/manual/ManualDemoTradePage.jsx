@@ -3,6 +3,7 @@ import { Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
 import { useWs } from '../../shared/api/ws.js';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+const MANUAL_DEMO_MAX_NOTIONAL_USDT = Number(import.meta.env.VITE_MANUAL_DEMO_MAX_NOTIONAL_USDT || 5000);
 
 export default function ManualDemoTradePage() {
   const ws = useWs();
@@ -63,7 +64,7 @@ export default function ManualDemoTradePage() {
         <Form.Control type='number' value={form.slRoiPct} onChange={(e) => setForm((p) => ({ ...p, slRoiPct: Number(e.target.value) }))} />
         <Form.Text className='text-muted'>Допустимый убыток в ROI, переводится в stop-loss цену.</Form.Text>
       </Form.Group>
-      <div className='mb-2 text-muted'>MARK/LAST: {preview.px || '-'} | qty: {preview.qty.toFixed(4)} | notional: {preview.notional.toFixed(2)}</div>
+      <div className='mb-2 text-muted'>MARK/LAST: {preview.px || '-'} | qty: {preview.qty.toFixed(4)} | notional: {preview.notional.toFixed(2)} | limit: {MANUAL_DEMO_MAX_NOTIONAL_USDT}</div>
       <Button disabled={!canSubmit} onClick={async () => { const out = await ws.request('manual.placeDemoOrder', form); setLastAction(out); refresh(form.symbol); }}>Разместить ордер</Button>
     </Card.Body></Card></Col>
     <Col md={6}><Card><Card.Body><Card.Title>Manage / Close</Card.Title>

@@ -67,7 +67,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     executionMode: "demo",
     killSwitch: false,
     activeSymbol: null,
-    maxNotional: Number(process.env.TRADE_MAX_NOTIONAL || 100),
+    maxNotional: Number(process.env.MANUAL_DEMO_MAX_NOTIONAL_USDT || process.env.TRADE_MAX_NOTIONAL || 5000),
     maxLeverage: Number(process.env.TRADE_MAX_LEVERAGE || 10),
     maxActivePositions: Number(process.env.TRADE_MAX_ACTIVE_POSITIONS || 10),
   };
@@ -374,7 +374,19 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       throw new Error("bad_qty");
     }
     const pre = await runPreTradeChecks({ symbol, side, qty: q, priceHint, reduceOnly: false });
-    if (!pre.ok) throw new Error(pre.reasons.join(";"));
+    if (!pre.ok) {
+      const notionalHit = pre.reasons.find((r) => String(r).startsWith('NOTIONAL_LIMIT_EXCEEDED:'));
+      if (notionalHit) {
+        const [, values = ''] = String(notionalHit).split(':');
+        const [notionalRaw, limitRaw] = values.split('>');
+        const err = new Error(notionalHit);
+        err.code = 'NOTIONAL_LIMIT_EXCEEDED';
+        err.notional = Number(notionalRaw);
+        err.limit = Number(limitRaw);
+        throw err;
+      }
+      throw new Error(pre.reasons.join(";"));
+    }
 
     const isolated = await ensureIsolated({ symbol });
     if (!isolated.ok) throw new Error(`ISOLATED_MARGIN_REQUIRED:${isolated.error || 'unknown'}`);

@@ -374,6 +374,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       tpSlStatus: st.pos.tpSlStatus,
       tpOrderId: st.pos.tpOrderId,
       slOrderId: st.pos.slOrderId,
+      qty: Number(st.pos.entryQtyActual || ((cfg.marginUsd * cfg.leverage) / Math.max(1e-9, st.pos.actualEntryPrice || st.pos.entryPrice || 1))),
     });
     log('trigger filled', { symbol, side: st.pos.side, triggerPrice: st.pos.triggerPrice, actualEntryPrice: st.pos.actualEntryPrice, tpSlStatus: st.pos.tpSlStatus });
     pushSignalNote({ ts, symbol, side: st.pos.side, lastPrice: snap.lastPrice, markPrice: snap.markPrice, action: 'TRIGGER_FILLED', message: `Trigger ${st.pos.triggerPrice} filled at ${st.pos.actualEntryPrice || st.pos.entryPrice}` });
@@ -459,7 +460,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   }
 
   function saveManualCancelTrade(symbol, pending, ts, outcome) {
-    sqlite.saveTrade({ instanceId: id, mode: cfg.mode, symbol, side: pending.side, windowMinutes: cfg.windowMinutes, priceThresholdPct: cfg.priceThresholdPct, oiThresholdPct: cfg.oiThresholdPct, turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin, leverage: cfg.leverage, marginUsd: cfg.marginUsd, entryTs: pending.createdAtMs, triggerPrice: pending.triggerPrice, entryPrice: pending.triggerPrice, actualEntryPrice: null, exitTs: ts, exitPrice: pending.triggerPrice, outcome, pnlUsd: 0, feesUsd: 0, durationSec: Math.max(0, Math.round((ts - pending.createdAtMs) / 1000)), entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, baselineFloorUSDT: cfg.baselineFloorUSDT, holdSeconds: cfg.holdSeconds, trendConfirmSeconds: cfg.trendConfirmSeconds, oiMaxAgeSec: cfg.oiMaxAgeSec, lastPriceAtTrigger: pending.lastPriceAtTrigger ?? null, markPriceAtTrigger: pending.markPriceAtTrigger ?? null });
+    sqlite.saveTrade({ instanceId: id, mode: cfg.mode, symbol, side: pending.side, windowMinutes: cfg.windowMinutes, priceThresholdPct: cfg.priceThresholdPct, oiThresholdPct: cfg.oiThresholdPct, turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin, leverage: cfg.leverage, marginUsd: cfg.marginUsd, entryTs: pending.createdAtMs, triggerPrice: pending.triggerPrice, entryPrice: pending.triggerPrice, actualEntryPrice: null, exitTs: ts, exitPrice: pending.triggerPrice, outcome, pnlUsd: 0, feesUsd: 0, durationSec: Math.max(0, Math.round((ts - pending.createdAtMs) / 1000)), entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, baselineFloorUSDT: cfg.baselineFloorUSDT, holdSeconds: cfg.holdSeconds, trendConfirmSeconds: cfg.trendConfirmSeconds, oiMaxAgeSec: cfg.oiMaxAgeSec, lastPriceAtTrigger: pending.lastPriceAtTrigger ?? null, markPriceAtTrigger: pending.markPriceAtTrigger ?? null, qty: Number((cfg.marginUsd * cfg.leverage) / Math.max(1e-9, pending.triggerPrice || 1)) });
   }
 
 
@@ -598,6 +599,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
 
       const st = stateFor(symbol);
       const currentPrice = Number(snap.lastPrice);
+      let priceChange = 0;
+      let oiChange = 0;
       const lastTs = Number(snap.tsMs || snap.ts || ts);
       if (lastTs < staleCutoffTs) {
         const staleSince = Number(staleSinceBySymbol.get(symbol) || ts);
@@ -700,8 +703,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       }
       historyRetryAtBySymbol.delete(symbol);
 
-      const priceChange = calcChange(snap.lastPrice, baseline.prevClose);
-      const oiChange = calcChange(snap.oiValue, baseline.prevOiValue);
+      priceChange = calcChange(snap.lastPrice, baseline.prevClose);
+      oiChange = calcChange(snap.oiValue, baseline.prevOiValue);
       const oiAgeSec = Number(marketData.getOiAgeSec?.(symbol));
       const oiFresh = oiAgeSec <= cfg.oiMaxAgeSec;
       signalViewBySymbol.set(symbol, { symbol, ts, markPrice: snap.markPrice, lastPrice: snap.lastPrice, priceChange, oiValueNow: snap.oiValue, oiChange });
@@ -856,6 +859,13 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   }
 
 
+
+  function setConfig(nextConfig = {}) {
+    const normalized = normalizeMomentumConfig(nextConfig);
+    Object.assign(cfg, normalized);
+    return cfg;
+  }
+
   function getSnapshot() {
     const openPositions = [];
     const pendingOrders = [];
@@ -882,6 +892,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     start: () => { status = MOMENTUM_STATUS.RUNNING; },
     cancelEntry,
     getSnapshot,
-    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, universeMode: cfg.universeMode, universeTierIndex: cfg.universeTierIndex, universeSource: cfg.universeSource, singleSymbol: cfg.singleSymbol, tierIndices: Array.isArray(cfg.tierIndices) ? cfg.tierIndices : [], resolvedSymbolsCount: Number(cfg.resolvedSymbolsCount || (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols.length : 0)), direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
+    setConfig,
+    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, universeMode: cfg.universeMode, universeTierIndex: cfg.universeTierIndex, universeSource: cfg.universeSource, singleSymbol: cfg.singleSymbol, tierIndices: Array.isArray(cfg.tierIndices) ? cfg.tierIndices : [], resolvedSymbolsCount: Number(cfg.resolvedSymbolsCount || (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols.length : 0)), direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, tradesCount: stats.trades, wins: stats.wins, losses: stats.losses, winratePct: stats.trades > 0 ? (stats.wins * 100) / stats.trades : 0, pnl: stats.pnl, pnlNetTotal: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
   };
 }
