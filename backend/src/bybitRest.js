@@ -32,7 +32,6 @@ async function fetchJsonWithTimeout(url, { headers = {}, timeoutMs = 10000 } = {
 
 export function createBybitRest({ baseUrl = DEFAULT_BASE, logger = console } = {}) {
   async function getInstrumentsLinearAll() {
-    // Bybit returns paginated list via cursor
     const out = [];
     let cursor = "";
     for (let i = 0; i < 20; i++) {
@@ -52,8 +51,6 @@ export function createBybitRest({ baseUrl = DEFAULT_BASE, logger = console } = {
       out.push(...list);
       cursor = j?.result?.nextPageCursor || "";
       if (!cursor) break;
-
-      // small polite delay
       await sleep(120);
     }
     return out;
@@ -73,25 +70,24 @@ export function createBybitRest({ baseUrl = DEFAULT_BASE, logger = console } = {
       throw err;
     }
 
-    // result.list is array of arrays: [ startTime, open, high, low, close, volume, turnover ]
-    const rows = j?.result?.list || [];
-    const candles = rows
-      .map((r) => ({
-        t: Number(r[0]),
-        o: Number(r[1]),
-        h: Number(r[2]),
-        l: Number(r[3]),
-        c: Number(r[4]),
-        v: Number(r[5]),
-        turnover: Number(r[6]),
-      }))
+    return (j?.result?.list || [])
+      .map((r) => ({ t: Number(r[0]), o: Number(r[1]), h: Number(r[2]), l: Number(r[3]), c: Number(r[4]), v: Number(r[5]), turnover: Number(r[6]) }))
       .filter((x) => Number.isFinite(x.t) && Number.isFinite(x.o) && Number.isFinite(x.h) && Number.isFinite(x.l) && Number.isFinite(x.c))
       .sort((a, b) => a.t - b.t);
-
-    return candles;
   }
 
-
+  async function getTicker({ symbol }) {
+    const url = new URL(`${baseUrl}/v5/market/tickers`);
+    url.searchParams.set('category', 'linear');
+    url.searchParams.set('symbol', String(symbol || '').toUpperCase());
+    const j = await fetchJsonWithTimeout(url.toString(), { timeoutMs: 5000 });
+    if (j?.retCode !== 0) {
+      const err = new Error(`Bybit retCode ${j?.retCode}`);
+      err.payload = j;
+      throw err;
+    }
+    return (j?.result?.list || [])[0] || null;
+  }
 
   async function getOpenInterest({ symbol, interval = "15", limit = 50 } = {}) {
     const url = new URL(`${baseUrl}/v5/market/open-interest`);
@@ -133,11 +129,6 @@ export function createBybitRest({ baseUrl = DEFAULT_BASE, logger = console } = {
       .filter((x) => Number.isFinite(x.t) && Number.isFinite(x.rate))
       .sort((a, b) => a.t - b.t);
   }
-  return {
-    getInstrumentsLinearAll,
-    getKlines,
-    getOpenInterest,
-    getFundingHistory,
-    _fetchJsonWithTimeout: fetchJsonWithTimeout,
-  };
+
+  return { getInstrumentsLinearAll, getKlines, getTicker, getOpenInterest, getFundingHistory, _fetchJsonWithTimeout: fetchJsonWithTimeout };
 }

@@ -1,26 +1,38 @@
-import sqlite3 from 'sqlite3';
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
 export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', logger = console } = {}) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = new sqlite3.Database(dbPath);
+  const db = new Database(dbPath);
   const queue = [];
   let busy = false;
 
   function run(sql, params = []) {
     return new Promise((resolve, reject) => {
-      db.run(sql, params, function onRun(err) {
-        if (err) reject(err);
-        else resolve({ lastID: this.lastID, changes: this.changes });
-      });
+      try {
+        const stmt = db.prepare(sql);
+        const info = stmt.run(params);
+        resolve({ lastID: Number(info?.lastInsertRowid || 0), changes: Number(info?.changes || 0) });
+      } catch (err) {
+        reject(err);
+      }
     });
   }
+
   function all(sql, params = []) {
-    return new Promise((resolve, reject) => db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows || []))));
+    return new Promise((resolve, reject) => {
+      try {
+        const stmt = db.prepare(sql);
+        resolve(stmt.all(params) || []);
+      } catch (err) {
+        reject(err);
+      }
+    });
   }
 
   async function ensureColumn(table, column, typeAndDefault) {
+
     const cols = await all(`PRAGMA table_info(${table})`);
     const hasColumn = (cols || []).some((c) => String(c?.name || '').toLowerCase() === String(column).toLowerCase());
     if (!hasColumn) await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${typeAndDefault}`);
