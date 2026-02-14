@@ -1,24 +1,135 @@
 import { calcTpSl } from '../momentum/momentumUtils.js';
+import { createBybitRest } from '../../bybitRest.js';
+
+function toNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeError(error) {
+  const retCode = error?.payload?.response?.retCode;
+  const retMsg = error?.payload?.response?.retMsg;
+  return {
+    message: String(error?.message || error || 'unknown'),
+    retCode: Number.isFinite(Number(retCode)) ? Number(retCode) : null,
+    retMsg: retMsg || null,
+  };
+}
 
 export function createManualTradeService({ tradeExecutor, marketData, logger = console }) {
-  function isDemo() { return String(tradeExecutor?.getExecutionMode?.() || '').toLowerCase() === 'demo'; }
+  const bybitRest = createBybitRest({ logger });
+
+  function isDemo() {
+    return String(tradeExecutor?.getExecutionMode?.() || '').toLowerCase() === 'demo';
+  }
+
+  async function readQuoteFromStore(symbol) {
+    const snap = marketData.getSnapshot(symbol) || {};
+    const markPrice = toNumber(snap.markPrice);
+    const lastPrice = toNumber(snap.lastPrice);
+    if (markPrice > 0 || lastPrice > 0) {
+      return { ok: true, markPrice: markPrice || null, lastPrice: lastPrice || null, source: 'market-store', tsMs: Number(snap.tsMs || Date.now()) };
+    }
+    return { ok: false, reason: 'STORE_EMPTY' };
+  }
+
+  async function readQuoteFromRest(symbol) {
+    try {
+      const ticker = await bybitRest.getTicker({ symbol });
+      const markPrice = toNumber(ticker?.markPrice);
+      const lastPrice = toNumber(ticker?.lastPrice);
+      if (markPrice > 0 || lastPrice > 0) {
+        return { ok: true, markPrice: markPrice || null, lastPrice: lastPrice || null, source: 'rest-ticker', tsMs: Date.now() };
+      }
+      return { ok: false, reason: 'REST_NO_PRICE' };
+    } catch (error) {
+      return { ok: false, reason: 'REST_ERROR', detail: String(error?.message || error) };
+    }
+  }
+
+  async function getQuote({ symbol, timeoutMs = 2000 } = {}) {
+    const normalizedSymbol = String(symbol || '').toUpperCase();
+    if (!normalizedSymbol) return { ok: false, error: 'SYMBOL_REQUIRED' };
+
+    const started = Date.now();
+    let lastDetail = 'NO_DATA';
+    while ((Date.now() - started) < timeoutMs) {
+      const fromStore = await readQuoteFromStore(normalizedSymbol);
+      if (fromStore.ok) return { ok: true, symbol: normalizedSymbol, ...fromStore };
+      lastDetail = fromStore.reason || lastDetail;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+
+    const fromRest = await readQuoteFromRest(normalizedSymbol);
+    if (fromRest.ok) return { ok: true, symbol: normalizedSymbol, ...fromRest };
+    return { ok: false, error: 'NO_PRICE', detail: fromRest.detail || `${lastDetail}; ${fromRest.reason || 'REST_FAILED'}` };
+  }
+
   async function placeDemoOrder({ symbol, side, marginUSDT, leverage, tpRoiPct, slRoiPct }) {
     if (!isDemo()) return { ok: false, error: 'DEMO_ONLY' };
     const normalizedSymbol = String(symbol || '').toUpperCase();
     const normalizedSide = String(side || '').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
-    const snap = marketData.getSnapshot(normalizedSymbol) || {};
-    const entryPrice = Number(snap.markPrice || snap.lastPrice || 0);
-    if (!(entryPrice > 0)) return { ok: false, error: 'NO_PRICE' };
+    const quote = await getQuote({ symbol: normalizedSymbol, timeoutMs: 2500 });
+    const entryPrice = toNumber(quote?.markPrice) || toNumber(quote?.lastPrice) || 0;
+    if (!(entryPrice > 0)) return { ok: false, error: 'NO_PRICE', detail: quote?.detail || 'mark/last missing' };
     const qty = (Number(marginUSDT || 0) * Number(leverage || 0)) / entryPrice;
+    if (!(qty > 0)) return { ok: false, error: 'BAD_QTY' };
+
     const prices = calcTpSl({ side: normalizedSide, entryPrice, tpRoiPct, slRoiPct, leverage });
     try {
       await tradeExecutor.ensureIsolated?.({ symbol: normalizedSymbol });
-      const result = await tradeExecutor.openPosition({ symbol: normalizedSymbol, side: normalizedSide === 'LONG' ? 'Buy' : 'Sell', qty, leverage: Number(leverage), slPrice: prices.slPrice, tps: [{ price: prices.tpPrice }], priceHint: entryPrice });
-      return { ok: true, entry: { orderId: result?.entryOrderId || null, filledQty: result?.qty || qty, avgPrice: result?.avgPrice || entryPrice }, tpsl: { slAttached: Boolean(prices.slPrice), tpOrdersPlaced: prices.tpPrice ? 1 : 0 } };
-    } catch (error) { logger?.warn?.({ error }, 'manual demo order failed'); return { ok: false, error: String(error?.message || error) }; }
+      const result = await tradeExecutor.openPosition({
+        symbol: normalizedSymbol,
+        side: normalizedSide === 'LONG' ? 'Buy' : 'Sell',
+        qty,
+        leverage: Number(leverage),
+        slPrice: prices.slPrice,
+        tps: [{ price: prices.tpPrice }],
+        priceHint: entryPrice,
+      });
+      return {
+        ok: true,
+        quote,
+        entry: { orderId: result?.entryOrderId || null, filledQty: result?.qty || qty, avgPrice: result?.avgPrice || entryPrice },
+        tpsl: { slAttached: Boolean(prices.slPrice), tpOrdersPlaced: prices.tpPrice ? 1 : 0 },
+        confirm: result?.confirm || null,
+      };
+    } catch (error) {
+      const normalized = normalizeError(error);
+      logger?.warn?.({ error: normalized }, 'manual demo order failed');
+      return { ok: false, error: normalized.message, retCode: normalized.retCode, retMsg: normalized.retMsg };
+    }
   }
-  async function closeDemoPosition({ symbol }) { if (!isDemo()) return { ok: false, error: 'DEMO_ONLY' }; try { return { ok: true, details: await tradeExecutor.closePosition({ symbol: String(symbol || '').toUpperCase() }) }; } catch (error) { return { ok: false, error: String(error?.message || error) }; } }
-  async function cancelDemoOrders({ symbol }) { if (!isDemo()) return { ok: false, error: 'DEMO_ONLY' }; try { return { ok: true, details: await tradeExecutor.cancelAllOrders({ symbol: String(symbol || '').toUpperCase() }) }; } catch (error) { return { ok: false, error: String(error?.message || error) }; } }
-  async function getDemoState({ symbol }) { const normalizedSymbol = String(symbol || '').toUpperCase(); const [position, orders] = await Promise.all([tradeExecutor.getPosition?.({ symbol: normalizedSymbol }), tradeExecutor.getOpenOrders?.({ symbol: normalizedSymbol })]); return { ok: true, position: position || null, orders: orders || [] }; }
-  return { placeDemoOrder, closeDemoPosition, cancelDemoOrders, getDemoState };
+
+  async function closeDemoPosition({ symbol }) {
+    if (!isDemo()) return { ok: false, error: 'DEMO_ONLY' };
+    try {
+      return { ok: true, details: await (tradeExecutor.closePosition?.({ symbol: String(symbol || '').toUpperCase() }) || tradeExecutor.closePositionMarket?.({ symbol: String(symbol || '').toUpperCase() })) };
+    } catch (error) {
+      const normalized = normalizeError(error);
+      return { ok: false, error: normalized.message, retCode: normalized.retCode, retMsg: normalized.retMsg };
+    }
+  }
+
+  async function cancelDemoOrders({ symbol }) {
+    if (!isDemo()) return { ok: false, error: 'DEMO_ONLY' };
+    try {
+      return { ok: true, details: await (tradeExecutor.cancelAllOrders?.({ symbol: String(symbol || '').toUpperCase() }) || tradeExecutor.cancelAll?.({ symbol: String(symbol || '').toUpperCase() })) };
+    } catch (error) {
+      const normalized = normalizeError(error);
+      return { ok: false, error: normalized.message, retCode: normalized.retCode, retMsg: normalized.retMsg };
+    }
+  }
+
+  async function getDemoState({ symbol }) {
+    const normalizedSymbol = String(symbol || '').toUpperCase();
+    const [position, orders, quote] = await Promise.all([
+      tradeExecutor.getPosition?.({ symbol: normalizedSymbol }),
+      tradeExecutor.getOpenOrders?.({ symbol: normalizedSymbol }),
+      getQuote({ symbol: normalizedSymbol, timeoutMs: 1500 }),
+    ]);
+    return { ok: true, position: position || null, orders: orders || [], quote };
+  }
+
+  return { placeDemoOrder, closeDemoPosition, cancelDemoOrders, getDemoState, getQuote };
 }

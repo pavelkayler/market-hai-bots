@@ -465,16 +465,20 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
 
 
   function saveFixedSignal({ ts, symbol, side, action, reason = null, metrics = {} } = {}) {
-    sqlite.saveFixedSignal?.({
-      tsMs: ts,
-      instanceId: id,
-      symbol,
-      side,
-      windowMinutes: cfg.windowMinutes,
-      action,
-      reason,
-      metrics,
-    });
+    try {
+      sqlite.saveFixedSignal?.({
+        tsMs: ts,
+        instanceId: id,
+        symbol,
+        side,
+        windowMinutes: cfg.windowMinutes,
+        action,
+        reason,
+        metrics,
+      });
+    } catch (err) {
+      log('SAVE_FIXED_SIGNAL_FAILED', { symbol, side, action, error: String(err?.message || err) });
+    }
   }
 
   function cancelEntry(symbol, { ts = Date.now(), outcome = 'MANUAL_CANCEL', logMessage = 'entry cancelled' } = {}) {
@@ -615,8 +619,9 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
           if (capacityFull) {
             markFailed(st, ts, 'MAX_ACTIVE_POSITIONS_GLOBAL', `active=${capacity.activePositionsCount}; max=10`, symbol);
           } else {
+            const resolvedSide = st.pending?.side || st.pos?.side || st.side || 'UNKNOWN';
             log('trigger satisfied', { symbol, side: st.pending.side, triggerPrice: st.pending.triggerPrice, entryPx, entryPriceSource });
-            saveFixedSignal({ ts, symbol, side, action: 'ENTRY_ATTEMPT', metrics: { entryPriceSource, entryPx, triggerPrice: st.pending?.triggerPrice, priceChangePctW: Number(priceChange || 0) * 100, oiChangePctW: Number(oiChange || 0) * 100 } });
+            saveFixedSignal({ ts, symbol, side: resolvedSide, action: 'ENTRY_ATTEMPT', metrics: { entryPriceSource, entryPx, triggerPrice: st.pending?.triggerPrice, priceChangePctW: Number(priceChange || 0) * 100, oiChangePctW: Number(oiChange || 0) * 100 } });
             await openPosition(symbol, st, snap, ts);
           }
         }

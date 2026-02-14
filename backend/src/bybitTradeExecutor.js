@@ -475,7 +475,23 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       slRounded,
       positionIdx: resolvedPositionIdx,
       positionMode: await detectPositionMode(symbol),
+      confirm: await waitForConfirmation({ symbol }),
     };
+  }
+
+  async function waitForConfirmation({ symbol, timeoutMs = 3000, intervalMs = 300 } = {}) {
+    const started = Date.now();
+    let lastError = null;
+    while ((Date.now() - started) <= timeoutMs) {
+      try {
+        const [positions, orders] = await Promise.all([getPositionsRaw({ symbol }), getOpenOrders({ symbol })]);
+        return { ok: true, waitedMs: Date.now() - started, positions, orders };
+      } catch (err) {
+        lastError = String(err?.message || err || 'unknown');
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return { ok: false, reason: 'CONFIRM_TIMEOUT', detail: lastError };
   }
 
   async function sync({ symbol, closedPnlLimit = 20 } = {}) {
@@ -524,7 +540,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   async function cancelAll({ symbol } = {}) {
     if (!enabled()) throw new Error("trade_disabled");
     const res = await privateRest.cancelAll({ category: "linear", symbol });
-    return { ok: true, result: res?.result || null };
+    return { ok: true, result: res?.result || null, confirm: await waitForConfirmation({ symbol }) };
   }
 
   async function closePositionMarket({ symbol } = {}) {
@@ -552,7 +568,7 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
       });
       results.push(res?.result || null);
     }
-    return { ok: true, closed: results.length, results };
+    return { ok: true, closed: results.length, results, confirm: await waitForConfirmation({ symbol }) };
   }
 
   async function panicClose({ symbol } = {}) {
@@ -602,7 +618,9 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
     getOpenOrders,
     getClosedPnl,
     cancelAll,
+    cancelAllOrders: cancelAll,
     closePositionMarket,
+    closePosition: closePositionMarket,
     panicClose,
     detectPositionMode,
     getHedgeModeSnapshot,

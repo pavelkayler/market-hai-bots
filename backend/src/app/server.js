@@ -1357,6 +1357,7 @@ app.get("/ws", { websocket: true }, (conn) => {
       if (rpcMethod === 'manual.closeDemoPosition') { rpcOk(await manualTradeService.closeDemoPosition(params || {})); return; }
       if (rpcMethod === 'manual.cancelDemoOrders') { rpcOk(await manualTradeService.cancelDemoOrders(params || {})); return; }
       if (rpcMethod === 'manual.getDemoState') { rpcOk(await manualTradeService.getDemoState(params || {})); return; }
+      if (rpcMethod === 'manual.getQuote') { rpcOk(await manualTradeService.getQuote(params || {})); return; }
       if (rpcMethod === 'trade.setMode') {
         const mode = String(params?.mode || 'paper').toLowerCase();
         if (isLeadLagRunning()) { rpcOk({ ok: false, reason: 'STOP_TRADING_FIRST' }); return; }
