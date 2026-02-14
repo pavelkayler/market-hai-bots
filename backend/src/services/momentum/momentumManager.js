@@ -43,7 +43,11 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   }
 
   function syncSelectionPolicy() {
-    if (instances.size === 0) return;
+    if (instances.size === 0) {
+      marketData.setSelectionPolicy?.({ cap: 200, turnover24hMin: 0, vol24hMin: 0 });
+      marketData.reconcileSubscriptions?.('policyChange').catch?.(() => {});
+      return;
+    }
     const lights = [...instances.values()].map((x) => x.getSnapshot?.()?.config).filter(Boolean);
     if (!lights.length) return;
     const cap = lights.reduce((maxCap, cfg) => {
@@ -63,6 +67,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       turnover24hMin: Number.isFinite(turnover24hMin) ? turnover24hMin : undefined,
       vol24hMin: Number.isFinite(vol24hMin) ? vol24hMin : undefined,
     });
+    marketData.reconcileSubscriptions?.('policyChange').catch?.(() => {});
   }
 
   marketData.onTick(async (tick) => {
