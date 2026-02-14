@@ -8,7 +8,7 @@ const DEFAULTS = {
   subscribeChunkSize: 50,
 };
 
-const NO_SECOND_TICK_BASE_PENALTY = 10000;
+const NO_SECOND_TICK_BASE_PENALTY = 100000;
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -44,6 +44,12 @@ function normalizeLegacyResult(result) {
         tierSizeN,
         tiers,
         totalTiers: Number(outputs.totalTiers || tiers.length),
+        existsCount: Number(outputs.existsCount || result?.counters?.firstTickReceivedCount || 0),
+        noFirstTickTimeoutCount: Number(outputs.noFirstTickTimeoutCount || result?.counters?.timedOutNoFirstTickCount || 0),
+        candidatesTotal: Number(outputs.candidatesTotal || result?.counters?.candidatesTotal || 0),
+        status: outputs.status || result?.status || null,
+        startedAt: outputs.startedAt || result?.startedAt || null,
+        endedAt: outputs.endedAt || result?.endedAt || null,
       },
     };
   }
@@ -60,6 +66,12 @@ function normalizeLegacyResult(result) {
       tierSizeN: Number(outputs.tierSizeN || result?.config?.targetSizeN || fast.length || 100),
       tiers: legacyTiers,
       totalTiers: legacyTiers.length,
+      existsCount: Number(result?.counters?.firstTickReceivedCount || fast.length + slow.length),
+      noFirstTickTimeoutCount: Number(result?.counters?.timedOutNoFirstTickCount || 0),
+      candidatesTotal: Number(result?.counters?.candidatesTotal || 0),
+      status: outputs.status || result?.status || null,
+      startedAt: outputs.startedAt || result?.startedAt || null,
+      endedAt: outputs.endedAt || result?.endedAt || null,
     },
   };
 }
@@ -174,9 +186,15 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
       perSymbolStats: [],
       outputs: {
         existsAllSymbols: [],
+        existsCount: 0,
+        noFirstTickTimeoutCount: 0,
+        candidatesTotal: 0,
         tierSizeN: Number(config?.targetSizeN || 100),
         tiers: [],
         totalTiers: 0,
+        status: 'STARTING',
+        startedAt: null,
+        endedAt: null,
       },
       progress: { phase: 'STARTING', elapsedSec: 0, etaSec: null },
     };
@@ -230,6 +248,9 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
       run.result.counters.firstTickReceivedCount = existsOrdered.length;
       run.result.counters.timedOutNoFirstTickCount = Math.max(0, candidates.length - existsOrdered.length);
       run.result.outputs.existsAllSymbols = existsOrdered;
+      run.result.outputs.existsCount = run.result.counters.firstTickReceivedCount;
+      run.result.outputs.noFirstTickTimeoutCount = run.result.counters.timedOutNoFirstTickCount;
+      run.result.outputs.candidatesTotal = run.result.counters.candidatesTotal;
 
       if (run.stopping) throw new Error('STOPPED');
 
@@ -258,10 +279,10 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
           row.status = 'FAST_SECOND_TICK';
           responsivenessScore = Number(row.secondTickDeltaMs || 0);
         } else if (row.phaseBFirstTickAt) {
-          row.status = 'SLOW_NO_SECOND_TICK';
+          row.status = 'NO_SECOND_TICK';
           responsivenessScore = NO_SECOND_TICK_BASE_PENALTY + Math.max(0, scoreNow - row.phaseBFirstTickAt);
         } else {
-          row.status = 'SLOW_NO_SECOND_TICK';
+          row.status = 'NO_SECOND_TICK';
           responsivenessScore = NO_SECOND_TICK_BASE_PENALTY * 2;
         }
         rankedRows.push({ sym, row, hasSecondTick, responsivenessScore });
@@ -278,6 +299,9 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
       run.result.outputs.tierSizeN = config.targetSizeN;
       run.result.outputs.tiers = tiers;
       run.result.outputs.totalTiers = tiers.length;
+      run.result.outputs.status = 'FINISHED';
+      run.result.outputs.startedAt = run.result.startedAt;
+      run.result.outputs.endedAt = nowIso();
 
       run.result.counters.secondTickOkCount = rankedRows.filter((x) => x.hasSecondTick).length;
       run.result.counters.secondTickMissingCount = Math.max(0, existsOrdered.length - run.result.counters.secondTickOkCount);
@@ -293,7 +317,7 @@ export function createUniverseSearchService({ marketData, subscriptions, bybitRe
       }));
 
       run.result.status = 'FINISHED';
-      run.result.endedAt = nowIso();
+      run.result.endedAt = run.result.outputs.endedAt;
       latestResult = run.result;
       state.latestResult = latestResult;
       await persistLatest();

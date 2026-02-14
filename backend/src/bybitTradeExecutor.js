@@ -104,11 +104,11 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   }
 
   async function ensureIsolatedPreflight({ symbol } = {}) {
-    if (state.executionMode === "paper") {
+    if (state.executionMode === "demo" || state.executionMode === "paper") {
       preflight.lastMarginModeCheckTs = Date.now();
-      preflight.marginMode = "ISOLATED";
+      preflight.marginMode = "DEMO_PAPER_ASSUME_ISOLATED";
       preflight.lastMarginModeError = null;
-      return { ok: true, marginMode: "ISOLATED", skipped: true };
+      return { ok: true, marginMode: preflight.marginMode, skipped: true, message: 'Margin: DEMO/PAPER (switch isolated via API not supported/needed)' };
     }
     try {
       const sym = String(symbol || "BTCUSDT").toUpperCase();
@@ -270,7 +270,12 @@ export function createBybitTradeExecutor({ privateRest, instruments, logger = co
   }
 
   async function ensureIsolated({ symbol } = {}) {
-    if (state.executionMode === "paper") return { ok: true, marginMode: "ISOLATED", skipped: true };
+    if (state.executionMode === "demo" || state.executionMode === "paper") {
+      preflight.marginMode = "DEMO_PAPER_ASSUME_ISOLATED";
+      preflight.lastMarginModeCheckTs = Date.now();
+      preflight.lastMarginModeError = null;
+      return { ok: true, marginMode: preflight.marginMode, skipped: true, message: 'Margin: DEMO/PAPER (switch isolated via API not supported/needed)' };
+    }
     const sym = String(symbol || "").toUpperCase();
     if (!sym) return { ok: false, error: "SYMBOL_REQUIRED" };
     const now = Date.now();

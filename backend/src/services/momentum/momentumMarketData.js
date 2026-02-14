@@ -9,6 +9,8 @@ const TURNOVER_MEDIAN_WINDOW = 5;
 const MIN_SELECTION_CAP = 10;
 const MAX_SELECTION_CAP = 1500;
 const KLINE_FORCE_SEED_COOLDOWN_MS = 15000;
+const HISTORY_CACHE_TTL_MS = 20_000;
+const HISTORY_FETCH_CONCURRENCY = 5;
 
 function chunk(arr, n = 100) {
   const out = [];
@@ -42,6 +44,10 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   const activeIntervals = new Set([1]);
   const turnoverStore = new Map();
   const bybitRest = createBybitRest({ logger });
+  const historyCache = new Map();
+  const historyFetchInFlight = new Map();
+  const historyFetchQueue = [];
+  let historyFetchActive = 0;
   const seededKlineKeys = new Set();
   const seedKlineInFlight = new Map();
   const seedKlineLastForcedAtMs = new Map();
@@ -83,6 +89,93 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   };
 
   const isFiniteNum = (n) => Number.isFinite(n);
+
+  function pushHistoryRowsIntoRing(symbol, candles = []) {
+    if (!Array.isArray(candles) || candles.length === 0) return 0;
+    const rows = candles
+      .map((row) => {
+        const close = Number(row?.c);
+        const tsSec = Math.floor(Number(row?.t || 0) / 1000);
+        return Number.isFinite(close) && close > 0 && Number.isFinite(tsSec) && tsSec > 0
+          ? { tsSec, lastPrice: close, markPrice: close, oiValue: null, openInterestQty: null }
+          : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.tsSec - b.tsSec);
+    if (rows.length === 0) return 0;
+    let bucket = ring.get(symbol);
+    if (!bucket) bucket = { rows: [], secToIndex: new Map() };
+    const merged = [...bucket.rows, ...rows].sort((a, b) => a.tsSec - b.tsSec);
+    const deduped = [];
+    for (const row of merged) {
+      const last = deduped[deduped.length - 1];
+      if (last && last.tsSec === row.tsSec) deduped[deduped.length - 1] = row;
+      else deduped.push(row);
+    }
+    const clipped = deduped.slice(-1000);
+    bucket.rows = clipped;
+    bucket.secToIndex = new Map(clipped.map((row, idx) => [row.tsSec, idx]));
+    ring.set(symbol, bucket);
+    return rows.length;
+  }
+
+  function dequeueHistoryFetches() {
+    while (historyFetchActive < HISTORY_FETCH_CONCURRENCY && historyFetchQueue.length > 0) {
+      const job = historyFetchQueue.shift();
+      historyFetchActive += 1;
+      job().finally(() => {
+        historyFetchActive = Math.max(0, historyFetchActive - 1);
+        dequeueHistoryFetches();
+      });
+    }
+  }
+
+  function enqueueHistoryFetch(task) {
+    return new Promise((resolve, reject) => {
+      historyFetchQueue.push(async () => {
+        try {
+          resolve(await task());
+        } catch (err) {
+          reject(err);
+        }
+      });
+      dequeueHistoryFetches();
+    });
+  }
+
+  async function getKlinesCached(symbol, interval, limit) {
+    const key = `${symbol}:${interval}:${limit}`;
+    const now = Date.now();
+    const cached = historyCache.get(key);
+    if (cached && (now - cached.ts) <= HISTORY_CACHE_TTL_MS) return cached.rows;
+    if (historyFetchInFlight.has(key)) return historyFetchInFlight.get(key);
+    const inFlight = enqueueHistoryFetch(async () => {
+      try {
+        const rows = await bybitRest.getKlines({ symbol, interval, limit });
+        historyCache.set(key, { ts: Date.now(), rows });
+        return rows;
+      } finally {
+        historyFetchInFlight.delete(key);
+      }
+    });
+    historyFetchInFlight.set(key, inFlight);
+    return inFlight;
+  }
+
+  async function bootstrapPriceHistory(symbol, interval, requiredSeconds = 0) {
+    const sym = String(symbol || '').toUpperCase();
+    const nInterval = Number(interval);
+    if (!sym || !ALLOWED_INTERVALS.has(nInterval)) return { ok: false, reason: 'INVALID_BOOTSTRAP_INPUT' };
+    const minRows = Math.max(4, Math.ceil(Math.max(0, Number(requiredSeconds) || 0) / nInterval) + 2);
+    const limit = Math.min(200, Math.max(10, minRows));
+    try {
+      const candles = await getKlinesCached(sym, nInterval, limit);
+      const inserted = pushHistoryRowsIntoRing(sym, candles);
+      return { ok: true, inserted, rows: candles?.length || 0, requiredSeconds };
+    } catch (err) {
+      return { ok: false, reason: 'HISTORY_FETCH_FAILED', error: String(err?.message || err) };
+    }
+  }
 
   function ensureAllowedIntervals(input = []) {
     const out = new Set();
@@ -702,6 +795,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     isSymbolInDesiredSet,
     getTurnoverGate,
     getCandleBaseline,
+    bootstrapPriceHistory,
     seedKlineBaseline,
     setActiveIntervals,
     setPinnedSymbols,
