@@ -5,6 +5,7 @@ const TPSL_STATUS = {
   PENDING: 'PENDING',
   ATTACHED: 'ATTACHED',
   UNKNOWN: 'UNKNOWN',
+  FAILED: 'FAILED',
 };
 
 export function createMomentumInstance({ id, config, marketData, sqlite, tradeExecutor = null, logger = console, isolatedPreflight = null }) {
@@ -28,6 +29,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   let lastHistoryBootstrapNoteAt = 0;
   const historyRetryAtBySymbol = new Map();
   const staleSinceBySymbol = new Map();
+  let activePositionsCache = { ts: 0, count: 0 };
+  let lastCapacityFullNoteAt = 0;
 
   function log(msg, extra = {}) {
     const line = { ts: Date.now(), msg, ...extra };
@@ -72,6 +75,65 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     lastBybitError = null;
   }
 
+  function parseFailureReason(err) {
+    const msg = String(err?.message || err || 'unknown');
+    if (msg.includes('MAX_ACTIVE_POSITIONS_GLOBAL')) return { reason: 'MAX_ACTIVE_POSITIONS_GLOBAL', detail: msg };
+    if (msg.includes('ISOLATED_MARGIN_REQUIRED')) return { reason: 'ISOLATED_REQUIRED', detail: msg };
+    return { reason: 'EXECUTION_FAILED', detail: msg };
+  }
+
+  function markFailed(st, ts, reason, detail, symbol) {
+    st.state = SYMBOL_STATE.FAILED;
+    st.fail = { at: ts, reason, detail: detail || 'unknown' };
+    st.pending = null;
+    if (st.pos) st.pos = null;
+    if (symbol) pushSignalNote({ ts, symbol, action: 'ENTRY_FAILED', message: `${reason}${detail ? `: ${detail}` : ''}` }, 0);
+  }
+
+  function isTpAttached(orders, closeSide, position) {
+    const reduceRows = (Array.isArray(orders) ? orders : []).filter((x) => x?.reduceOnly && String(x?.side || '').toLowerCase() === closeSide.toLowerCase() && String(x?.status || '').toLowerCase() !== 'filled');
+    return reduceRows.length > 0 || (Number(position?.takeProfit || 0) > 0);
+  }
+
+  function isSlAttached(position) {
+    return Number(position?.stopLoss || 0) > 0;
+  }
+
+  function updateTpSlStatusFromBybit(st, position, orders, nowTs) {
+    if (!st?.pos) return;
+    const closeSide = st.pos.side === SIDE.LONG ? 'Sell' : 'Buy';
+    const hasSl = isSlAttached(position);
+    const hasTp = isTpAttached(orders, closeSide, position);
+    if (hasSl && hasTp) {
+      st.pos.tpSlStatus = TPSL_STATUS.ATTACHED;
+      st.pos.tpSlFailReason = null;
+      return;
+    }
+    const sinceOpened = nowTs - Number(st.pos.openedAt || st.pos.createdAtMs || nowTs);
+    if (sinceOpened < 5000) {
+      st.pos.tpSlStatus = TPSL_STATUS.PENDING;
+      return;
+    }
+    st.pos.tpSlStatus = TPSL_STATUS.FAILED;
+    if (!hasSl && !hasTp) st.pos.tpSlFailReason = 'no stopLoss on position and no reduceOnly TP orders';
+    else if (!hasSl) st.pos.tpSlFailReason = 'no stopLoss on position';
+    else st.pos.tpSlFailReason = 'no reduceOnly TP orders';
+  }
+
+  async function getCapacityState(ts) {
+    if (cfg.mode === 'paper' || !tradeExecutor?.enabled?.()) return { capacityFull: false, activePositionsCount: 0 };
+    if ((ts - Number(activePositionsCache.ts || 0)) <= 2000) return { capacityFull: activePositionsCache.count >= 10, activePositionsCount: activePositionsCache.count };
+    try {
+      const rows = await tradeExecutor.getPositions?.({});
+      const count = Array.isArray(rows) ? rows.filter((r) => Number(r?.size || 0) > 0).length : 0;
+      activePositionsCache = { ts, count };
+      return { capacityFull: count >= 10, activePositionsCount: count };
+    } catch (err) {
+      setLastBybitError(err, 'CAPACITY_CHECK');
+      return { capacityFull: false, activePositionsCount: Number(activePositionsCache.count || 0) };
+    }
+  }
+
   function stateFor(symbol) {
     if (!symbols.has(symbol)) {
       symbols.set(symbol, {
@@ -79,6 +141,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         cooldownUntil: 0,
         pending: null,
         pos: null,
+        fail: null,
         holdCount: { LONG: 0, SHORT: 0 },
         lastLastPrice: null,
         lastBusyUiUpdateAt: 0,
@@ -100,6 +163,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     if (!(triggerPrice > 0)) return false;
     st.state = SYMBOL_STATE.TRIGGER_PENDING;
     st.pending = { side, triggerPrice, createdAtMs: nowMs, holdProgress: cfg.holdSeconds, trendProgress: cfg.trendConfirmSeconds, entryOffsetPct: cfg.entryOffsetPct, entryPriceSource: entrySource, lastPriceAtTrigger: snap.lastPrice, markPriceAtTrigger: snap.markPrice, currentPrice: snap.lastPrice };
+    st.fail = null;
     st.holdCount.LONG = 0;
     st.holdCount.SHORT = 0;
     log('trigger created', { symbol, side, triggerPrice, markPrice: snap.markPrice, lastPrice: snap.lastPrice, entryPriceSource: entrySource });
@@ -192,7 +256,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       }
       await new Promise((r) => setTimeout(r, intervalMs));
     }
-    pos.tpSlStatus = TPSL_STATUS.UNKNOWN;
+    pos.tpSlStatus = TPSL_STATUS.FAILED;
+    pos.tpSlFailReason = 'no reduceOnly TP orders';
     log('TPSL_SYNC_TIMEOUT', { symbol, side });
   }
 
@@ -201,7 +266,9 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     if (!p) return;
     const isolated = await ensureIsolatedOnFirstTrade(symbol);
     if (!isolated?.ok) {
-      log('entry blocked: isolated required', { symbol, error: isolated?.error || 'unknown' });
+      const detail = isolated?.error || 'unknown';
+      log('entry blocked: isolated required', { symbol, error: detail });
+      markFailed(st, ts, 'ISOLATED_REQUIRED', detail, symbol);
       return;
     }
     const tpSl = calcTpSl({ side: p.side, entryPrice: p.triggerPrice, tpRoiPct: cfg.tpRoiPct, slRoiPct: cfg.slRoiPct, leverage: cfg.leverage });
@@ -217,8 +284,9 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     if (cfg.mode !== 'paper' && tradeExecutor?.enabled?.()) {
       const side = p.side === SIDE.LONG ? 'Buy' : 'Sell';
       const qty = (cfg.marginUsd * cfg.leverage) / Math.max(1e-9, p.triggerPrice);
+      const entryPriceUsed = getEntrySourcePrice(snap, p.entryPriceSource || cfg.entryPriceSource);
       try {
-        const res = await tradeExecutor.openPosition({ symbol, side, qty, slPrice: tpSl.slPrice, leverage: cfg.leverage, priceHint: snap.lastPrice });
+        const res = await tradeExecutor.openPosition({ symbol, side, qty, slPrice: tpSl.slPrice, tps: [{ price: tpSl.tpPrice }], leverage: cfg.leverage, priceHint: entryPriceUsed });
         entryOrderId = res?.entryOrderId || null;
         tpOrderId = Array.isArray(res?.tpOrderIds) ? (res.tpOrderIds[0] || null) : null;
         actualEntryPrice = Number(res?.avgPrice || res?.entryPrice || p.triggerPrice);
@@ -231,7 +299,9 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
           entryFillTs = fill.entryFillTs;
         }
       } catch (err) {
-        log('entry execution failed', { symbol, side: p.side, error: String(err?.message || err) });
+        const parsed = parseFailureReason(err);
+        log('entry execution failed', { symbol, side: p.side, error: parsed.detail, reason: parsed.reason });
+        markFailed(st, ts, parsed.reason, parsed.detail, symbol);
         return;
       }
     }
@@ -257,6 +327,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       tpSlStatus,
     };
     st.pending = null;
+    st.fail = null;
 
     if (cfg.mode !== 'paper' && tradeExecutor?.enabled?.()) {
       await syncTpSlAttachment({ symbol, side: st.pos.side, pos: st.pos });
@@ -385,6 +456,14 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
 
   function cancelEntry(symbol, { ts = Date.now(), outcome = 'MANUAL_CANCEL', logMessage = 'entry cancelled' } = {}) {
     const st = stateFor(symbol);
+    if (st.state === SYMBOL_STATE.FAILED) {
+      const fail = st.fail;
+      st.fail = null;
+      st.pending = null;
+      st.state = SYMBOL_STATE.IDLE;
+      log('failed entry cleared', { symbol, reason: fail?.reason || 'unknown' });
+      return { ok: true, clearedFailed: true };
+    }
     if (st.state !== SYMBOL_STATE.TRIGGER_PENDING || !st.pending) return { ok: false, reason: 'NOT_PENDING' };
     const pending = st.pending;
     st.pending = null;
@@ -465,6 +544,12 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     let missingHistoryCount = 0;
     let historyFetchFailedCount = 0;
     const staleCutoffTs = ts - 30_000;
+    const capacity = await getCapacityState(ts);
+    const capacityFull = capacity.capacityFull;
+    if (capacityFull && (ts - lastCapacityFullNoteAt) >= 15_000) {
+      lastCapacityFullNoteAt = ts;
+      pushSignalNote({ ts, action: 'CAPACITY_FULL', message: `Max 10 open positions reached; new entries paused; UI updates every ${cfg.windowMinutes} minutes` }, 0);
+    }
     for (const symbol of evalSymbols) {
       const snap = marketData.getSnapshot(symbol);
       if (!snap) {
@@ -494,7 +579,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         continue;
       }
       staleSinceBySymbol.delete(symbol);
-      const shouldUpdateBusyUiPrice = !st.lastBusyUiUpdateAt || (ts - st.lastBusyUiUpdateAt) >= 1000;
+      const busyUpdateIntervalMs = capacityFull ? (Number(cfg.windowMinutes || 1) * 60 * 1000) : 1000;
+      const shouldUpdateBusyUiPrice = !st.lastBusyUiUpdateAt || (ts - st.lastBusyUiUpdateAt) >= busyUpdateIntervalMs;
       if (shouldUpdateBusyUiPrice) st.lastBusyUiUpdateAt = ts;
       if (st.pending && shouldUpdateBusyUiPrice) st.pending.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pending.currentPrice;
       if (st.pos && shouldUpdateBusyUiPrice) st.pos.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pos.currentPrice;
@@ -503,8 +589,12 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         const entryPriceSource = st.pending.entryPriceSource || cfg.entryPriceSource;
         const entryPx = getEntrySourcePrice(snap, entryPriceSource);
         if (isTriggerSatisfied(st.pending.side, entryPx, st.pending.triggerPrice)) {
-          log('trigger satisfied', { symbol, side: st.pending.side, triggerPrice: st.pending.triggerPrice, entryPx, entryPriceSource });
-          await openPosition(symbol, st, snap, ts);
+          if (capacityFull) {
+            markFailed(st, ts, 'MAX_ACTIVE_POSITIONS_GLOBAL', `active=${capacity.activePositionsCount}; max=10`, symbol);
+          } else {
+            log('trigger satisfied', { symbol, side: st.pending.side, triggerPrice: st.pending.triggerPrice, entryPx, entryPriceSource });
+            await openPosition(symbol, st, snap, ts);
+          }
         }
         st.lastLastPrice = currentPrice;
         continue;
@@ -588,6 +678,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       signalViewBySymbol.set(symbol, { symbol, ts, markPrice: snap.markPrice, lastPrice: snap.lastPrice, priceChange, oiValueNow: snap.oiValue, oiChange });
 
       if (entries >= cfg.maxNewEntriesPerTick) continue;
+      if (capacityFull) continue;
 
       const sideCandidates = [];
       if (cfg.directionMode === 'LONG' || cfg.directionMode === 'BOTH') sideCandidates.push(SIDE.LONG);
@@ -681,7 +772,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     if (cfg.mode !== 'paper' && tradeExecutor?.enabled?.() && (ts - lastActiveSyncAt) >= 7000) {
       lastActiveSyncAt = ts;
       const activeSymbols = [...symbols.entries()]
-        .filter(([, st]) => (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) || (st.state === SYMBOL_STATE.IN_POSITION && st.pos))
+        .filter(([, st]) => (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) || st.state === SYMBOL_STATE.FAILED || (st.state === SYMBOL_STATE.IN_POSITION && st.pos))
         .map(([symbol]) => symbol);
 
       if (activeSymbols.length > 0) {
@@ -696,9 +787,28 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
           const st = stateFor(symbol);
           try {
             const pos = await tradeExecutor.getPosition?.({ symbol });
-            await tradeExecutor.getOpenOrders?.({ symbol });
+            const orders = await tradeExecutor.getOpenOrders?.({ symbol });
+            const size = Number(pos?.size || 0);
+            if ((st.state === SYMBOL_STATE.TRIGGER_PENDING || st.state === SYMBOL_STATE.FAILED) && size > 0) {
+              const posSideRaw = String(pos?.side || '').toUpperCase();
+              const side = posSideRaw === 'BUY' ? SIDE.LONG : SIDE.SHORT;
+              st.state = SYMBOL_STATE.IN_POSITION;
+              st.pos = {
+                ...(st.pos || {}),
+                ...(st.pending || {}),
+                side,
+                openedAt: Number(st.pos?.openedAt || st.pending?.createdAtMs || ts),
+                entryPriceActual: Number(pos?.avgPrice || 0) > 0 ? Number(pos.avgPrice) : st.pos?.entryPriceActual || null,
+                actualEntryPrice: Number(pos?.avgPrice || 0) > 0 ? Number(pos.avgPrice) : st.pos?.actualEntryPrice || null,
+                entryQtyActual: Number(pos?.size || 0) > 0 ? Number(pos.size) : st.pos?.entryQtyActual || null,
+                currentPrice: Number(marketData.getSnapshot(symbol)?.lastPrice || st.pos?.currentPrice || 0) || st.pos?.currentPrice,
+                tpSlStatus: st.pos?.tpSlStatus || TPSL_STATUS.PENDING,
+              };
+              st.pending = null;
+              st.fail = null;
+            }
             if (st.state === SYMBOL_STATE.IN_POSITION && st.pos) {
-              const size = Number(pos?.size || 0);
+              updateTpSlStatusFromBybit(st, pos, orders, ts);
               if (!(size > 0) && st.pos.exitTriggeredLocalAt) {
                 finalizePositionClose(symbol, st, ts, Number(st.pos.currentPrice || marketData.getSnapshot(symbol)?.lastPrice || 0), 'DEMO_SYNC_CLOSE');
               }
@@ -721,7 +831,13 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     let cooldownCount = 0;
     for (const [symbol, st] of symbols.entries()) {
       if (st.state === SYMBOL_STATE.IN_POSITION && st.pos) openPositions.push({ symbol, ...st.pos });
-      if (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) pendingOrders.push({ symbol, ...st.pending, ageSec: Math.floor((Date.now() - st.pending.createdAtMs) / 1000) });
+      if (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) {
+        pendingOrders.push({ symbol, state: SYMBOL_STATE.TRIGGER_PENDING, ...st.pending, ageSec: Math.floor((Date.now() - st.pending.createdAtMs) / 1000) });
+      }
+      if (st.state === SYMBOL_STATE.FAILED && st.fail) {
+        const createdAtMs = Number(st.fail.at || Date.now());
+        pendingOrders.push({ symbol, state: SYMBOL_STATE.FAILED, createdAtMs, ageSec: Math.floor((Date.now() - createdAtMs) / 1000), failReason: st.fail.reason || 'unknown', failDetail: st.fail.detail || null, side: st.pending?.side || null, triggerPrice: st.pending?.triggerPrice || null, currentPrice: st.pending?.currentPrice || null });
+      }
       if (st.state === SYMBOL_STATE.COOLDOWN) cooldownCount += 1;
     }
     const signalView = [...signalViewBySymbol.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);

@@ -9,6 +9,7 @@ export const SYMBOL_STATE = {
   TRIGGER_PENDING: 'TRIGGER_PENDING',
   IN_POSITION: 'IN_POSITION',
   COOLDOWN: 'COOLDOWN',
+  FAILED: 'FAILED',
 };
 
 export const SIDE = {
