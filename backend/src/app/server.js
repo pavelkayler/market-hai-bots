@@ -22,6 +22,8 @@ import { createLeadLagLearning } from "../leadLagLearning.js";
 import { createMomentumMarketData } from "../services/momentum/momentumMarketData.js";
 import { createMomentumSqlite } from "../services/momentum/momentumSqlite.js";
 import { createMomentumManager } from "../services/momentum/momentumManager.js";
+import { createUniverseSearchService } from "../services/universeSearchService.js";
+import { createBybitRest } from "../bybitRest.js";
 
 dotenv.config();
 
@@ -328,7 +330,28 @@ const momentumSqlite = createMomentumSqlite({ logger: app.log });
 await momentumSqlite.init();
 const momentumMarketData = createMomentumMarketData({ logger: app.log });
 await momentumMarketData.start();
-const momentumManager = createMomentumManager({ marketData: momentumMarketData, sqlite: momentumSqlite, tradeExecutor, logger: app.log });
+const bybitRest = createBybitRest({ logger: app.log });
+const universeSearch = createUniverseSearchService({
+  marketData,
+  subscriptions,
+  bybitRest,
+  logger: app.log,
+  emitState: (payload) => broadcastEvent('universeSearch.state', payload),
+  emitResult: (payload) => broadcastEvent('universeSearch.result', payload),
+});
+const momentumManager = createMomentumManager({
+  marketData: momentumMarketData,
+  sqlite: momentumSqlite,
+  tradeExecutor,
+  logger: app.log,
+  getUniverseBySource: (source) => {
+    const result = universeSearch.getLatestResult?.();
+    if (!result?.outputs) return [];
+    if (source === 'FAST') return result.outputs.fastUniverseSymbols || [];
+    if (source === 'SLOW') return result.outputs.slowUniverseSymbols || [];
+    return [];
+  },
+});
 momentumManager.onState((payload) => broadcastEvent('momentum.state', payload));
 function handleLeadLagEngineEvent({ type, payload }) {
   if (type === 'leadlag.state') {
@@ -1166,6 +1189,13 @@ app.get("/api/universe/list", async () => {
 });
 app.get("/api/universe", async () => universe.getUniverse({ limit: 300 }));
 app.post("/api/universe/refresh", async () => { await universe.refresh(); return universe.getStatus(); });
+app.post('/api/universe-search/start', async (req) => {
+  const targetSizeN = Number(req.body?.targetSizeN);
+  return universeSearch.start({ targetSizeN });
+});
+app.post('/api/universe-search/stop', async () => universeSearch.stop());
+app.get('/api/universe-search/state', async () => universeSearch.getState());
+app.get('/api/universe-search/result', async () => universeSearch.getLatestResult() || { ok: false, error: 'NO_RESULT' });
 app.get("/api/trade/status", async () => ({ tradeStatus: tradeStatus(tradeExecutor), warnings: tradeWarnings(tradeExecutor) }));
 app.get("/api/trade/state", async () => getTradeStatePayload());
 app.get("/api/trade/positions", async (req) => {

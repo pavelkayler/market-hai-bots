@@ -24,6 +24,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   let activeSyncCursor = 0;
   let lastBybitError = null;
   let lastBybitErrorLogAt = 0;
+  let lastWarmupSummaryAt = 0;
+  const staleSinceBySymbol = new Map();
 
   function log(msg, extra = {}) {
     const line = { ts: Date.now(), msg, ...extra };
@@ -440,6 +442,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     }
     let entries = 0;
     let universeSeedAttempts = 0;
+    let missingLastPriceCount = 0;
+    const staleCutoffTs = ts - 30_000;
     for (const symbol of evalSymbols) {
       const snap = marketData.getSnapshot(symbol);
       if (!snap) {
@@ -450,8 +454,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       }
       if (!(Number(snap.lastPrice) > 0)) {
         if (!marketData.isSymbolInDesiredSet?.(symbol) || !marketData.isSymbolSubscribed?.(symbol)) continue;
-        logSkipReason(symbol, null, 'NOT_READY_NO_LASTPRICE', {}, 10000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_LASTPRICE', message: 'Snapshot present but lastPrice missing', throttleKey: `${symbol}:NOT_READY_NO_LASTPRICE` }, 10000);
+        missingLastPriceCount += 1;
         continue;
       }
       if (marketData.isDataFresh && !marketData.isDataFresh()) {
@@ -462,6 +465,14 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
 
       const st = stateFor(symbol);
       const currentPrice = Number(snap.lastPrice);
+      const lastTs = Number(snap.tsMs || snap.ts || ts);
+      if (lastTs < staleCutoffTs) {
+        const staleSince = Number(staleSinceBySymbol.get(symbol) || ts);
+        staleSinceBySymbol.set(symbol, staleSince);
+        pushSignalNote({ ts, symbol, action: 'STALE_TICKER', message: 'Ticker stale >30s, temporarily excluded', throttleKey: `${symbol}:STALE_TICKER` }, 10000);
+        continue;
+      }
+      staleSinceBySymbol.delete(symbol);
       if (st.pending) st.pending.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pending.currentPrice;
       if (st.pos) st.pos.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pos.currentPrice;
 
@@ -616,6 +627,12 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       }
 
       st.lastLastPrice = Number(snap.lastPrice);
+    }
+
+    if (missingLastPriceCount > 0 && (ts - lastWarmupSummaryAt) >= 5000) {
+      lastWarmupSummaryAt = ts;
+      log('WARMUP_MISSING_LASTPRICE', { missing: missingLastPriceCount, total: evalSymbols.length });
+      pushSignalNote({ ts, action: 'WARMUP_MISSING_LASTPRICE', message: `${missingLastPriceCount}/${evalSymbols.length}` }, 0);
     }
 
     if (cfg.mode !== 'paper' && tradeExecutor?.enabled?.() && (ts - lastActiveSyncAt) >= 7000) {

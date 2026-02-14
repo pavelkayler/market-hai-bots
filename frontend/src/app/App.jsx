@@ -13,6 +13,7 @@ export default function App() {
             <Nav.Link as={Link} to="/">Status</Nav.Link>
             <Nav.Link as={Link} to="/leadlag">LeadLag</Nav.Link>
             <Nav.Link as={Link} to="/momentum">Momentum</Nav.Link>
+            <Nav.Link as={Link} to="/universe">Universe</Nav.Link>
           </Nav>
         </Container>
       </Navbar>

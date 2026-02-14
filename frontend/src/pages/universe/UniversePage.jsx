@@ -1,0 +1,72 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Button, Card, Col, Form, ProgressBar, Row } from 'react-bootstrap';
+import { useWs } from '../../shared/api/ws.js';
+
+const SIZE_OPTIONS = [50, 100, 200, 500, 1000];
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+
+export default function UniversePage() {
+  const ws = useWs();
+  const [targetSizeN, setTargetSizeN] = useState(100);
+  const [state, setState] = useState(null);
+  const [result, setResult] = useState(null);
+
+  async function load() {
+    const [stRes, outRes] = await Promise.all([
+      fetch(`${API_BASE}/api/universe-search/state`).then((r) => r.json()).catch(() => null),
+      fetch(`${API_BASE}/api/universe-search/result`).then((r) => r.json()).catch(() => null),
+    ]);
+    setState(stRes);
+    if (outRes && !outRes.error) setResult(outRes);
+  }
+
+  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    const unsub = ws.subscribe((_, parsed) => {
+      if (parsed?.type !== 'event') return;
+      if (parsed.topic === 'universeSearch.state') setState(parsed.payload || null);
+      if (parsed.topic === 'universeSearch.result') setResult(parsed.payload || null);
+    });
+    ws.subscribeTopics(['universeSearch.*']);
+    return () => { unsub(); ws.unsubscribeTopics(['universeSearch.*']); };
+  }, [ws]);
+
+  async function startSearch() {
+    await fetch(`${API_BASE}/api/universe-search/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetSizeN }) });
+    await load();
+  }
+  async function stopSearch() {
+    await fetch(`${API_BASE}/api/universe-search/stop`, { method: 'POST' });
+    await load();
+  }
+
+  const fast = result?.outputs?.fastUniverseSymbols || [];
+  const slow = result?.outputs?.slowUniverseSymbols || [];
+  const existsCount = Number(state?.counters?.firstTickReceivedCount || result?.counters?.firstTickReceivedCount || 0);
+  const running = ['STARTING', 'PHASE_A_EXISTS', 'PHASE_B_SPEED', 'STOPPING'].includes(String(state?.phase || '').toUpperCase());
+  const pct = useMemo(() => {
+    if (!state) return 0;
+    if (state.phase === 'PHASE_A_EXISTS') return 40;
+    if (state.phase === 'PHASE_B_SPEED') return 80;
+    if (state.phase === 'FINISHED') return 100;
+    return 10;
+  }, [state]);
+
+  return <Row className="g-3">
+    <Col md={12}><Card><Card.Body>
+      <Card.Title>Universe Search</Card.Title>
+      <div className="d-flex gap-2 align-items-center mb-2">
+        <Form.Select style={{ maxWidth: 180 }} value={targetSizeN} onChange={(e) => setTargetSizeN(Number(e.target.value))}>{SIZE_OPTIONS.map((n) => <option key={n} value={n}>{n}</option>)}</Form.Select>
+        <Button onClick={startSearch} disabled={running}>Start Search</Button>
+        <Button variant="outline-danger" onClick={stopSearch} disabled={!running}>Stop</Button>
+      </div>
+      <ProgressBar now={pct} label={state?.phase || 'IDLE'} className="mb-2" />
+      <div>searchId: {state?.searchId || result?.searchId || '-'} | Last updated: {result?.endedAt || result?.startedAt || '-'}</div>
+      <div>Candidates: {state?.counters?.candidatesTotal || result?.counters?.candidatesTotal || 0} | Exists: {existsCount} | No first tick timeout: {state?.counters?.timedOutNoFirstTickCount || result?.counters?.timedOutNoFirstTickCount || 0} | Fast: {fast.length} | Slow: {slow.length}</div>
+      {!result && <Alert variant="warning" className="mt-2">No persisted result yet.</Alert>}
+    </Card.Body></Card></Col>
+    <Col md={6}><Card><Card.Body><Card.Title>Fast Universe ({fast.length})</Card.Title><pre style={{ whiteSpace: 'pre-wrap' }}>{fast.join(', ')}</pre></Card.Body></Card></Col>
+    <Col md={6}><Card><Card.Body><Card.Title>Slow Universe ({slow.length})</Card.Title><pre style={{ whiteSpace: 'pre-wrap' }}>{slow.join(', ')}</pre></Card.Body></Card></Col>
+  </Row>;
+}
