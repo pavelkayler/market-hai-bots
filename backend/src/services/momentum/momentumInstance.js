@@ -197,6 +197,8 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       entryFillTs,
       tpPrice: tpSl.tpPrice,
       slPrice: tpSl.slPrice,
+      tpRoiPct: cfg.tpRoiPct,
+      slRoiPct: cfg.slRoiPct,
       tpOrderId,
       slOrderId,
       tpSlStatus,
@@ -309,6 +311,11 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       turnoverMedianUSDT: Number.isFinite(Number(note.turnoverMedianUSDT)) ? Number(note.turnoverMedianUSDT) : null,
       turnoverBaselineUSDT: Number.isFinite(Number(note.turnoverBaselineUSDT)) ? Number(note.turnoverBaselineUSDT) : null,
       turnoverSpikePct: Number.isFinite(Number(note.turnoverSpikePct)) ? Number(note.turnoverSpikePct) : null,
+      turnoverGatePassed: typeof note.turnoverGatePassed === 'boolean' ? note.turnoverGatePassed : null,
+      holdProgress: Number.isFinite(Number(note.holdProgress)) ? Number(note.holdProgress) : null,
+      holdTarget: Number.isFinite(Number(note.holdTarget)) ? Number(note.holdTarget) : null,
+      trendConfirmSeconds: Number.isFinite(Number(note.trendConfirmSeconds)) ? Number(note.trendConfirmSeconds) : null,
+      historySecondsAvailable: Number.isFinite(Number(note.historySecondsAvailable)) ? Number(note.historySecondsAvailable) : null,
       candleStartMs: Number.isFinite(Number(note.candleStartMs)) ? Number(note.candleStartMs) : null,
       action: note.action || 'INFO',
       message: note.message || '',
@@ -320,11 +327,17 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   async function onTick({ ts }, eligibleSymbols) {
     if (status !== MOMENTUM_STATUS.RUNNING) return;
     let entries = 0;
+    let universeSeedAttempts = 0;
     for (const symbol of eligibleSymbols) {
       const snap = marketData.getSnapshot(symbol);
-      if (!snap || !(snap.lastPrice > 0)) {
+      if (!snap) {
         logSkipReason(symbol, null, 'NOT_READY_NO_SNAPSHOT', {}, 4000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_SNAPSHOT', message: 'No lastPrice snapshot', throttleKey: `${symbol}:NOT_READY_NO_SNAPSHOT` }, 2000);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_SNAPSHOT', message: 'No ticker snapshot yet', throttleKey: `${symbol}:NOT_READY_NO_SNAPSHOT` }, 2500);
+        continue;
+      }
+      if (!(Number(snap.lastPrice) > 0)) {
+        logSkipReason(symbol, null, 'NOT_READY_NO_LASTPRICE', {}, 4000);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_LASTPRICE', message: 'Snapshot present but lastPrice missing', throttleKey: `${symbol}:NOT_READY_NO_LASTPRICE` }, 2500);
         continue;
       }
       if (marketData.isDataFresh && !marketData.isDataFresh()) {
@@ -333,21 +346,39 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         continue;
       }
 
-      const baseline = marketData.getCandleBaseline?.(symbol, cfg.windowMinutes) || { ok: false, reason: 'NO_PREV_CANDLE' };
+      let baseline = marketData.getCandleBaseline?.(symbol, cfg.windowMinutes) || { ok: false, reason: 'NO_PREV_CANDLE' };
+      if (!baseline.ok && marketData.seedKlineBaseline) {
+        if (cfg.scanMode === 'SINGLE') {
+          await marketData.seedKlineBaseline(symbol, cfg.windowMinutes, true);
+          baseline = marketData.getCandleBaseline?.(symbol, cfg.windowMinutes) || baseline;
+        } else if (universeSeedAttempts < 3) {
+          universeSeedAttempts += 1;
+          marketData.seedKlineBaseline(symbol, cfg.windowMinutes, true).catch(() => {});
+        }
+      }
       if (!baseline.ok) {
-        const reason = baseline.reason === 'NO_PREV_CANDLE' ? 'NOT_READY_NO_PREV_CANDLE' : 'NOT_READY_NO_PREV_CANDLE';
+        const reason = baseline.reason === 'NO_PREV_CANDLE' ? 'NOT_READY_NO_PREV_CANDLE' : 'NOT_READY_BASELINE_MISSING';
         logSkipReason(symbol, null, reason, {}, 4000);
-        pushSignalNote({ ts, symbol, action: reason, message: baseline.reason || 'No baseline', throttleKey: `${symbol}:${reason}` }, 2000);
+        pushSignalNote({ ts, symbol, action: reason, message: baseline.reason || 'No baseline yet', throttleKey: `${symbol}:${reason}` }, 2500);
         continue;
       }
-      if (!(snap.oiValue > 0)) {
-        logSkipReason(symbol, null, 'NOT_READY_NO_SNAPSHOT', {}, 4000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_SNAPSHOT', message: 'No OI snapshot', throttleKey: `${symbol}:NOT_READY_OI_SNAPSHOT` }, 2000);
+
+      if (!(Number(snap.oiValue) > 0)) {
+        logSkipReason(symbol, null, 'NOT_READY_NO_OI', {}, 4000);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_OI', message: 'Snapshot present but oiValue missing', throttleKey: `${symbol}:NOT_READY_NO_OI` }, 2500);
         continue;
       }
       if (!(Number(baseline.prevOiValue) > 0)) {
         logSkipReason(symbol, null, 'NOT_READY_NO_PREV_OI', {}, 4000);
-        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_PREV_OI', message: 'No previous OI baseline', throttleKey: `${symbol}:NOT_READY_NO_PREV_OI` }, 2000);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_PREV_OI', message: 'No previous OI baseline', throttleKey: `${symbol}:NOT_READY_NO_PREV_OI` }, 2500);
+        continue;
+      }
+
+      const requiredHistorySec = Math.max(0, Number(cfg.trendConfirmSeconds) + 1);
+      const historySecondsAvailable = Number(marketData.getHistorySecondsAvailable?.(symbol) || 0);
+      if (cfg.trendConfirmSeconds > 0 && historySecondsAvailable < requiredHistorySec) {
+        logSkipReason(symbol, null, 'NOT_READY_NO_PRICE_HISTORY', { needSec: requiredHistorySec, haveSec: historySecondsAvailable }, 4000);
+        pushSignalNote({ ts, symbol, action: 'NOT_READY_NO_PRICE_HISTORY', message: `Need ${requiredHistorySec}s, have ${historySecondsAvailable}s`, historySecondsAvailable, trendConfirmSeconds: cfg.trendConfirmSeconds, throttleKey: `${symbol}:NOT_READY_NO_PRICE_HISTORY` }, 1500);
         continue;
       }
 
@@ -376,7 +407,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
 
         if (!oiFresh) {
           st.holdCount[side] = 0;
-          pushSignalNote({ ts, symbol, side, action: 'NOT_READY_OI_STALE', message: `OI stale ${Number(oiAgeSec).toFixed(1)}s`, throttleKey: `${symbol}:${side}:NOT_READY_OI_STALE` }, 2000);
+          pushSignalNote({ ts, symbol, side, action: 'NOT_READY_OI_STALE', message: `OI stale ${Number(oiAgeSec).toFixed(1)}s`, oiAgeSec, throttleKey: `${symbol}:${side}:NOT_READY_OI_STALE` }, 2000);
           continue;
         }
 
@@ -386,13 +417,13 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
           turnover = getLongTurnoverGate(baseline);
           if (!(turnover.baseline >= Number(cfg.baselineFloorUSDT || 0))) {
             st.holdCount[side] = 0;
-            pushSignalNote({ ts, symbol, side, action: 'NOT_READY_BASELINE_TOO_SMALL', message: 'Turnover baseline below floor', turnoverPrevUSDT: turnover.prev, turnoverMedianUSDT: turnover.median, turnoverCurUSDT: turnover.cur, turnoverBaselineUSDT: turnover.baseline, throttleKey: `${symbol}:${side}:NOT_READY_BASELINE_TOO_SMALL` }, 2000);
+            pushSignalNote({ ts, symbol, side, action: 'NOT_READY_BASELINE_TOO_SMALL', message: 'Turnover baseline below floor', turnoverPrevUSDT: turnover.prev, turnoverMedianUSDT: turnover.median, turnoverCurUSDT: turnover.cur, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: false, throttleKey: `${symbol}:${side}:NOT_READY_BASELINE_TOO_SMALL` }, 2000);
             continue;
           }
           turnoverOk = turnover.passed;
           if (!turnoverOk) {
             st.holdCount[side] = 0;
-            pushSignalNote({ ts, symbol, side, action: 'SKIP_TURNOVER_GATE_FAIL', message: 'Turnover gate failed', turnoverPrevUSDT: turnover.prev, turnoverMedianUSDT: turnover.median, turnoverCurUSDT: turnover.cur, turnoverBaselineUSDT: turnover.baseline, throttleKey: `${symbol}:${side}:SKIP_TURNOVER_GATE_FAIL` }, 2000);
+            pushSignalNote({ ts, symbol, side, action: 'SKIP_TURNOVER_GATE_FAIL', message: 'Turnover gate failed', turnoverPrevUSDT: turnover.prev, turnoverMedianUSDT: turnover.median, turnoverCurUSDT: turnover.cur, turnoverBaselineUSDT: turnover.baseline, turnoverGatePassed: false, throttleKey: `${symbol}:${side}:SKIP_TURNOVER_GATE_FAIL` }, 2000);
             continue;
           }
         }
@@ -413,13 +444,19 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
           prevOiValue: baseline.prevOiValue,
           oiNow: snap.oiValue,
           oiChange,
+          oiAgeSec,
+          holdProgress: st.holdCount[side],
+          holdTarget: cfg.holdSeconds,
+          trendConfirmSeconds: cfg.trendConfirmSeconds,
+          historySecondsAvailable,
           turnoverPrevUSDT: baseline.prevTurnoverUSDT,
           turnoverMedianUSDT: baseline.medianPrevTurnoverUSDT,
           turnoverCurUSDT: baseline.curTurnoverUSDT,
           turnoverSpikePct: cfg.turnoverSpikePct,
+          turnoverGatePassed: turnoverOk,
           candleStartMs: baseline.curCandleStartMs,
           throttleKey: `${symbol}:${side}:PROGRESS`,
-        }, 2000);
+        }, 1500);
         if (allOk && st.holdCount[side] < cfg.holdSeconds) continue;
         if (allOk && st.holdCount[side] >= cfg.holdSeconds && createTrigger(symbol, side, snap, ts, st)) {
           entries += 1;
@@ -433,6 +470,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     }
   }
 
+
   function getSnapshot() {
     const openPositions = [];
     const pendingOrders = [];
@@ -443,7 +481,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       if (st.state === SYMBOL_STATE.COOLDOWN) cooldownCount += 1;
     }
     const signalView = [...signalViewBySymbol.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);
-    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView, signalNotifications: signalNotifications.slice(0, 50), marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null };
+    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView, signalNotifications: signalNotifications.slice(0, 200), marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null };
   }
 
   return {
@@ -452,6 +490,6 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     stop: () => { status = MOMENTUM_STATUS.STOPPED; },
     cancelEntry,
     getSnapshot,
-    getLight: () => ({ id, status, mode: cfg.mode, direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null }),
+    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, singleSymbol: cfg.singleSymbol, direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null }),
   };
 }
