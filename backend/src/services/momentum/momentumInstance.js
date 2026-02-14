@@ -81,6 +81,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         pos: null,
         holdCount: { LONG: 0, SHORT: 0 },
         lastLastPrice: null,
+        lastBusyUiUpdateAt: 0,
       });
     }
     return symbols.get(symbol);
@@ -427,6 +428,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       candleStartMs: Number.isFinite(Number(note.candleStartMs)) ? Number(note.candleStartMs) : null,
       action: note.action || 'INFO',
       message: note.message || '',
+      lastUpdateTs: now,
     };
     signalNotifications.unshift(clean);
     if (signalNotifications.length > 200) signalNotifications.length = 200;
@@ -477,8 +479,10 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         continue;
       }
       staleSinceBySymbol.delete(symbol);
-      if (st.pending) st.pending.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pending.currentPrice;
-      if (st.pos) st.pos.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pos.currentPrice;
+      const shouldUpdateBusyUiPrice = !st.lastBusyUiUpdateAt || (ts - st.lastBusyUiUpdateAt) >= 1000;
+      if (shouldUpdateBusyUiPrice) st.lastBusyUiUpdateAt = ts;
+      if (st.pending && shouldUpdateBusyUiPrice) st.pending.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pending.currentPrice;
+      if (st.pos && shouldUpdateBusyUiPrice) st.pos.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pos.currentPrice;
 
       if (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) {
         const prevLast = Number(st.lastLastPrice);
@@ -564,10 +568,6 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       const oiFresh = oiAgeSec <= cfg.oiMaxAgeSec;
       signalViewBySymbol.set(symbol, { symbol, ts, markPrice: snap.markPrice, lastPrice: snap.lastPrice, priceChange, oiValueNow: snap.oiValue, oiChange });
 
-      if (st.state === SYMBOL_STATE.TRIGGER_PENDING || st.state === SYMBOL_STATE.IN_POSITION) {
-        pushSignalNote({ ts, symbol, side: st.pending?.side || st.pos?.side || null, action: 'SYMBOL_BUSY', message: 'Symbol already pending/in-position', throttleKey: `${symbol}:SYMBOL_BUSY` }, 3000);
-        continue;
-      }
       if (entries >= cfg.maxNewEntriesPerTick) continue;
 
       const sideCandidates = [];
@@ -711,6 +711,6 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     stop: () => { status = MOMENTUM_STATUS.STOPPED; },
     cancelEntry,
     getSnapshot,
-    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, universeMode: cfg.universeMode, universeTierIndex: cfg.universeTierIndex, universeSource: cfg.universeSource, singleSymbol: cfg.singleSymbol, direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
+    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, universeMode: cfg.universeMode, universeTierIndex: cfg.universeTierIndex, universeSource: cfg.universeSource, singleSymbol: cfg.singleSymbol, tierIndices: Array.isArray(cfg.tierIndices) ? cfg.tierIndices : [], resolvedSymbolsCount: Number(cfg.resolvedSymbolsCount || (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols.length : 0)), direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
   };
 }
