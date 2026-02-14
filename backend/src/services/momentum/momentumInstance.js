@@ -21,6 +21,9 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
   const startedAt = Date.now();
   let lastNoEvalNoteAt = 0;
   let lastActiveSyncAt = 0;
+  let activeSyncCursor = 0;
+  let lastBybitError = null;
+  let lastBybitErrorLogAt = 0;
 
   function log(msg, extra = {}) {
     const line = { ts: Date.now(), msg, ...extra };
@@ -35,6 +38,34 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     if ((now - prev) < throttleMs) return;
     skipLogAt.set(key, now);
     log(reason, { symbol, side, ...extra });
+  }
+
+  function parseBybitError(err, fallbackOp = "UNKNOWN") {
+    const text = String(err?.message || err || 'unknown');
+    const retCodeMatch = text.match(/retCode=([^\s]+)/i);
+    const retMsgMatch = text.match(/retMsg=(.*?)(?:\s+path=|$)/i);
+    return {
+      ts: Date.now(),
+      op: fallbackOp,
+      retCode: retCodeMatch ? String(retCodeMatch[1]) : null,
+      retMsg: retMsgMatch ? String(retMsgMatch[1]).trim() : text,
+    };
+  }
+
+  function setLastBybitError(err, op) {
+    const next = parseBybitError(err, op);
+    const prev = lastBybitError;
+    const changed = !prev || prev.op !== next.op || prev.retCode !== next.retCode || prev.retMsg !== next.retMsg;
+    const now = Date.now();
+    if (changed || (now - lastBybitErrorLogAt) >= 30_000) {
+      lastBybitError = next;
+      lastBybitErrorLogAt = now;
+      log('BYBIT_SYNC_WARNING', { op: next.op, retCode: next.retCode, retMsg: next.retMsg });
+    }
+  }
+
+  function clearLastBybitError() {
+    lastBybitError = null;
   }
 
   function stateFor(symbol) {
@@ -592,20 +623,33 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       const activeSymbols = [...symbols.entries()]
         .filter(([, st]) => (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) || (st.state === SYMBOL_STATE.IN_POSITION && st.pos))
         .map(([symbol]) => symbol);
-      for (const symbol of activeSymbols) {
-        const st = stateFor(symbol);
-        try {
-          const pos = await tradeExecutor.getPosition?.({ symbol });
-          await tradeExecutor.getOpenOrders?.({ symbol });
-          if (st.state === SYMBOL_STATE.IN_POSITION && st.pos) {
-            const size = Number(pos?.size || 0);
-            if (!(size > 0) && st.pos.exitTriggeredLocalAt) {
-              finalizePositionClose(symbol, st, ts, Number(st.pos.currentPrice || marketData.getSnapshot(symbol)?.lastPrice || 0), 'DEMO_SYNC_CLOSE');
+
+      if (activeSymbols.length > 0) {
+        const maxSymbolsPerTick = 10;
+        const start = activeSyncCursor % activeSymbols.length;
+        const rotated = activeSymbols.slice(start).concat(activeSymbols.slice(0, start));
+        const scopedSymbols = rotated.slice(0, maxSymbolsPerTick);
+        activeSyncCursor = (start + scopedSymbols.length) % activeSymbols.length;
+
+        let sawSyncError = false;
+        for (const symbol of scopedSymbols) {
+          const st = stateFor(symbol);
+          try {
+            const pos = await tradeExecutor.getPosition?.({ symbol });
+            await tradeExecutor.getOpenOrders?.({ symbol });
+            if (st.state === SYMBOL_STATE.IN_POSITION && st.pos) {
+              const size = Number(pos?.size || 0);
+              if (!(size > 0) && st.pos.exitTriggeredLocalAt) {
+                finalizePositionClose(symbol, st, ts, Number(st.pos.currentPrice || marketData.getSnapshot(symbol)?.lastPrice || 0), 'DEMO_SYNC_CLOSE');
+              }
             }
+          } catch (err) {
+            sawSyncError = true;
+            setLastBybitError(err, 'ACTIVE_SYNC');
           }
-        } catch (err) {
-          log('ACTIVE_SYNC_FAILED', { symbol, error: String(err?.message || err) });
         }
+
+        if (!sawSyncError) clearLastBybitError();
       }
     }
   }
@@ -621,7 +665,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       if (st.state === SYMBOL_STATE.COOLDOWN) cooldownCount += 1;
     }
     const signalView = [...signalViewBySymbol.values()].sort((a, b) => b.ts - a.ts).slice(0, 30);
-    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView, signalNotifications: signalNotifications.slice(0, 50), marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null };
+    return { id, config: cfg, status, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), stats, openPositions, pendingOrders, cooldownCount, logs: logs.slice(0, 50), signalView, signalNotifications: signalNotifications.slice(0, 50), marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError };
   }
 
   return {
@@ -630,6 +674,6 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     stop: () => { status = MOMENTUM_STATUS.STOPPED; },
     cancelEntry,
     getSnapshot,
-    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, singleSymbol: cfg.singleSymbol, direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null }),
+    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, singleSymbol: cfg.singleSymbol, direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
   };
 }
