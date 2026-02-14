@@ -78,6 +78,18 @@ export default function MomentumPage() {
   const options = useMemo(() => instances.map((i) => <option key={i.id} value={i.id}>{i.id}</option>), [instances]);
 
 
+  const marketDiagnostics = useMemo(() => {
+    if (!market) return { snapshotAgeSec: null, topDropReasons: [] };
+    const snapshotAgeSec = Number.isFinite(Number(market.snapshotAgeSec)) ? Number(market.snapshotAgeSec) : null;
+    const reasonEntries = Object.entries(market.ineligibleCounts || {}).filter(([, count]) => Number(count) > 0);
+    reasonEntries.sort((a, b) => Number(b[1]) - Number(a[1]));
+    return {
+      snapshotAgeSec,
+      topDropReasons: reasonEntries.slice(0, 3),
+    };
+  }, [market]);
+
+
   async function onStart(e) {
     e.preventDefault();
     const nextErrors = {};
@@ -104,7 +116,16 @@ export default function MomentumPage() {
       {!market && <Alert variant="secondary">Loading...</Alert>}
       {market?.lastHedgeModeError && <Alert variant="danger" className="mb-2">{market.lastHedgeModeError}</Alert>}
       {market?.lastMarginModeError && <Alert variant="warning" className="mb-2">{market.lastMarginModeError}</Alert>}
-      {market && <div>WS: {String(market.wsConnected)} | Universe: {market.universeCount} | Eligible: {market.eligibleCount} | Subscribed: {market.subscribedCount}/{market.selectionCap || market.cap} | Kline topics: {market.klineSubscribedCount || 0} | Active intervals: {(market.activeIntervals || []).join(', ') || '-'} | Selection: cap={market.selectionCap || market.cap}, turnover≥{market.selectionTurnoverMin}, vol≥{market.selectionVolMin}% | Drift: {market.tickDriftMs}ms | Hedge: {market.hedgeMode || 'UNKNOWN'} | Margin: {market.marginMode || 'UNKNOWN'}</div>}
+      {market && <div>
+        WS: {String(market.wsConnected)} | Universe: {market.universeCount} | Eligible: {market.eligibleCount} | Subscribed: {market.subscribedCount}/{market.selectionCap || market.cap}
+        {' '}| SnapshotAge: {marketDiagnostics.snapshotAgeSec ?? '-'}s | Bootstrap: {market.inBootstrapGrace ? `ON (${market.bootstrapAgeSec}s)` : `OFF (${market.bootstrapAgeSec}s)`}
+        {' '}| Kline topics: {market.klineSubscribedCount || 0} | Active intervals: {(market.activeIntervals || []).join(', ') || '-'}
+        {' '}| Selection: cap={market.selectionCap || market.cap}, turnover≥{market.selectionTurnoverMin}, vol≥{market.selectionVolMin}% | Drift: {market.tickDriftMs}ms
+        {' '}| Hedge: {market.hedgeMode || 'UNKNOWN'} | Margin: {market.marginMode || 'UNKNOWN'}
+        {marketDiagnostics.topDropReasons.length > 0 && (market.eligibleCount || 0) < (market.selectionCap || market.cap)
+          ? <span>{' '}| Drop reasons: {marketDiagnostics.topDropReasons.map(([reason, count]) => `${reason}=${count}`).join(', ')}</span>
+          : null}
+      </div>}
     </Card.Body></Card></Col>
 
     <Col md={5}><Card><Card.Body><Card.Title>Create new bot instance</Card.Title>
