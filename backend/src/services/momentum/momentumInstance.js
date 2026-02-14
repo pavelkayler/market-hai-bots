@@ -99,7 +99,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     const triggerPrice = getTriggerPrice({ side, signalPrice: sourcePrice, tickSize: snap.tickSize });
     if (!(triggerPrice > 0)) return false;
     st.state = SYMBOL_STATE.TRIGGER_PENDING;
-    st.pending = { side, triggerPrice, createdAtMs: nowMs, holdProgress: cfg.holdSeconds, trendProgress: cfg.trendConfirmSeconds, entryOffsetPct: cfg.entryOffsetPct, lastPriceAtTrigger: snap.lastPrice, markPriceAtTrigger: snap.markPrice, currentPrice: snap.lastPrice };
+    st.pending = { side, triggerPrice, createdAtMs: nowMs, holdProgress: cfg.holdSeconds, trendProgress: cfg.trendConfirmSeconds, entryOffsetPct: cfg.entryOffsetPct, entryPriceSource: entrySource, lastPriceAtTrigger: snap.lastPrice, markPriceAtTrigger: snap.markPrice, currentPrice: snap.lastPrice };
     st.holdCount.LONG = 0;
     st.holdCount.SHORT = 0;
     log('trigger created', { symbol, side, triggerPrice, markPrice: snap.markPrice, lastPrice: snap.lastPrice, entryPriceSource: entrySource });
@@ -111,6 +111,21 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     if (!(Number.isFinite(lastPrev) && Number.isFinite(lastNow) && Number.isFinite(triggerPrice))) return false;
     if (lastNow === triggerPrice) return true;
     return (lastPrev < triggerPrice && lastNow >= triggerPrice) || (lastPrev > triggerPrice && lastNow <= triggerPrice);
+  }
+
+  function getEntrySourcePrice(snap, entryPriceSource) {
+    const source = String(entryPriceSource || 'LAST').toUpperCase();
+    const markPrice = Number(snap?.markPrice);
+    const lastPrice = Number(snap?.lastPrice);
+    if (source === 'MARK') return Number.isFinite(markPrice) ? markPrice : lastPrice;
+    return lastPrice;
+  }
+
+  function isTriggerSatisfied(side, currentEntryPrice, triggerPrice) {
+    if (!(Number.isFinite(currentEntryPrice) && Number.isFinite(triggerPrice))) return false;
+    if (side === SIDE.LONG) return currentEntryPrice >= triggerPrice;
+    if (side === SIDE.SHORT) return currentEntryPrice <= triggerPrice;
+    return false;
   }
 
   async function ensureIsolatedOnFirstTrade(symbol) {
@@ -485,8 +500,12 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       if (st.pos && shouldUpdateBusyUiPrice) st.pos.currentPrice = Number.isFinite(currentPrice) ? currentPrice : st.pos.currentPrice;
 
       if (st.state === SYMBOL_STATE.TRIGGER_PENDING && st.pending) {
-        const prevLast = Number(st.lastLastPrice);
-        if (crossed(prevLast, currentPrice, st.pending.triggerPrice)) await openPosition(symbol, st, snap, ts);
+        const entryPriceSource = st.pending.entryPriceSource || cfg.entryPriceSource;
+        const entryPx = getEntrySourcePrice(snap, entryPriceSource);
+        if (isTriggerSatisfied(st.pending.side, entryPx, st.pending.triggerPrice)) {
+          log('trigger satisfied', { symbol, side: st.pending.side, triggerPrice: st.pending.triggerPrice, entryPx, entryPriceSource });
+          await openPosition(symbol, st, snap, ts);
+        }
         st.lastLastPrice = currentPrice;
         continue;
       }
@@ -635,8 +654,12 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         if (allOk && st.holdCount[side] < cfg.holdSeconds) continue;
         if (allOk && st.holdCount[side] >= cfg.holdSeconds && createTrigger(symbol, side, snap, ts, st)) {
           entries += 1;
-          const prevLast = Number(st.lastLastPrice);
-          if (crossed(prevLast, snap.lastPrice, st.pending?.triggerPrice)) await openPosition(symbol, st, snap, ts);
+          const entryPriceSource = st.pending?.entryPriceSource || cfg.entryPriceSource;
+          const entryPx = getEntrySourcePrice(snap, entryPriceSource);
+          if (isTriggerSatisfied(side, entryPx, st.pending?.triggerPrice)) {
+            log('trigger satisfied', { symbol, side, triggerPrice: st.pending?.triggerPrice, entryPx, entryPriceSource });
+            await openPosition(symbol, st, snap, ts);
+          }
           break;
         }
       }
