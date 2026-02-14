@@ -1,5 +1,5 @@
 import { MOMENTUM_STATUS, SIDE, SYMBOL_STATE } from './momentumTypes.js';
-import { calcChange, calcTpSl, normalizeMomentumConfig, roundByTickForSide } from './momentumUtils.js';
+import { BYBIT_STANDARD_FEES, calcChange, calcPaperPnlWithFees, calcTpSl, normalizeMomentumConfig, roundByTickForSide } from './momentumUtils.js';
 
 const TPSL_STATUS = {
   PENDING: 'PENDING',
@@ -404,8 +404,9 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     const pos = st.pos;
     const entryPx = Number(pos.actualEntryPrice || pos.entryPrice || pos.triggerPrice || 0);
     const exitPx = Number(currentPrice || pos.currentPrice || entryPx || 0);
-    const qty = (cfg.marginUsd * cfg.leverage) / Math.max(1e-9, entryPx || 1);
-    const pnl = pos.side === SIDE.LONG ? ((exitPx - entryPx) * qty) : ((entryPx - exitPx) * qty);
+    const qty = Number(pos.entryQtyActual || ((cfg.marginUsd * cfg.leverage) / Math.max(1e-9, entryPx || 1)));
+    const fees = calcPaperPnlWithFees({ side: pos.side, qty, entryPrice: entryPx, exitPrice: exitPx });
+    const pnl = Number(fees.pnlNet || 0);
     const outcome = outcomeOverride || getExitOutcome(pos.side, exitPx, pos.tpPrice, pos.slPrice);
     sqlite.saveTrade({
       instanceId: id,
@@ -427,7 +428,14 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       exitPrice: exitPx,
       outcome,
       pnlUsd: Number.isFinite(pnl) ? pnl : 0,
-      feesUsd: 0,
+      feesUsd: Number(fees.feeEntry || 0) + Number(fees.feeExit || 0),
+      qty,
+      pnlGross: fees.pnlGross,
+      pnlNet: fees.pnlNet,
+      feeEntry: fees.feeEntry,
+      feeExit: fees.feeExit,
+      makerFeeRate: BYBIT_STANDARD_FEES.makerFeeRate,
+      takerFeeRate: BYBIT_STANDARD_FEES.takerFeeRate,
       durationSec: Math.max(0, Math.round((ts - Number(pos.openedAt || pos.createdAtMs || ts)) / 1000)),
       entryOffsetPct: cfg.entryOffsetPct,
       turnoverSpikePct: cfg.turnoverSpikePct,
@@ -452,6 +460,21 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
 
   function saveManualCancelTrade(symbol, pending, ts, outcome) {
     sqlite.saveTrade({ instanceId: id, mode: cfg.mode, symbol, side: pending.side, windowMinutes: cfg.windowMinutes, priceThresholdPct: cfg.priceThresholdPct, oiThresholdPct: cfg.oiThresholdPct, turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin, leverage: cfg.leverage, marginUsd: cfg.marginUsd, entryTs: pending.createdAtMs, triggerPrice: pending.triggerPrice, entryPrice: pending.triggerPrice, actualEntryPrice: null, exitTs: ts, exitPrice: pending.triggerPrice, outcome, pnlUsd: 0, feesUsd: 0, durationSec: Math.max(0, Math.round((ts - pending.createdAtMs) / 1000)), entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, baselineFloorUSDT: cfg.baselineFloorUSDT, holdSeconds: cfg.holdSeconds, trendConfirmSeconds: cfg.trendConfirmSeconds, oiMaxAgeSec: cfg.oiMaxAgeSec, lastPriceAtTrigger: pending.lastPriceAtTrigger ?? null, markPriceAtTrigger: pending.markPriceAtTrigger ?? null });
+  }
+
+
+
+  function saveFixedSignal({ ts, symbol, side, action, reason = null, metrics = {} } = {}) {
+    sqlite.saveFixedSignal?.({
+      tsMs: ts,
+      instanceId: id,
+      symbol,
+      side,
+      windowMinutes: cfg.windowMinutes,
+      action,
+      reason,
+      metrics,
+    });
   }
 
   function cancelEntry(symbol, { ts = Date.now(), outcome = 'MANUAL_CANCEL', logMessage = 'entry cancelled' } = {}) {
@@ -593,6 +616,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
             markFailed(st, ts, 'MAX_ACTIVE_POSITIONS_GLOBAL', `active=${capacity.activePositionsCount}; max=10`, symbol);
           } else {
             log('trigger satisfied', { symbol, side: st.pending.side, triggerPrice: st.pending.triggerPrice, entryPx, entryPriceSource });
+            saveFixedSignal({ ts, symbol, side, action: 'ENTRY_ATTEMPT', metrics: { entryPriceSource, entryPx, triggerPrice: st.pending?.triggerPrice, priceChangePctW: Number(priceChange || 0) * 100, oiChangePctW: Number(oiChange || 0) * 100 } });
             await openPosition(symbol, st, snap, ts);
           }
         }
@@ -744,11 +768,13 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
         }, 1500);
         if (allOk && st.holdCount[side] < cfg.holdSeconds) continue;
         if (allOk && st.holdCount[side] >= cfg.holdSeconds && createTrigger(symbol, side, snap, ts, st)) {
+          saveFixedSignal({ ts, symbol, side, action: 'TRIGGER_CREATED', metrics: { priceChangePctW: Number(priceChange || 0) * 100, oiChangePctW: Number(oiChange || 0) * 100, turnover24h: snap.turnover24h, volatility24h: snap.vol24h, hold: st.holdCount[side], trendConfirm: cfg.trendConfirmSeconds } });
           entries += 1;
           const entryPriceSource = st.pending?.entryPriceSource || cfg.entryPriceSource;
           const entryPx = getEntrySourcePrice(snap, entryPriceSource);
           if (isTriggerSatisfied(side, entryPx, st.pending?.triggerPrice)) {
             log('trigger satisfied', { symbol, side, triggerPrice: st.pending?.triggerPrice, entryPx, entryPriceSource });
+            saveFixedSignal({ ts, symbol, side, action: 'ENTRY_ATTEMPT', metrics: { entryPriceSource, entryPx, triggerPrice: st.pending?.triggerPrice, priceChangePctW: Number(priceChange || 0) * 100, oiChangePctW: Number(oiChange || 0) * 100 } });
             await openPosition(symbol, st, snap, ts);
           }
           break;
@@ -848,6 +874,7 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     id,
     onTick,
     stop: () => { status = MOMENTUM_STATUS.STOPPED; },
+    start: () => { status = MOMENTUM_STATUS.RUNNING; },
     cancelEntry,
     getSnapshot,
     getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, universeMode: cfg.universeMode, universeTierIndex: cfg.universeTierIndex, universeSource: cfg.universeSource, singleSymbol: cfg.singleSymbol, tierIndices: Array.isArray(cfg.tierIndices) ? cfg.tierIndices : [], resolvedSymbolsCount: Number(cfg.resolvedSymbolsCount || (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols.length : 0)), direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, pnl: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),

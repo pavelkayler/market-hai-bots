@@ -24,6 +24,7 @@ import { createMomentumSqlite } from "../services/momentum/momentumSqlite.js";
 import { createMomentumManager } from "../services/momentum/momentumManager.js";
 import { createUniverseSearchService } from "../services/universeSearchService.js";
 import { createBybitRest } from "../bybitRest.js";
+import { createManualTradeService } from '../services/manual/manualTradeService.js';
 
 dotenv.config();
 
@@ -360,6 +361,8 @@ const momentumManager = createMomentumManager({
     return Array.isArray(result?.outputs?.tiers) ? result.outputs.tiers : [];
   },
 });
+await momentumManager.init?.();
+const manualTradeService = createManualTradeService({ tradeExecutor, marketData: momentumMarketData, logger: app.log });
 momentumManager.onState((payload) => broadcastEvent('momentum.state', payload));
 function handleLeadLagEngineEvent({ type, payload }) {
   if (type === 'leadlag.state') {
@@ -1341,13 +1344,19 @@ app.get("/ws", { websocket: true }, (conn) => {
       if (rpcMethod === 'leadlag.getState') { rpcOk(safeLeadLagSnapshot({ bumpSeq: false, where: 'rpc.leadlag.getState' })); return; }
       if (rpcMethod === 'trade.getState') { rpcOk(getTradeStatePayload()); return; }
       if (rpcMethod === 'momentum.start') { rpcOk(await momentumManager.start(params?.config || {})); return; }
-      if (rpcMethod === 'momentum.stop') { rpcOk(momentumManager.stop(params?.instanceId)); return; }
+      if (rpcMethod === 'momentum.stop') { rpcOk(await momentumManager.stop(params?.instanceId)); return; }
+      if (rpcMethod === 'momentum.continue') { rpcOk(await momentumManager.continue(params?.instanceId)); return; }
       if (rpcMethod === 'momentum.list') { rpcOk(momentumManager.list()); return; }
       if (rpcMethod === 'momentum.getState') { rpcOk(momentumManager.getState(params?.instanceId)); return; }
       if (rpcMethod === 'momentum.getPositions') { rpcOk(momentumManager.getPositions(params?.instanceId)); return; }
       if (rpcMethod === 'momentum.getTrades') { rpcOk(await momentumManager.getTrades(params?.instanceId, params?.limit, params?.offset)); return; }
       if (rpcMethod === 'momentum.getMarketStatus') { rpcOk(momentumManager.getMarketStatus()); return; }
       if (rpcMethod === 'momentum.cancelEntry') { rpcOk(momentumManager.cancelEntry(params?.instanceId, params?.symbol)); return; }
+      if (rpcMethod === 'momentum.getFixedSignals') { rpcOk(await momentumManager.getFixedSignals(params?.instanceId, params?.limit, params?.sinceMs, params?.symbol)); return; }
+      if (rpcMethod === 'manual.placeDemoOrder') { rpcOk(await manualTradeService.placeDemoOrder(params || {})); return; }
+      if (rpcMethod === 'manual.closeDemoPosition') { rpcOk(await manualTradeService.closeDemoPosition(params || {})); return; }
+      if (rpcMethod === 'manual.cancelDemoOrders') { rpcOk(await manualTradeService.cancelDemoOrders(params || {})); return; }
+      if (rpcMethod === 'manual.getDemoState') { rpcOk(await manualTradeService.getDemoState(params || {})); return; }
       if (rpcMethod === 'trade.setMode') {
         const mode = String(params?.mode || 'paper').toLowerCase();
         if (isLeadLagRunning()) { rpcOk({ ok: false, reason: 'STOP_TRADING_FIRST' }); return; }
