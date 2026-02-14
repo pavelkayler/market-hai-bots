@@ -6,6 +6,32 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   const emitter = new EventEmitter();
   const instances = new Map();
 
+  function normalizeDirection(directionMode) {
+    const d = String(directionMode || 'BOTH').toUpperCase();
+    return d === 'LONG' || d === 'SHORT' ? d : 'BOTH';
+  }
+
+  function isHedgeRequiredForNewInstance(newCfg, runningConfigs = []) {
+    const mode = String(newCfg?.mode || 'demo').toLowerCase();
+    if (mode === 'paper') return false;
+    const newDir = normalizeDirection(newCfg?.directionMode);
+    if (newDir === 'BOTH') return true;
+
+    const activeDirs = new Set();
+    for (const cfg of runningConfigs) {
+      const runMode = String(cfg?.mode || 'demo').toLowerCase();
+      if (runMode === 'paper') continue;
+      activeDirs.add(normalizeDirection(cfg?.directionMode));
+    }
+    if (activeDirs.has('BOTH')) return true;
+    return newDir === 'LONG' ? activeDirs.has('SHORT') : activeDirs.has('LONG');
+  }
+
+  function isHedgeRequiredForRunningInstances() {
+    const runningConfigs = [...instances.values()].map((x) => x.getSnapshot?.()?.config).filter(Boolean);
+    return runningConfigs.some((cfg, idx) => isHedgeRequiredForNewInstance(cfg, runningConfigs.filter((_, i) => i !== idx)));
+  }
+
   function withPreflight(light) {
     const pre = tradeExecutor?.getPreflightStatus?.() || {};
     return {
@@ -22,14 +48,17 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   function getMarketStatus() {
     const base = marketData.getStatus();
     const pre = tradeExecutor?.getPreflightStatus?.() || {};
+    const hedgeRequired = isHedgeRequiredForRunningInstances();
+    const lastHedgeModeError = hedgeRequired ? (pre.lastHedgeModeError || null) : null;
     return {
       ...base,
       marginMode: pre.marginMode || 'UNKNOWN',
       lastMarginModeCheckTs: pre.lastMarginModeCheckTs || null,
       lastMarginModeError: pre.lastMarginModeError || null,
       hedgeMode: pre.hedgeMode || 'UNKNOWN',
+      hedgeRequired,
       lastHedgeModeCheckTs: pre.lastHedgeModeCheckTs || null,
-      lastHedgeModeError: pre.lastHedgeModeError || null,
+      lastHedgeModeError,
     };
   }
 
@@ -120,11 +149,16 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     }
     let isolatedPreflight = { ok: true, skipped: true };
     if ((mode === 'demo' || mode === 'real') && tradeExecutor?.enabled?.()) {
-      const hedge = await tradeExecutor.ensureHedgeMode({});
-      if (!hedge?.ok) {
-        const message = hedge?.error || 'HEDGE MODE REQUIRED: enable Hedge (dual-side) in Bybit account settings, then restart.';
-        logger?.warn?.({ mode, error: message }, 'momentum start refused: hedge mode requirement not met');
-        return { ok: false, error: 'HEDGE_MODE_REQUIRED', message };
+      const runningConfigs = [...instances.values()].map((x) => x.getSnapshot?.()?.config).filter(Boolean);
+      const hedgeRequired = isHedgeRequiredForNewInstance(config, runningConfigs);
+      if (hedgeRequired) {
+        const hedge = await tradeExecutor.getHedgeModeSnapshot?.({ symbol: marketData.getEligibleSymbols?.()?.[0] || 'BTCUSDT' });
+        const modeNow = String(hedge?.mode || 'UNKNOWN').toUpperCase();
+        if (modeNow === 'ONE_WAY') {
+          const message = 'HEDGE MODE REQUIRED: enable Hedge (dual-side) in Bybit account settings, then restart.';
+          logger?.warn?.({ mode, error: message }, 'momentum start refused: hedge mode requirement not met');
+          return { ok: false, error: 'HEDGE_MODE_REQUIRED', message };
+        }
       }
       const firstSymbol = marketData.getEligibleSymbols?.()?.[0] || 'BTCUSDT';
       isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };

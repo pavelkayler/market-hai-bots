@@ -210,7 +210,6 @@ function tradeWarnings(tradeExecutor) {
   if (ts.executionMode === "real" && !ts.realAllowed) warnings.push({ code: "REAL_DISABLED", severity: "error", message: "REAL trading requires TRADE_REAL_ENABLED=1" });
   if (ts.executionMode === "demo" && !ts.demo) warnings.push({ code: "TRADE_BASE_URL", severity: "warn", message: "Demo mode requires BYBIT_TRADE_BASE_URL=api-demo.bybit.com" });
   if (ts.executionMode === "real" && !ts.real) warnings.push({ code: "TRADE_BASE_URL", severity: "warn", message: "Real mode requires BYBIT_TRADE_BASE_URL=api.bybit.com" });
-  if (!(process.env.CMC_API_KEY || process.env.COINMARKETCAP_API_KEY)) warnings.push({ code: "CMC_DISABLED", severity: "warn", message: "Missing CMC_API_KEY (universe disabled)" });
   return warnings;
 }
 
@@ -1237,51 +1236,10 @@ function getBybitHealth() {
 }
 
 async function getCmcHealth() {
-  const apiKey = process.env.CMC_API_KEY || process.env.COINMARKETCAP_API_KEY || "";
-  if (!apiKey) {
-    return {
-      status: "disabled",
-      reason: "missing_api_key",
-    };
-  }
-
-  const startedAt = Date.now();
-  const ac = new AbortController();
-  const timeout = setTimeout(() => ac.abort(), 8000);
-
-  try {
-    const res = await fetch("https://pro-api.coinmarketcap.com/v1/key/info", {
-      headers: { "X-CMC_PRO_API_KEY": apiKey },
-      signal: ac.signal,
-    });
-    const text = await res.text();
-    let data = null;
-    try { data = JSON.parse(text); } catch {}
-
-    if (!res.ok) {
-      return {
-        status: "error",
-        httpStatus: res.status,
-        latencyMs: Date.now() - startedAt,
-        error: data?.status?.error_message || `HTTP ${res.status}`,
-      };
-    }
-
-    return {
-      status: "ok",
-      latencyMs: Date.now() - startedAt,
-      plan: data?.data?.plan?.name || null,
-      usageResetAt: data?.data?.plan?.credit_limit_reset_at || null,
-    };
-  } catch (err) {
-    return {
-      status: "error",
-      latencyMs: Date.now() - startedAt,
-      error: String(err?.message || err),
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+  return {
+    status: 'disabled',
+    reason: 'cmc_disabled_by_design',
+  };
 }
 function stopStatusWatcher(ws) {
   const st = statusWatchers.get(ws);

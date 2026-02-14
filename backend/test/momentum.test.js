@@ -36,11 +36,11 @@ test('manager blocks demo/real momentum start when hedge mode preflight fails', 
     sqlite: { getTrades: async () => ({ trades: [], total: 0 }) },
     tradeExecutor: {
       enabled: () => true,
-      ensureHedgeMode: async () => ({ ok: false, error: 'HEDGE MODE REQUIRED: enable Hedge (dual-side) in Bybit account settings, then restart.' }),
+      getHedgeModeSnapshot: async () => ({ mode: 'ONE_WAY' }),
       getPreflightStatus: () => ({ hedgeMode: 'ONE_WAY' }),
     },
   });
-  const out = await manager.start({ windowMinutes: 1, mode: 'demo' });
+  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'BOTH' });
   assert.equal(out.ok, false);
   assert.equal(out.error, 'HEDGE_MODE_REQUIRED');
 });
@@ -127,4 +127,23 @@ test('signals use last price and oi value lookback', async () => {
   assert.ok(row);
   assert.ok(Math.abs(row.priceChange - ((100 / 90) - 1)) < 1e-9);
   assert.ok(Math.abs(row.oiChange - ((1000 / 800) - 1)) < 1e-9);
+});
+
+
+test('manager allows single-direction demo start without hedge when no opposite direction runs', async () => {
+  let hedgeChecks = 0;
+  const md = { onTick() {}, getEligibleSymbols: () => ['BTCUSDT'], setActiveIntervals() {}, getStatus: () => ({}) };
+  const manager = createMomentumManager({
+    marketData: md,
+    sqlite: { getTrades: async () => ({ trades: [], total: 0 }) },
+    tradeExecutor: {
+      enabled: () => true,
+      getHedgeModeSnapshot: async () => { hedgeChecks += 1; return { mode: 'ONE_WAY' }; },
+      ensureIsolatedPreflight: async () => ({ ok: true }),
+      getPreflightStatus: () => ({ hedgeMode: 'ONE_WAY' }),
+    },
+  });
+  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'LONG' });
+  assert.equal(out.ok, true);
+  assert.equal(hedgeChecks, 0);
 });
