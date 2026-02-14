@@ -56,7 +56,7 @@ test('hold + trend + turnover baseline + manual cancel', async () => {
     getOiAgeSec: () => 1,
     getHistorySecondsAvailable: () => 10,
   };
-  const inst = createMomentumInstance({ id: 'a', config: { windowMinutes: 1, priceThresholdPct: 1, oiThresholdPct: 1, holdSeconds: 2, baselineFloorUSDT: 100, turnoverSpikePct: 100 }, marketData: md, sqlite });
+  const inst = createMomentumInstance({ id: 'a', config: { windowMinutes: 1, priceThresholdPct: 1, oiThresholdPct: 1, holdSeconds: 2, entryOffsetPct: 1, baselineFloorUSDT: 100, turnoverSpikePct: 100 }, marketData: md, sqlite });
   snaps.set('X', { markPrice: 102, lastPrice: 102, oiValue: 1020, turnover24h: 1, vol24h: 0.1, tickSize: 0.1 });
   await inst.onTick({ ts: 1000, sec: 60 }, ['X']);
   let st = inst.getSnapshot();
@@ -67,7 +67,7 @@ test('hold + trend + turnover baseline + manual cancel', async () => {
   assert.equal(inst.cancelEntry('X').ok, true);
 });
 
-test('trigger fills on crossing', async () => {
+test('trigger fills immediately when current price already satisfies trigger (paper)', async () => {
   const snaps = new Map();
   const sqlite = { saveTrade() {}, saveSignal() {} };
   const md = {
@@ -77,17 +77,32 @@ test('trigger fills on crossing', async () => {
     getOiAgeSec: () => 1,
     getHistorySecondsAvailable: () => 10,
   };
-  const inst = createMomentumInstance({ id: 'cross', config: { windowMinutes: 1, priceThresholdPct: 1, oiThresholdPct: 1, holdSeconds: 1, entryOffsetPct: -0.5, baselineFloorUSDT: 100 }, marketData: md, sqlite });
-  snaps.set('X', { markPrice: 102, lastPrice: 102, oiValue: 1020, tickSize: 0.1 });
+  const inst = createMomentumInstance({ id: 'cross', config: { windowMinutes: 1, priceThresholdPct: 1, oiThresholdPct: 1, holdSeconds: 1, entryOffsetPct: -0.01, baselineFloorUSDT: 100 }, marketData: md, sqlite });
+  snaps.set('X', { markPrice: 100, lastPrice: 100, oiValue: 1000, tickSize: 0.1 });
   await inst.onTick({ ts: 1000, sec: 60 }, ['X']);
-  snaps.set('X', { markPrice: 101.6, lastPrice: 101.6, oiValue: 1020, tickSize: 0.1 });
+  snaps.set('X', { markPrice: 102, lastPrice: 102, oiValue: 1020, tickSize: 0.1 });
   await inst.onTick({ ts: 2000, sec: 61 }, ['X']);
-  let st = inst.getSnapshot();
+  const st = inst.getSnapshot();
   assert.equal(st.openPositions.length, 1);
-  snaps.set('X', { markPrice: 101.4, lastPrice: 101.4, oiValue: 1020, tickSize: 0.1 });
-  await inst.onTick({ ts: 3000, sec: 62 }, ['X']);
-  st = inst.getSnapshot();
-  assert.equal(st.openPositions.length, 1);
+  assert.equal(st.pendingOrders.length, 0);
+});
+
+test('trigger fill uses MARK entry price source for satisfaction checks', async () => {
+  const snaps = new Map();
+  const sqlite = { saveTrade() {}, saveSignal() {} };
+  const md = {
+    getSnapshot: (s) => snaps.get(s),
+    getCandleBaseline: () => ({ ok: true, prevClose: 100, prevOiValue: 1000, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
+    getTrendOk: () => true,
+    getOiAgeSec: () => 1,
+    getHistorySecondsAvailable: () => 10,
+  };
+  const inst = createMomentumInstance({ id: 'mark-source', config: { windowMinutes: 1, priceThresholdPct: 1, oiThresholdPct: 1, holdSeconds: 1, entryOffsetPct: -0.01, entryPriceSource: 'MARK', baselineFloorUSDT: 100 }, marketData: md, sqlite });
+  snaps.set('X', { markPrice: 100, lastPrice: 100, oiValue: 1000, tickSize: 0.1 });
+  await inst.onTick({ ts: 1000, sec: 60 }, ['X']);
+  snaps.set('X', { markPrice: 102.0, lastPrice: 101.8, oiValue: 1020, tickSize: 0.1 });
+  await inst.onTick({ ts: 2000, sec: 61 }, ['X']);
+  assert.equal(inst.getSnapshot().openPositions.length, 1);
 });
 
 test('oi stale blocks entries', async () => {
