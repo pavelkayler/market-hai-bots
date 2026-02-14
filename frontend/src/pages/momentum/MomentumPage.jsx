@@ -5,9 +5,9 @@ import { useWs } from '../../shared/api/ws.js';
 const UNIVERSE_OPTIONS = [50, 100, 200, 300, 500, 800, 1000];
 
 const DEFAULT_FORM = {
-  mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, universeLimit: 200, priceThresholdPct: 0.05, oiThresholdPct: 0,
+  mode: 'paper', directionMode: 'BOTH', windowMinutes: 1, universeLimit: 200, priceThresholdPct: 0.2, oiThresholdPct: 0,
   turnover24hMin: 0, vol24hMin: 0, leverage: 3, marginUsd: 10, tpRoiPct: 2, slRoiPct: 2,
-  entryOffsetPct: -0.01, turnoverSpikePct: 0, baselineFloorUSDT: 0, holdSeconds: 1, trendConfirmSeconds: 1, oiMaxAgeSec: 120,
+  entryOffsetPct: -0.01, turnoverSpikePct: 0, baselineFloorUSDT: 0, holdSeconds: 1, trendConfirmSeconds: 1, oiMaxAgeSec: 9999,
   globalSymbolLock: false,
   singleSymbol: '',
 };
@@ -25,7 +25,7 @@ const numericFieldDefs = [
   { key: 'turnoverSpikePct', label: 'Turnover spike required (LONG only)', unit: '%', placeholder: '0' },
   { key: 'baselineFloorUSDT', label: 'Min turnover baseline floor', unit: 'USDT', placeholder: '0' },
   { key: 'holdSeconds', label: 'Conditions must hold', unit: 'sec', placeholder: '1' },
-  { key: 'trendConfirmSeconds', label: 'Trend confirm (same-direction ticks)', unit: 'ticks', placeholder: '1' },
+  { key: 'trendConfirmSeconds', label: 'Trend confirm (same-direction ticks)', unit: 'sec', placeholder: '1' },
   { key: 'oiMaxAgeSec', label: 'Max OI staleness', unit: 'sec', placeholder: '120' },
 ];
 
@@ -104,6 +104,7 @@ export default function MomentumPage() {
     if (single && !String(nextConfig.singleSymbol || '').trim()) nextErrors.singleSymbol = 'singleSymbol is required for Start Single.';
     if (single) nextConfig.singleSymbol = String(nextConfig.singleSymbol || '').trim().toUpperCase();
     else nextConfig.singleSymbol = '';
+    nextConfig.scanMode = single ? 'SINGLE' : 'UNIVERSE';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     const out = await ws.request('momentum.start', { config: nextConfig });
@@ -148,9 +149,9 @@ export default function MomentumPage() {
         </Form.Group>
         {numericFieldDefs.map((field) => <Form.Group className="mb-2" key={field.key}><Form.Label>{field.label}</Form.Label><InputGroup><Form.Control value={form[field.key]} onChange={(e) => setForm({ ...form, [field.key]: e.target.value })} isInvalid={Boolean(errors[field.key])} placeholder={field.placeholder} /><InputGroup.Text>{field.unit}</InputGroup.Text></InputGroup>{field.help ? <Form.Text muted>{field.help}</Form.Text> : null}</Form.Group>)}
 
-        <Form.Group className="mb-2"><Form.Label>Single symbol (debug)</Form.Label>
+        <Form.Group className="mb-2"><Form.Label>Single symbol (USDT perp)</Form.Label>
           <Form.Control value={form.singleSymbol} placeholder="AZTECUSDT" onChange={(e) => setForm({ ...form, singleSymbol: e.target.value.toUpperCase() })} />
-          <Form.Text muted>When set, bot evaluates ONLY this symbol and forces subscriptions for it.</Form.Text>
+          <Form.Text muted>Start Single launches only this symbol. Regular Start launches universe scan and ignores this field.</Form.Text>
           {errors.singleSymbol && <Form.Text className="text-danger d-block">{errors.singleSymbol}</Form.Text>}
         </Form.Group>
 
@@ -164,37 +165,43 @@ export default function MomentumPage() {
     </Card.Body></Card></Col>
 
     <Col md={7}><Card><Card.Body><Card.Title>Running bots</Card.Title>
-      <Table size="sm"><thead><tr><th>ID</th><th>Mode</th><th>Direction</th><th>W</th><th>Offset</th><th>Turnover gate</th><th>Hedge</th><th>Margin</th><th>Isolated preflight</th><th>Uptime</th><th>Trades</th><th>PNL</th><th /></tr></thead><tbody>
-        {instances.map((i) => <tr key={i.id}><td>{i.id.slice(0, 12)}</td><td>{i.mode}</td><td>{i.direction}</td><td>{i.windowMinutes}m</td><td>{Number(i.entryOffsetPct || 0)}%</td><td>{Number(i.turnoverSpikePct ?? 0)}%</td><td>{i.hedgeMode || 'UNKNOWN'}</td><td>{i.marginMode || 'UNKNOWN'}</td><td>{i.isolatedPreflightOk ? 'OK' : (i.isolatedPreflightError || 'N/A')}</td><td>{i.uptimeSec}s</td><td>{i.trades}</td><td>{Number(i.pnl || 0).toFixed(2)}</td><td><Button size="sm" variant="outline-danger" onClick={() => ws.request('momentum.stop', { instanceId: i.id })}>Stop</Button></td></tr>)}
+      <Table size="sm"><thead><tr><th>ID</th><th>Exec</th><th>Scan</th><th>Direction</th><th>W</th><th>Offset</th><th>Turnover gate</th><th>Hedge</th><th>Margin</th><th>Isolated preflight</th><th>Uptime</th><th>Trades</th><th>PNL</th><th /></tr></thead><tbody>
+        {instances.map((i) => <tr key={i.id}><td>{i.id.slice(0, 12)}</td><td>{i.mode}</td><td><Badge bg={i.scanMode === 'SINGLE' ? 'info' : 'secondary'}>{i.scanMode || 'UNIVERSE'}</Badge>{i.singleSymbol ? <div className="text-muted" style={{ fontSize: 11 }}>{i.singleSymbol}</div> : null}</td><td>{i.direction}</td><td>{i.windowMinutes}m</td><td>{Number(i.entryOffsetPct || 0)}%</td><td>{Number(i.turnoverSpikePct ?? 0)}%</td><td>{i.hedgeMode || 'UNKNOWN'}</td><td>{i.marginMode || 'UNKNOWN'}</td><td>{i.isolatedPreflightOk ? 'OK' : (i.isolatedPreflightError || 'N/A')}</td><td>{i.uptimeSec}s</td><td>{i.trades}</td><td>{Number(i.pnl || 0).toFixed(2)}</td><td><Button size="sm" variant="outline-danger" onClick={() => ws.request('momentum.stop', { instanceId: i.id })}>Stop</Button></td></tr>)}
       </tbody></Table>
     </Card.Body></Card></Col>
 
     <Col md={12}><Card><Card.Body><Card.Title>Selected instance details</Card.Title>
       <Form.Select className="mb-2" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setTradePage(0); }}><option value="">Select...</option>{options}</Form.Select>
-      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending triggers: {detail.pendingOrders?.length || 0} | W: {detail?.config?.windowMinutes}m | Hedge: {detail?.hedgeMode || 'UNKNOWN'} | Margin desired: {detail?.marginModeDesired || 'ISOLATED'} | Isolated preflight: {detail?.isolatedPreflightOk ? 'OK' : (detail?.isolatedPreflightError || 'N/A')} | Trades: {detail?.stats?.trades || 0} | Wins: {detail?.stats?.wins || 0} | Losses: {detail?.stats?.losses || 0} | Winrate: {(detail?.stats?.trades ? ((detail.stats.wins / detail.stats.trades) * 100) : 0).toFixed(1)}% | PnL: {Number(detail?.stats?.pnl || 0).toFixed(2)} | Fees: {Number(detail?.stats?.fees || 0).toFixed(2)}</div>}
+      {detail && <div>Open positions: {detail.openPositions?.length || 0} | Pending triggers: {detail.pendingOrders?.length || 0} | Scan: {detail?.config?.scanMode || 'UNIVERSE'}{detail?.config?.singleSymbol ? ` (${detail.config.singleSymbol})` : ''} | W: {detail?.config?.windowMinutes}m | Hedge: {detail?.hedgeMode || 'UNKNOWN'} | Margin desired: {detail?.marginModeDesired || 'ISOLATED'} | Isolated preflight: {detail?.isolatedPreflightOk ? 'OK' : (detail?.isolatedPreflightError || 'N/A')} | Trades: {detail?.stats?.trades || 0} | Wins: {detail?.stats?.wins || 0} | Losses: {detail?.stats?.losses || 0} | Winrate: {(detail?.stats?.trades ? ((detail.stats.wins / detail.stats.trades) * 100) : 0).toFixed(1)}% | PnL: {Number(detail?.stats?.pnl || 0).toFixed(2)} | Fees: {Number(detail?.stats?.fees || 0).toFixed(2)}</div>}
 
       {detail && <><h6>Open Orders / Pending Triggers</h6><Table size="sm" className="mt-2"><thead><tr><th>Symbol</th><th>State</th><th>Side</th><th>Trigger/Entry</th><th>TP/SL</th><th>TP/SL Status</th><th>Created</th><th>Age</th><th>Actions</th></tr></thead><tbody>
         {(detail.pendingOrders || []).map((p) => <tr key={`pending_${p.symbol}`}><td>{p.symbol}</td><td>TRIGGER_PENDING</td><td>{p.side}</td><td>{p.triggerPrice}</td><td>-</td><td>-</td><td>{new Date(p.createdAtMs).toLocaleTimeString()}</td><td>{p.ageSec}s</td><td><Button size="sm" variant="outline-warning" onClick={() => onCancelEntry(p.symbol)}>Cancel entry</Button></td></tr>)}
-        {(detail.openPositions || []).map((p) => <tr key={`pos_${p.symbol}`}><td>{p.symbol}</td><td>IN_POSITION</td><td>{p.side}</td><td>{p.entryPriceActual || p.entryPrice}</td><td>{p.tpPrice} / {p.slPrice}</td><td>{p.tpSlStatus || 'PENDING'}</td><td>-</td><td>-</td><td>-</td></tr>)}
+        {(detail.openPositions || []).map((p) => <tr key={`pos_${p.symbol}`}><td>{p.symbol}</td><td>IN_POSITION</td><td>{p.side}</td><td>{p.entryPriceActual || p.entryPrice}</td><td><div>TP {Number(p.tpRoiPct ?? detail?.config?.tpRoiPct ?? 0)}% / SL {Number(p.slRoiPct ?? detail?.config?.slRoiPct ?? 0)}%</div><div className="text-muted" style={{ fontSize: 11 }}>{p.tpPrice} / {p.slPrice}</div></td><td>{p.tpSlStatus || 'PENDING'}</td><td>-</td><td>-</td><td>-</td></tr>)}
       </tbody></Table></>}
 
       {detail?.logs?.length > 0 && <Table size="sm"><thead><tr><th>Time</th><th>Message</th></tr></thead><tbody>
         {detail.logs.map((l, idx) => <tr key={`${l.ts}_${idx}`}><td>{new Date(l.ts).toLocaleTimeString()}</td><td>{`${l.msg}${l.symbol ? `: ${l.symbol}` : ''}`}</td></tr>)}
       </tbody></Table>}
 
-      <h6>Signal notifications</h6>
-      <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: 8, marginBottom: 12 }}>
-        {(detail?.signalNotifications || []).slice(0, 30).map((n, idx) => (
-          <div key={`${n.ts}_${n.symbol || 'NA'}_${idx}`} style={{ fontSize: 12, padding: '6px 4px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <strong>{new Date(n.ts).toLocaleTimeString()}</strong> {n.symbol || '-'} {n.side || '-'} W{n.windowMinutes}
-            | prevClose {n.prevClose ? Number(n.prevClose).toFixed(6) : '-'} | ΔP {Number(n.priceChangePct || 0).toFixed(3)}% | ΔOI {Number(n.oiChangePct || 0).toFixed(3)}%
-            {' '}<Badge bg={String(n.action || '').startsWith('TRIGGER') ? 'success' : (String(n.action || '').startsWith('SKIP') || String(n.action || '').startsWith('NOT_READY') ? 'warning' : 'info')}>{n.action}</Badge>
-            {(n.turnoverPrevUSDT || n.turnoverMedianUSDT || n.turnoverCurUSDT) ? ` | turn prev ${Number(n.turnoverPrevUSDT || 0).toFixed(0)} med ${Number(n.turnoverMedianUSDT || 0).toFixed(0)} cur ${Number(n.turnoverCurUSDT || 0).toFixed(0)}` : ''}
-            {n.candleStartMs ? <div className="text-muted">Candle: {new Date(n.candleStartMs).toLocaleTimeString()}</div> : null}
-            {n.message ? <div className="text-muted">{n.message}</div> : null}
-          </div>
-        ))}
-        {(!detail?.signalNotifications || detail.signalNotifications.length === 0) ? <div className="text-muted">No notifications yet.</div> : null}
+      <h6>Signals / Notifications</h6>
+      <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, marginBottom: 12 }}>
+        <Table size="sm" className="mb-0">
+          <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Action</th><th>PriceΔ%</th><th>OIΔ%</th><th>Turnover gate</th><th>Hold</th><th>Message</th></tr></thead>
+          <tbody>
+            {(detail?.signalNotifications || []).slice(0, 100).map((n, idx) => <tr key={`${n.ts}_${n.symbol || 'NA'}_${idx}`}>
+              <td style={{ whiteSpace: 'nowrap' }}>{new Date(n.ts).toLocaleTimeString()}</td>
+              <td>{n.symbol || '-'}</td>
+              <td>{n.side || '-'}</td>
+              <td><Badge bg={String(n.action || '').startsWith('TRIGGER') ? 'success' : (String(n.action || '').startsWith('SKIP') || String(n.action || '').startsWith('NOT_READY') ? 'warning' : 'info')}>{n.action}</Badge></td>
+              <td>{Number(n.priceChangePct || 0).toFixed(3)}%</td>
+              <td>{Number(n.oiChangePct || 0).toFixed(3)}%</td>
+              <td>{typeof n.turnoverGatePassed === 'boolean' ? (n.turnoverGatePassed ? 'pass' : 'fail') : '-'} {n.turnoverBaselineUSDT ? `(base ${Number(n.turnoverBaselineUSDT).toFixed(0)})` : ''}</td>
+              <td>{n.holdProgress && n.holdTarget ? `${n.holdProgress}/${n.holdTarget}` : '-'}</td>
+              <td style={{ minWidth: 220 }}>{n.message || '-'}</td>
+            </tr>)}
+            {(!detail?.signalNotifications || detail.signalNotifications.length === 0) ? <tr><td colSpan={9} className="text-muted">No notifications yet.</td></tr> : null}
+          </tbody>
+        </Table>
       </div>
 
       <div className="d-flex gap-2 align-items-center mb-2"><Button size="sm" variant="outline-secondary" disabled={tradePage <= 0} onClick={() => setTradePage((p) => Math.max(0, p - 1))}>Prev</Button><Button size="sm" variant="outline-secondary" disabled={(tradePage + 1) * tradePageSize >= tradeTotal} onClick={() => setTradePage((p) => p + 1)}>Next</Button><span>Page {tradePage + 1} / {Math.max(1, Math.ceil(tradeTotal / tradePageSize))}</span></div>

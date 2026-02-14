@@ -19,6 +19,8 @@ export const SIDE = {
 export const MOMENTUM_UNIVERSE_LIMIT_OPTIONS = [50, 100, 200, 300, 500, 800, 1000];
 
 export const DEFAULT_MOMENTUM_CONFIG = {
+  scanMode: 'UNIVERSE',
+  singleSymbol: null,
   mode: 'paper',
   directionMode: 'BOTH',
   windowMinutes: 1,

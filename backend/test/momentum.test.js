@@ -53,6 +53,7 @@ test('hold + trend + turnover baseline + manual cancel', async () => {
     getCandleBaseline: () => ({ ok: true, prevClose: 100, prevOiValue: 1000, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 120, curTurnoverUSDT: 260, curCandleStartMs: 0 }),
     getTrendOk: () => true,
     getOiAgeSec: () => 1,
+    getHistorySecondsAvailable: () => 10,
   };
   const inst = createMomentumInstance({ id: 'a', config: { windowMinutes: 1, priceThresholdPct: 1, oiThresholdPct: 1, holdSeconds: 2, baselineFloorUSDT: 100, turnoverSpikePct: 100 }, marketData: md, sqlite });
   snaps.set('X', { markPrice: 102, lastPrice: 102, oiValue: 1020, turnover24h: 1, vol24h: 0.1, tickSize: 0.1 });
@@ -73,6 +74,7 @@ test('trigger fills on crossing', async () => {
     getCandleBaseline: () => ({ ok: true, prevClose: 100, prevOiValue: 1000, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
     getTrendOk: () => true,
     getOiAgeSec: () => 1,
+    getHistorySecondsAvailable: () => 10,
   };
   const inst = createMomentumInstance({ id: 'cross', config: { windowMinutes: 1, priceThresholdPct: 1, oiThresholdPct: 1, holdSeconds: 1, entryOffsetPct: -0.5, baselineFloorUSDT: 100 }, marketData: md, sqlite });
   snaps.set('X', { markPrice: 102, lastPrice: 102, oiValue: 1020, tickSize: 0.1 });
@@ -95,6 +97,7 @@ test('oi stale blocks entries', async () => {
     getCandleBaseline: () => ({ ok: true, prevClose: 100, prevOiValue: 1000, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
     getTrendOk: () => true,
     getOiAgeSec: () => 99,
+    getHistorySecondsAvailable: () => 10,
   };
   const inst = createMomentumInstance({ id: 'stale', config: { windowMinutes: 1, holdSeconds: 1, oiMaxAgeSec: 10, baselineFloorUSDT: 100 }, marketData: md, sqlite });
   snaps.set('X', { markPrice: 110, lastPrice: 110, oiValue: 1200, tickSize: 0.1 });
@@ -115,6 +118,7 @@ test('signals use last price and oi value lookback', async () => {
     getCandleBaseline: () => ({ ok: true, prevClose: 90, prevOiValue: 800, prevTurnoverUSDT: 100, medianPrevTurnoverUSDT: 100, curTurnoverUSDT: 220, curCandleStartMs: 0 }),
     getTrendOk: () => true,
     getOiAgeSec: () => 1,
+    getHistorySecondsAvailable: () => 10,
   };
   const inst = createMomentumInstance({ id: 'signal-source', config: { windowMinutes: 1, priceThresholdPct: 5, oiThresholdPct: 1, holdSeconds: 1, baselineFloorUSDT: 100 }, marketData: md, sqlite });
   snaps.set('X', { markPrice: 100, lastPrice: 100, oiValue: 1000, tickSize: 0.1 });

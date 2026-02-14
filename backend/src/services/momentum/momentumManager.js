@@ -74,7 +74,9 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   function syncPinnedSymbols() {
     const pinned = new Set();
     for (const inst of instances.values()) {
-      const sym = String(inst.getSnapshot?.()?.config?.singleSymbol || '').toUpperCase().trim();
+      const cfg = inst.getSnapshot?.()?.config || {};
+      if (cfg.scanMode !== 'SINGLE') continue;
+      const sym = String(cfg.singleSymbol || '').toUpperCase().trim();
       if (sym) pinned.add(sym);
     }
     marketData.setPinnedSymbols?.([...pinned]);
@@ -83,8 +85,9 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   marketData.onTick(async (tick) => {
     const eligible = marketData.getEligibleSymbols();
     for (const inst of instances.values()) {
-      const singleSymbol = String(inst.getSnapshot?.()?.config?.singleSymbol || '').toUpperCase().trim();
-      const symbols = singleSymbol ? [singleSymbol] : eligible;
+      const cfg = inst.getSnapshot?.()?.config || {};
+      const singleSymbol = String(cfg.singleSymbol || '').toUpperCase().trim();
+      const symbols = cfg.scanMode === 'SINGLE' && singleSymbol ? [singleSymbol] : eligible;
       await inst.onTick(tick, symbols);
     }
     emitState();
@@ -101,8 +104,12 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     if (!MOMENTUM_UNIVERSE_LIMIT_OPTIONS.includes(universeLimit)) {
       return { ok: false, error: 'INVALID_UNIVERSE_LIMIT', message: `universeLimit must be one of: ${MOMENTUM_UNIVERSE_LIMIT_OPTIONS.join(', ')}` };
     }
+    const scanMode = String(config?.scanMode || 'UNIVERSE').toUpperCase() === 'SINGLE' ? 'SINGLE' : 'UNIVERSE';
     let singleSymbol = String(config?.singleSymbol || '').trim().toUpperCase();
-    if (singleSymbol) {
+    if (scanMode === 'SINGLE') {
+      if (!singleSymbol) {
+        return { ok: false, error: 'SINGLE_SYMBOL_REQUIRED', message: 'singleSymbol is required for scanMode=SINGLE' };
+      }
       if (!/^[A-Z0-9]{3,}USDT$/.test(singleSymbol)) {
         return { ok: false, error: 'INVALID_SINGLE_SYMBOL', message: 'singleSymbol must match /^[A-Z0-9]{3,}USDT$/' };
       }
@@ -122,7 +129,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };
       if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
-    const inst = createMomentumInstance({ id, config: { ...config, singleSymbol }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
+    const inst = createMomentumInstance({ id, config: { ...config, scanMode, singleSymbol }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
     syncSelectionPolicy();

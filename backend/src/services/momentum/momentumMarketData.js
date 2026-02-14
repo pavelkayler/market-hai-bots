@@ -8,6 +8,7 @@ const TURNOVER_HISTORY_SIZE = 10;
 const TURNOVER_MEDIAN_WINDOW = 5;
 const MIN_SELECTION_CAP = 10;
 const MAX_SELECTION_CAP = 1500;
+const KLINE_FORCE_SEED_COOLDOWN_MS = 15000;
 
 function chunk(arr, n = 100) {
   const out = [];
@@ -42,6 +43,8 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
   const turnoverStore = new Map();
   const bybitRest = createBybitRest({ logger });
   const seededKlineKeys = new Set();
+  const seedKlineInFlight = new Map();
+  const seedKlineLastForcedAtMs = new Map();
   const oiLastUpdateTsMs = new Map();
   const tickers24h = new Map();
   let tickersSnapshotTsMs = 0;
@@ -226,30 +229,50 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
 
   async function seedKlineBaseline(symbol, interval, force = false) {
     const key = getTurnoverKey(symbol, interval);
-    if (!force && seededKlineKeys.has(key)) return;
-    try {
-      const candles = await bybitRest.getKlines({ symbol, interval, limit: 2 });
-      if (!Array.isArray(candles) || candles.length === 0) return;
-      const row = turnoverStore.get(key) || { prevCandle: null, curCandle: null, historyTurnover: [], medianTurnoverUSDT: null, prevOiValue: null, lastUpdateMs: 0 };
-      const prev = candles.length >= 2 ? candles[candles.length - 2] : null;
-      const cur = candles[candles.length - 1];
-      if (prev) {
-        row.prevCandle = { startMs: prev.t, close: Number(prev.c), turnover: Number(prev.turnover || 0) };
-        row.historyTurnover = [...row.historyTurnover, Number(prev.turnover || 0)].filter((x) => Number.isFinite(x) && x >= 0).slice(-TURNOVER_HISTORY_SIZE);
-        row.medianTurnoverUSDT = computeTurnoverMedian(row.historyTurnover);
+    const nInterval = Number(interval);
+    if (!ALLOWED_INTERVALS.has(nInterval)) return { ok: false, reason: 'INVALID_INTERVAL' };
+    if (seedKlineInFlight.has(key)) return seedKlineInFlight.get(key);
+    if (!force && seededKlineKeys.has(key)) return { ok: true, skipped: 'ALREADY_SEEDED' };
+    const now = Date.now();
+    if (force) {
+      const lastForcedAt = Number(seedKlineLastForcedAtMs.get(key) || 0);
+      if ((now - lastForcedAt) < KLINE_FORCE_SEED_COOLDOWN_MS) {
+        return { ok: false, reason: 'FORCE_RATE_LIMITED', retryInMs: KLINE_FORCE_SEED_COOLDOWN_MS - (now - lastForcedAt) };
       }
-      if (cur) row.curCandle = { startMs: cur.t, close: Number(cur.c), turnover: Number(cur.turnover || 0) };
-      if (!(Number(row.prevOiValue) > 0)) {
-        const oiNow = Number(current.get(symbol)?.oiValue);
-        if (Number.isFinite(oiNow) && oiNow > 0) row.prevOiValue = oiNow;
-      }
-      row.lastUpdateMs = Date.now();
-      turnoverStore.set(key, row);
-      seededKlineKeys.add(key);
-    } catch (err) {
-      logger.debug?.({ err, symbol, interval }, 'momentum kline seed failed');
+      seedKlineLastForcedAtMs.set(key, now);
     }
+    const task = (async () => {
+      try {
+        const candles = await bybitRest.getKlines({ symbol, interval: nInterval, limit: 2 });
+        if (!Array.isArray(candles) || candles.length === 0) return { ok: false, reason: 'NO_CANDLES' };
+        const row = turnoverStore.get(key) || { prevCandle: null, curCandle: null, historyTurnover: [], medianTurnoverUSDT: null, prevOiValue: null, lastUpdateMs: 0 };
+        const prev = candles.length >= 2 ? candles[candles.length - 2] : null;
+        const cur = candles[candles.length - 1];
+        if (prev) {
+          row.prevCandle = { startMs: prev.t, close: Number(prev.c), turnover: Number(prev.turnover || 0) };
+          row.historyTurnover = [...row.historyTurnover, Number(prev.turnover || 0)].filter((x) => Number.isFinite(x) && x >= 0).slice(-TURNOVER_HISTORY_SIZE);
+          row.medianTurnoverUSDT = computeTurnoverMedian(row.historyTurnover);
+        }
+        if (cur) row.curCandle = { startMs: cur.t, close: Number(cur.c), turnover: Number(cur.turnover || 0) };
+        if (!(Number(row.prevOiValue) > 0)) {
+          const oiNow = Number(current.get(symbol)?.oiValue);
+          if (Number.isFinite(oiNow) && oiNow > 0) row.prevOiValue = oiNow;
+        }
+        row.lastUpdateMs = Date.now();
+        turnoverStore.set(key, row);
+        seededKlineKeys.add(key);
+        return { ok: true, seeded: true };
+      } catch (err) {
+        logger.debug?.({ err, symbol, interval: nInterval }, 'momentum kline seed failed');
+        return { ok: false, reason: 'SEED_FAILED', error: String(err?.message || err) };
+      } finally {
+        seedKlineInFlight.delete(key);
+      }
+    })();
+    seedKlineInFlight.set(key, task);
+    return task;
   }
+
 
   function parseKline(msg) {
     if (!msg?.topic?.startsWith('kline.')) return null;
@@ -348,6 +371,16 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     const idx = bucket.secToIndex.get(targetSec);
     if (idx === undefined) return null;
     return bucket.rows[idx] || null;
+  }
+
+
+  function getHistorySecondsAvailable(symbol) {
+    const bucket = ring.get(symbol);
+    if (!bucket || bucket.rows.length <= 1) return 0;
+    const firstSec = Number(bucket.rows[0]?.tsSec);
+    const lastSec = Number(bucket.rows[bucket.rows.length - 1]?.tsSec);
+    if (!Number.isFinite(firstSec) || !Number.isFinite(lastSec) || lastSec <= firstSec) return 0;
+    return Math.max(0, lastSec - firstSec);
   }
 
   function getLastReturns(symbol, k) {
@@ -632,12 +665,14 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     getAtWindow,
     getLastReturns,
     getTrendOk,
+    getHistorySecondsAvailable,
     getOiAgeSec,
     getOiValue,
     isDataFresh,
     getEligibleSymbols,
     getTurnoverGate,
     getCandleBaseline,
+    seedKlineBaseline,
     setActiveIntervals,
     setPinnedSymbols,
     getPinnedSymbols,
