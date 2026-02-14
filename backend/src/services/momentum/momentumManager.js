@@ -83,12 +83,13 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   }
 
   marketData.onTick(async (tick) => {
-    const eligible = marketData.getEligibleSymbols();
     for (const inst of instances.values()) {
       const cfg = inst.getSnapshot?.()?.config || {};
       const singleSymbol = String(cfg.singleSymbol || '').toUpperCase().trim();
-      const symbols = cfg.scanMode === 'SINGLE' && singleSymbol ? [singleSymbol] : eligible;
-      await inst.onTick(tick, symbols);
+      const evalSymbols = cfg.scanMode === 'SINGLE' && singleSymbol
+        ? [singleSymbol]
+        : marketData.getDesiredSymbolsForCap?.(cfg.universeLimit, { turnover24hMin: cfg.turnover24hMin, vol24hMin: cfg.vol24hMin }) || [];
+      await inst.onTick(tick, evalSymbols);
     }
     emitState();
   });
@@ -99,7 +100,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     if (![1, 3, 5].includes(windowMinutes)) {
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
-    const mode = String(config?.mode || 'paper').toLowerCase();
+    const mode = String(config?.mode || 'demo').toLowerCase();
     const universeLimit = Number(config?.universeLimit ?? 200);
     if (!MOMENTUM_UNIVERSE_LIMIT_OPTIONS.includes(universeLimit)) {
       return { ok: false, error: 'INVALID_UNIVERSE_LIMIT', message: `universeLimit must be one of: ${MOMENTUM_UNIVERSE_LIMIT_OPTIONS.join(', ')}` };
@@ -129,7 +130,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };
       if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
-    const inst = createMomentumInstance({ id, config: { ...config, scanMode, singleSymbol }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
+    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, singleSymbol }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     syncActiveIntervals();
     syncSelectionPolicy();

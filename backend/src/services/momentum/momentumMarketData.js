@@ -72,6 +72,8 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     turnover24hMin: Math.max(0, Number(turnover24hMin) || 0),
     vol24hMin: Math.max(0, Number(vol24hMin) || 0),
   };
+  let desiredSymbolsList = [];
+  const desiredSymbolsSet = new Set();
 
   const getTurnoverKey = (symbol, interval) => `${symbol}:${interval}`;
 
@@ -417,6 +419,27 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     return Number.NaN;
   }
 
+  function getDesiredSymbolsForCap(limit = selectionPolicy.cap, filters = {}) {
+    const turnoverMin = Number.isFinite(Number(filters?.turnover24hMin)) ? Number(filters.turnover24hMin) : selectionPolicy.turnover24hMin;
+    const volMin = Number.isFinite(Number(filters?.vol24hMin)) ? Number(filters.vol24hMin) : selectionPolicy.vol24hMin;
+    const capValue = Number.isFinite(Number(limit)) ? Number(limit) : selectionPolicy.cap;
+    return getEligibleSymbols({ turnoverMin, volMin, cap: capValue });
+  }
+
+  function getDesiredSymbols() {
+    return [...desiredSymbolsList];
+  }
+
+  function isSymbolSubscribed(symbol) {
+    const sym = String(symbol || '').toUpperCase();
+    return subscribedTickers.has(`tickers.${sym}`);
+  }
+
+  function isSymbolInDesiredSet(symbol) {
+    const sym = String(symbol || '').toUpperCase();
+    return desiredSymbolsSet.has(sym) || pinnedSymbols.has(sym);
+  }
+
   function getEligibleSymbols({ turnoverMin = selectionPolicy.turnover24hMin, volMin = selectionPolicy.vol24hMin, cap: limit = selectionPolicy.cap } = {}) {
     const ineligibleCounts = {
       NO_TICKER_SNAPSHOT: 0,
@@ -495,6 +518,9 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
       cap: selectionPolicy.cap,
     });
     const desiredSymbols = [...new Set([...eligibleSymbols, ...pinnedSymbols])];
+    desiredSymbolsList = [...desiredSymbols];
+    desiredSymbolsSet.clear();
+    for (const symbol of desiredSymbolsList) desiredSymbolsSet.add(symbol);
     const desiredTickerTopics = new Set(desiredSymbols.map((s) => `tickers.${s}`));
     const desiredKlineTopics = new Set();
     for (const symbol of desiredSymbols) {
@@ -670,6 +696,10 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     getOiValue,
     isDataFresh,
     getEligibleSymbols,
+    getDesiredSymbolsForCap,
+    getDesiredSymbols,
+    isSymbolSubscribed,
+    isSymbolInDesiredSet,
     getTurnoverGate,
     getCandleBaseline,
     seedKlineBaseline,
@@ -690,6 +720,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
       selectionTurnoverMin: selectionPolicy.turnover24hMin,
       selectionVolMin: selectionPolicy.vol24hMin,
       desiredCap: selectionPolicy.cap,
+      desiredCount: desiredSymbolsList.length,
       turnoverMin: selectionPolicy.turnover24hMin,
       volMin: selectionPolicy.vol24hMin,
       lastTickTs,
