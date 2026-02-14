@@ -83,6 +83,7 @@ export function createBybitRest({ baseUrl = DEFAULT_BASE, logger = console } = {
         l: Number(r[3]),
         c: Number(r[4]),
         v: Number(r[5]),
+        turnover: Number(r[6]),
       }))
       .filter((x) => Number.isFinite(x.t) && Number.isFinite(x.o) && Number.isFinite(x.h) && Number.isFinite(x.l) && Number.isFinite(x.c))
       .sort((a, b) => a.t - b.t);
