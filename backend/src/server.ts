@@ -3,6 +3,7 @@ import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { BotEngine, normalizeBotConfig } from './bot/botEngine.js';
+import { DemoTradeClient, type IDemoTradeClient } from './bybit/demoTradeClient.js';
 import { MarketHub } from './market/marketHub.js';
 import type { TickerStream } from './market/tickerStream.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
@@ -15,6 +16,7 @@ type BuildServerOptions = {
   activeSymbolSet?: ActiveSymbolSet;
   tickerStream?: TickerStream;
   now?: () => number;
+  demoTradeClient?: IDemoTradeClient;
 };
 
 const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
@@ -35,9 +37,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const activeSymbolSet = options.activeSymbolSet ?? new ActiveSymbolSet();
   const universeService = new UniverseService(marketClient, activeSymbolSet, app.log, options.universeFilePath);
   const wsClients = new Set<{ send: (payload: string) => unknown }>();
+  const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
   const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500);
 
-  const broadcast = (type: string, payload: Record<string, unknown>): void => {
+  const broadcast = (type: string, payload: unknown): void => {
     const message = JSON.stringify({ type, ts: Date.now(), payload });
     for (const client of wsClients) {
       client.send(message);
@@ -54,7 +57,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     },
     emitPositionUpdate: (payload) => {
       broadcast('position:update', payload);
-    }
+    },
+    emitQueueUpdate: (payload) => {
+      broadcast('queue:update', payload);
+    },
+    demoTradeClient
   });
 
   const marketHub = new MarketHub({
@@ -136,7 +143,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return { ok: true };
     }
 
-    botEngine.cancelPendingOrder(body.symbol, marketState);
+    await botEngine.cancelPendingOrder(body.symbol, marketState);
     return { ok: true };
   });
 
@@ -245,11 +252,17 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     });
   });
 
+
+  const demoPoller = setInterval(() => {
+    void botEngine.pollDemoOrders(marketHub.getAllStates());
+  }, 1500);
+
   app.addHook('onReady', async () => {
     await marketHub.start();
   });
 
   app.addHook('onClose', async () => {
+    clearInterval(demoPoller);
     await marketHub.stop();
   });
 

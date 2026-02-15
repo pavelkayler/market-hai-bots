@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
 import { buildServer } from '../src/server.js';
 import type { TickerStream, TickerUpdate } from '../src/market/tickerStream.js';
 import type { IBybitMarketClient, InstrumentLinear, TickerLinear } from '../src/services/bybitMarketClient.js';
@@ -43,6 +44,20 @@ class FakeTickerStream implements TickerStream {
 
   emit(update: TickerUpdate): void {
     this.handler?.(update);
+  }
+}
+
+
+class BlockingDemoTradeClient implements IDemoTradeClient {
+  async createLimitOrderWithTpSl(): Promise<{ orderId: string; orderLinkId: string }> {
+    await new Promise(() => undefined);
+    return { orderId: '', orderLinkId: '' };
+  }
+
+  async cancelOrder(): Promise<void> {}
+
+  async getOpenOrders(): Promise<[]> {
+    return [];
   }
 }
 
@@ -292,6 +307,61 @@ describe('server routes', () => {
     const botState = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(botState.json()).toMatchObject({ activeOrders: 0, openPositions: 0 });
   });
+
+  it('GET /api/bot/state reflects demo queueDepth', async () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const tickerStream = new FakeTickerStream();
+    app = buildServer({
+      now: () => now,
+      tickerStream,
+      demoTradeClient: new BlockingDemoTradeClient(),
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 12000000,
+              highPrice24h: 110,
+              lowPrice24h: 100,
+              markPrice: 100,
+              openInterestValue: 100000
+            }
+          ]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'demo',
+        direction: 'long',
+        tf: 1,
+        holdSeconds: 1,
+        priceUpThrPct: 1,
+        oiUpThrPct: 1,
+        marginUSDT: 100,
+        leverage: 2,
+        tpRoiPct: 1,
+        slRoiPct: 1
+      }
+    });
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
+
+    const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(response.statusCode).toBe(200);
+    expect((response.json() as { queueDepth: number }).queueDepth).toBeGreaterThan(0);
+  });
+
 
 
 });
