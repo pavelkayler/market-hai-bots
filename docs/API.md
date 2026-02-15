@@ -14,11 +14,17 @@ WS: `/ws`
 ### Bot
 - `POST /api/bot/start`
 - `POST /api/bot/stop`
+- `POST /api/bot/pause`
+- `POST /api/bot/resume`
+  - Returns `{ "ok": false, "error": "NO_SNAPSHOT" }` if no runtime snapshot exists.
 - `GET /api/bot/state`
 Response shape for `/api/bot/state`:
 ```json
 {
   "running": false,
+  "paused": false,
+  "hasSnapshot": false,
+  "lastConfig": null,
   "mode": null,
   "direction": null,
   "tf": null,

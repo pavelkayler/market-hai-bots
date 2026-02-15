@@ -3,6 +3,7 @@ import type { MarketState } from '../market/marketHub.js';
 import { DemoOrderQueue, type DemoQueueSnapshot } from './demoOrderQueue.js';
 import { PAPER_FEES } from './paperFees.js';
 import type { PaperPendingOrder, PaperPosition } from './paperTypes.js';
+import type { RuntimeSnapshot, RuntimeSnapshotSymbol, SnapshotStore } from './snapshotStore.js';
 
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
@@ -23,6 +24,8 @@ export type BotConfig = {
 
 export type BotState = {
   running: boolean;
+  paused: boolean;
+  hasSnapshot: boolean;
   startedAt: number | null;
   config: BotConfig | null;
   queueDepth: number;
@@ -38,6 +41,13 @@ export type SymbolBaseline = {
   baseTs: number;
 };
 
+export type DemoRuntimeState = {
+  orderId: string | null;
+  orderLinkId: string | null;
+  placedTs: number;
+  expiresTs: number;
+};
+
 export type SymbolRuntimeState = {
   symbol: string;
   fsmState: SymbolFsmState;
@@ -48,6 +58,7 @@ export type SymbolRuntimeState = {
   overrideGateOnce: boolean;
   pendingOrder: PaperPendingOrder | null;
   position: PaperPosition | null;
+  demo: DemoRuntimeState | null;
   demoNoOrderPolls: number;
 };
 
@@ -81,6 +92,7 @@ type BotEngineDeps = {
   emitPositionUpdate: (payload: PositionUpdatePayload) => void;
   emitQueueUpdate: (payload: DemoQueueSnapshot) => void;
   demoTradeClient?: IDemoTradeClient;
+  snapshotStore?: SnapshotStore;
 };
 
 const DEFAULT_HOLD_SECONDS = 3;
@@ -135,6 +147,8 @@ export class BotEngine {
   private readonly demoQueue: DemoOrderQueue;
   private state: BotState = {
     running: false,
+    paused: false,
+    hasSnapshot: false,
     startedAt: null,
     config: null,
     queueDepth: 0,
@@ -147,11 +161,16 @@ export class BotEngine {
     this.demoQueue = new DemoOrderQueue((snapshot) => {
       this.state = { ...this.state, queueDepth: snapshot.depth };
       this.deps.emitQueueUpdate(snapshot);
+      this.persistSnapshot();
     });
   }
 
   getState(): BotState {
     return { ...this.state };
+  }
+
+  getRuntimeSymbols(): string[] {
+    return Array.from(this.symbols.keys());
   }
 
   setUniverseSymbols(symbols: string[]): void {
@@ -164,37 +183,89 @@ export class BotEngine {
 
     for (const symbol of symbols) {
       if (!this.symbols.has(symbol)) {
-        this.symbols.set(symbol, {
-          symbol,
-          fsmState: 'IDLE',
-          baseline: null,
-          holdStartTs: null,
-          lastEvaluationGateTs: null,
-          blockedUntilTs: 0,
-          overrideGateOnce: false,
-          pendingOrder: null,
-          position: null,
-          demoNoOrderPolls: 0
-        });
+        this.symbols.set(symbol, this.buildEmptySymbolState(symbol));
       }
     }
     this.updateSummaryCounts();
+    this.persistSnapshot();
   }
 
   start(config: BotConfig): void {
     this.state = {
       ...this.state,
       running: true,
+      paused: false,
       startedAt: this.now(),
       config
     };
+    this.persistSnapshot();
   }
 
   stop(): void {
     this.state = {
       ...this.state,
-      running: false
+      running: false,
+      paused: false
     };
+    this.persistSnapshot();
+  }
+
+  pause(): void {
+    this.state = {
+      ...this.state,
+      paused: true
+    };
+    this.persistSnapshot();
+  }
+
+  resume(canRun: boolean): boolean {
+    this.state = {
+      ...this.state,
+      paused: false,
+      running: canRun ? true : this.state.running
+    };
+    this.persistSnapshot();
+    return true;
+  }
+
+  restoreFromSnapshot(snapshot: RuntimeSnapshot): void {
+    this.symbols.clear();
+    for (const [symbol, state] of Object.entries(snapshot.symbols)) {
+      this.symbols.set(symbol, {
+        symbol,
+        fsmState: state.fsmState,
+        baseline: state.baseline,
+        holdStartTs: null,
+        lastEvaluationGateTs: null,
+        blockedUntilTs: state.blockedUntilTs,
+        overrideGateOnce: state.overrideGateOnce,
+        pendingOrder: state.pendingOrder,
+        position: state.position,
+        demo: state.demo,
+        demoNoOrderPolls: 0
+      });
+    }
+
+    this.state = {
+      ...this.state,
+      running: false,
+      paused: true,
+      hasSnapshot: true,
+      startedAt: null,
+      config: snapshot.config
+    };
+
+    this.updateSummaryCounts();
+    this.persistSnapshot();
+  }
+
+  clearSnapshotState(): void {
+    this.state = {
+      ...this.state,
+      hasSnapshot: false
+    };
+
+    this.deps.snapshotStore?.clear();
   }
 
   getSymbolState(symbol: string): SymbolRuntimeState | undefined {
@@ -207,7 +278,8 @@ export class BotEngine {
       ...symbolState,
       baseline: symbolState.baseline ? { ...symbolState.baseline } : null,
       pendingOrder: symbolState.pendingOrder ? { ...symbolState.pendingOrder } : null,
-      position: symbolState.position ? { ...symbolState.position } : null
+      position: symbolState.position ? { ...symbolState.position } : null,
+      demo: symbolState.demo ? { ...symbolState.demo } : null
     };
   }
 
@@ -230,16 +302,23 @@ export class BotEngine {
     }
 
     symbolState.pendingOrder = null;
+    symbolState.demo = null;
     symbolState.fsmState = 'IDLE';
     symbolState.holdStartTs = null;
     this.resetBaseline(symbolState, marketState);
     this.deps.emitOrderUpdate({ symbol, status: 'CANCELLED', order: cancelledOrder });
     this.updateSummaryCounts();
+    this.persistSnapshot();
     return true;
   }
 
   async pollDemoOrders(allMarketStates: Record<string, MarketState>): Promise<void> {
-    if (!this.state.running || this.state.config?.mode !== 'demo' || !this.deps.demoTradeClient) {
+    if (this.state.config?.mode !== 'demo' || !this.deps.demoTradeClient) {
+      return;
+    }
+
+    const hasMonitorableSymbols = Array.from(this.symbols.values()).some((symbolState) => symbolState.pendingOrder || symbolState.position);
+    if (!this.state.running && !hasMonitorableSymbols) {
       return;
     }
 
@@ -265,7 +344,7 @@ export class BotEngine {
   }
 
   onMarketUpdate(symbol: string, marketState: MarketState): void {
-    if (!this.state.running || !this.state.config) {
+    if (!this.state.config) {
       return;
     }
 
@@ -277,6 +356,7 @@ export class BotEngine {
     if (!symbolState.baseline) {
       this.resetBaseline(symbolState, marketState);
       this.updateSummaryCounts();
+      this.persistSnapshot();
       return;
     }
 
@@ -294,6 +374,10 @@ export class BotEngine {
       return;
     }
 
+    if (!this.state.running || this.state.paused) {
+      return;
+    }
+
     const now = this.now();
     if (now < symbolState.blockedUntilTs) {
       return;
@@ -307,6 +391,7 @@ export class BotEngine {
     const side = this.getEligibleSide(priceDeltaPct, oiDeltaPct);
     if (!side) {
       this.resetToIdle(symbolState);
+      this.persistSnapshot();
       return;
     }
 
@@ -314,6 +399,7 @@ export class BotEngine {
     if (symbolState.fsmState !== holdingState) {
       symbolState.fsmState = holdingState;
       symbolState.holdStartTs = now;
+      this.persistSnapshot();
       return;
     }
 
@@ -341,6 +427,23 @@ export class BotEngine {
 
     this.placeConfirmedOrder(symbolState, marketState, side, qty);
     this.updateSummaryCounts();
+    this.persistSnapshot();
+  }
+
+  private buildEmptySymbolState(symbol: string): SymbolRuntimeState {
+    return {
+      symbol,
+      fsmState: 'IDLE',
+      baseline: null,
+      holdStartTs: null,
+      lastEvaluationGateTs: null,
+      blockedUntilTs: 0,
+      overrideGateOnce: false,
+      pendingOrder: null,
+      position: null,
+      demo: null,
+      demoNoOrderPolls: 0
+    };
   }
 
   private placeConfirmedOrder(symbolState: SymbolRuntimeState, marketState: MarketState, side: 'LONG' | 'SHORT', qty: number): void {
@@ -369,9 +472,19 @@ export class BotEngine {
     symbolState.pendingOrder = pendingOrder;
     symbolState.fsmState = 'ENTRY_PENDING';
     symbolState.holdStartTs = null;
+    symbolState.demo =
+      this.state.config.mode === 'demo'
+        ? {
+            orderId: null,
+            orderLinkId: pendingOrder.orderLinkId ?? null,
+            placedTs: pendingOrder.placedTs,
+            expiresTs: pendingOrder.expiresTs
+          }
+        : null;
 
     if (this.state.config.mode === 'paper') {
       this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'PLACED', order: pendingOrder });
+      this.persistSnapshot();
       return;
     }
 
@@ -400,7 +513,14 @@ export class BotEngine {
         currentOrder.orderId = created.orderId;
         currentOrder.orderLinkId = created.orderLinkId;
         currentOrder.sentToExchange = true;
+        symbolState.demo = {
+          orderId: created.orderId,
+          orderLinkId: created.orderLinkId,
+          placedTs: currentOrder.placedTs,
+          expiresTs: currentOrder.expiresTs
+        };
         this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'PLACED', order: { ...currentOrder } });
+        this.persistSnapshot();
       }
     });
   }
@@ -411,7 +531,8 @@ export class BotEngine {
       return;
     }
 
-    if (this.now() >= pendingOrder.expiresTs) {
+    const now = this.now();
+    if (now >= pendingOrder.expiresTs) {
       if (pendingOrder.sentToExchange && this.deps.demoTradeClient) {
         await this.deps.demoTradeClient.cancelOrder({
           symbol: symbolState.symbol,
@@ -419,26 +540,38 @@ export class BotEngine {
           orderLinkId: pendingOrder.orderLinkId
         });
       }
+
       symbolState.pendingOrder = null;
+      symbolState.demo = null;
       symbolState.fsmState = 'IDLE';
       this.resetBaseline(symbolState, marketState);
       this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'EXPIRED', order: pendingOrder });
       this.updateSummaryCounts();
+      this.persistSnapshot();
       return;
     }
 
-    const matchingOrder = openOrders.find((order) =>
-      (pendingOrder.orderId && order.orderId === pendingOrder.orderId) || (pendingOrder.orderLinkId && order.orderLinkId === pendingOrder.orderLinkId)
-    );
+    const matchingOrder = openOrders.find((order) => {
+      if (order.symbol !== symbolState.symbol) {
+        return false;
+      }
 
-    if (!matchingOrder?.orderStatus) {
+      if (pendingOrder.orderId && order.orderId === pendingOrder.orderId) {
+        return true;
+      }
+
+      return !!pendingOrder.orderLinkId && order.orderLinkId === pendingOrder.orderLinkId;
+    });
+
+    if (!matchingOrder) {
       return;
     }
 
     if (matchingOrder.orderStatus === 'Filled') {
+      const side = pendingOrder.side === 'Buy' ? 'LONG' : 'SHORT';
       const position: PaperPosition = {
         symbol: symbolState.symbol,
-        side: pendingOrder.side === 'Buy' ? 'LONG' : 'SHORT',
+        side,
         entryPrice: pendingOrder.limitPrice,
         qty: pendingOrder.qty,
         tpPrice: pendingOrder.tpPrice ?? pendingOrder.limitPrice,
@@ -447,21 +580,25 @@ export class BotEngine {
       };
 
       symbolState.pendingOrder = null;
+      symbolState.demo = null;
       symbolState.position = position;
       symbolState.demoNoOrderPolls = 0;
       symbolState.fsmState = 'POSITION_OPEN';
       this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'FILLED', order: pendingOrder });
       this.deps.emitPositionUpdate({ symbol: symbolState.symbol, status: 'OPEN', position });
       this.updateSummaryCounts();
+      this.persistSnapshot();
       return;
     }
 
     if (matchingOrder.orderStatus === 'Cancelled' || matchingOrder.orderStatus === 'Rejected') {
       symbolState.pendingOrder = null;
+      symbolState.demo = null;
       symbolState.fsmState = 'IDLE';
       this.resetBaseline(symbolState, marketState);
       this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'CANCELLED', order: pendingOrder });
       this.updateSummaryCounts();
+      this.persistSnapshot();
     }
   }
 
@@ -501,6 +638,7 @@ export class BotEngine {
       pnlUSDT: 0
     });
     this.updateSummaryCounts();
+    this.persistSnapshot();
   }
 
   private processPendingPaperOrder(symbolState: SymbolRuntimeState, marketState: MarketState): void {
@@ -516,6 +654,7 @@ export class BotEngine {
       this.resetBaseline(symbolState, marketState);
       this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'EXPIRED', order: expiredOrder });
       this.updateSummaryCounts();
+      this.persistSnapshot();
       return;
     }
 
@@ -549,6 +688,7 @@ export class BotEngine {
     this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'FILLED', order: filledOrder });
     this.deps.emitPositionUpdate({ symbol: symbolState.symbol, status: 'OPEN', position });
     this.updateSummaryCounts();
+    this.persistSnapshot();
   }
 
   private processOpenPosition(symbolState: SymbolRuntimeState, marketState: MarketState): void {
@@ -586,6 +726,7 @@ export class BotEngine {
       pnlUSDT
     });
     this.updateSummaryCounts();
+    this.persistSnapshot();
   }
 
   private resetBaseline(symbolState: SymbolRuntimeState, marketState: MarketState): void {
@@ -595,6 +736,7 @@ export class BotEngine {
       baseTs: marketState.ts
     };
     symbolState.overrideGateOnce = true;
+    this.persistSnapshot();
   }
 
   private updateSummaryCounts(): void {
@@ -614,6 +756,56 @@ export class BotEngine {
       ...this.state,
       activeOrders,
       openPositions
+    };
+  }
+
+  private persistSnapshot(): void {
+    if (!this.deps.snapshotStore) {
+      return;
+    }
+
+    const snapshot = this.buildSnapshot();
+    const hasSymbols = Object.keys(snapshot.symbols).length > 0;
+    if (!snapshot.config && !hasSymbols) {
+      this.deps.snapshotStore.clear();
+      this.state = {
+        ...this.state,
+        hasSnapshot: false
+      };
+      return;
+    }
+
+    this.deps.snapshotStore.save(snapshot);
+    this.state = {
+      ...this.state,
+      hasSnapshot: true
+    };
+  }
+
+  private buildSnapshot(): RuntimeSnapshot {
+    const symbolSnapshots: Record<string, RuntimeSnapshotSymbol> = {};
+    for (const [symbol, symbolState] of this.symbols.entries()) {
+      if (symbolState.fsmState === 'IDLE' && !symbolState.pendingOrder && !symbolState.position && !symbolState.baseline) {
+        continue;
+      }
+
+      symbolSnapshots[symbol] = {
+        fsmState: symbolState.fsmState,
+        baseline: symbolState.baseline,
+        blockedUntilTs: symbolState.blockedUntilTs,
+        overrideGateOnce: symbolState.overrideGateOnce,
+        pendingOrder: symbolState.pendingOrder,
+        position: symbolState.position,
+        demo: symbolState.demo
+      };
+    }
+
+    return {
+      savedAt: this.now(),
+      paused: this.state.paused,
+      running: this.state.running,
+      config: this.state.config,
+      symbols: symbolSnapshots
     };
   }
 
