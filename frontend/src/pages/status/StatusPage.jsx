@@ -9,12 +9,12 @@ const fmtAge = (ts) => {
 }
 
 export default function StatusPage() {
-  const [healthWs, setHealthWs] = useState({
+  const [healthWs, setHealthWs] = useState(() => ({
     now: Date.now(),
     ws: { connected: false, lastSeenAt: null, rttMs: null },
     bybitWs: { status: 'waiting', symbol: 'BTCUSDT', lastTickerAt: null, lastBybitTs: null, ageMs: null },
     cmcApi: { status: 'waiting', lastCheckAt: null, ageMs: null, latencyMs: null },
-  })
+  }))
 
   const onWsMessage = useMemo(() => (_ev, msg) => {
     if (!msg) return

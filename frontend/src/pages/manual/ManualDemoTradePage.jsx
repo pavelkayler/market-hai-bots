@@ -35,9 +35,9 @@ export default function ManualDemoTradePage() {
   useEffect(() => { fetch(`${API_BASE}/api/universe/list`).then((r) => r.json()).then((d) => setSymbols(d.symbols || [])).catch(() => {}); }, []);
   useEffect(() => {
     if (!form.symbol) return;
-    refresh(form.symbol);
+    const once = setTimeout(() => { refresh(form.symbol); }, 0);
     const timer = setInterval(() => { if (document.visibilityState === 'visible') refresh(form.symbol); }, 1500);
-    return () => clearInterval(timer);
+    return () => { clearTimeout(once); clearInterval(timer); };
   }, [form.symbol, refresh]);
 
   const preview = useMemo(() => {
@@ -58,13 +58,11 @@ export default function ManualDemoTradePage() {
 
     <Col md={6}><Card><Card.Body><Card.Title>Position</Card.Title>
       <Table size='sm'><thead><tr><th>Symbol</th><th>Side</th><th>Size</th><th>Entry</th><th>TP</th><th>SL</th><th>Action</th></tr></thead><tbody>
-        <tr><td>{form.symbol}</td><td>{sideOfPosition(state.position) || '-'}</td><td>{fmt(state.position?.size || state.position?.qty)}</td><td>{fmt(state.position?.avgPrice || state.position?.entryPrice)}</td><td>{Number(state.position?.takeProfit || 0) > 0 ? fmt(state.position?.takeProfit) : (tpOrder ? `TP(order): ${fmt(tpOrder.price)}` : '-')}</td><td>{fmt(state.position?.stopLoss)}</td><td><Button size='sm' variant='warning' onClick={async () => { setLastAction(await ws.request('manual.closeDemoPosition', { symbol: form.symbol })); refresh(form.symbol); }}>Close</Button></td></tr>
+        <tr><td>{form.symbol}</td><td>{sideOfPosition(state.position) || '-'}</td><td>{fmt(state.position?.size || state.position?.qty)}</td><td>{fmt(state.position?.avgPrice || state.position?.entryPrice)}</td><td>{Number(state.position?.takeProfit || 0) > 0 ? fmt(state.position?.takeProfit) : (tpOrder ? `TP(order): ${fmt(tpOrder.price)}` : '-')}</td><td>{fmt(state.position?.stopLoss)}</td><td><Button size='sm' variant='warning' onClick={async () => { setLastAction(await ws.request('manual.closeDemoPosition', { symbol: form.symbol })); refresh(form.symbol); }}>Закрыть позицию (Market)</Button></td></tr>
       </tbody></Table>
-      <Button variant='outline-danger' size='sm' onClick={async () => { setLastAction(await ws.request('manual.cancelDemoOrders', { symbol: form.symbol })); refresh(form.symbol); }}>Cancel all orders</Button>
-
       <h6 className='mt-3'>Open Orders</h6>
-      <Table size='sm'><thead><tr><th>Type</th><th>Side</th><th>Price</th><th>Qty</th><th>LeavesQty</th><th>ReduceOnly</th><th>Status</th><th>Created</th><th>OrderId</th></tr></thead><tbody>
-        {(state.orders || []).map((o) => <tr key={o.orderId || `${o.side}-${o.price}`}><td>{o.orderType || o.type || 'Limit'}</td><td>{o.side}</td><td>{fmt(o.price)}</td><td>{fmt(o.qty)}</td><td>{fmt(o.leavesQty)}</td><td>{String(Boolean(o.reduceOnly))}</td><td>{o.orderStatus || o.status || '-'}</td><td>{o.createdTime ? new Date(Number(o.createdTime)).toLocaleString() : '-'}</td><td>{shortId(o.orderId)}</td></tr>)}
+      <Table size='sm'><thead><tr><th>Symbol</th><th>Side</th><th>Type</th><th>Price</th><th>Qty</th><th>LeavesQty</th><th>ReduceOnly</th><th>Status</th><th>Created</th><th>OrderId</th></tr></thead><tbody>
+        {[...(state.orders || [])].sort((a, b) => Number(b.createdTime || 0) - Number(a.createdTime || 0)).map((o) => <tr key={o.orderId || `${o.side}-${o.price}`}><td>{o.symbol || form.symbol}</td><td>{o.side}</td><td>{o.orderType || o.type || 'Limit'}</td><td>{fmt(o.price)}</td><td>{fmt(o.qty)}</td><td>{fmt(o.leavesQty)}</td><td>{String(Boolean(o.reduceOnly))}</td><td>{o.orderStatus || o.status || '-'}</td><td>{o.createdTime ? new Date(Number(o.createdTime)).toLocaleString() : '-'}</td><td>{shortId(o.orderId)}</td></tr>)}
       </tbody></Table>
       <div>Status: <pre className='mb-0'>{JSON.stringify(lastAction, null, 2)}</pre></div>
     </Card.Body></Card></Col>
