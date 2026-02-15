@@ -4,18 +4,11 @@ import cors from '@fastify/cors';
 import dotenv from 'dotenv';
 
 import { ensureDataDir } from '../libraries/config/dataDir.js';
-import { createBybitPublicWs } from '../bybitPublicWs.js';
-import { createMarketDataStore } from '../marketDataStore.js';
-import { createSubscriptionManager } from '../subscriptionManager.js';
-import { createBybitRest } from '../bybitRest.js';
-import { createBybitPrivateRest } from '../bybitPrivateRest.js';
-import { createBybitInstrumentsCache } from '../bybitInstrumentsCache.js';
-import { createBybitTradeExecutor } from '../bybitTradeExecutor.js';
-import { createMomentumMarketData } from '../services/momentum/momentumMarketData.js';
-import { createMomentumSqlite } from '../services/momentum/momentumSqlite.js';
-import { createMomentumManager } from '../services/momentum/momentumManager.js';
-import { createUniverseSearchService } from '../services/universeSearchService.js';
-import { createManualTradeService } from '../services/manual/manualTradeService.js';
+import { createBybitInstrumentsCache, createBybitPrivateRest, createBybitPublicWs, createBybitRest, createBybitTradeExecutor } from '../libraries/bybit/index.js';
+import { createMarketDataStore, createSubscriptionManager } from '../libraries/market-data/index.js';
+import { createMomentumApp } from '../apps/momentum/index.js';
+import { createUniverseApp } from '../apps/universe/index.js';
+import { createManualApp } from '../apps/manual/index.js';
 import { createMomentumRunsStore } from '../apps/momentum/data-access/momentumRunsStore.js';
 import { inspectMomentumSymbol } from '../apps/momentum/domain/inspectMomentum.js';
 
@@ -53,23 +46,15 @@ const tradeBaseUrl = process.env.BYBIT_TRADE_BASE_URL || 'https://api-demo.bybit
 const privateRest = createBybitPrivateRest({ apiKey: process.env.BYBIT_API_KEY, apiSecret: process.env.BYBIT_API_SECRET, baseUrl: tradeBaseUrl, recvWindow: Number(process.env.BYBIT_RECV_WINDOW || 5000) });
 const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, privateRest, logger: app.log });
 const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
-const momentumSqlite = createMomentumSqlite({ logger: app.log });
-await momentumSqlite.init();
 const runsStore = createMomentumRunsStore();
-const momentumMarketData = createMomentumMarketData({ logger: app.log });
-await momentumMarketData.start();
 const bybitRest = createBybitRest({ logger: app.log });
-const universeSearch = createUniverseSearchService({ marketData, subscriptions, bybitRest, logger: app.log, emitState: (payload) => broadcastEvent('universeSearch.state', payload), emitResult: (payload) => broadcastEvent('universeSearch.result', payload) });
-const momentumManager = createMomentumManager({
-  marketData: momentumMarketData,
-  sqlite: momentumSqlite,
-  tradeExecutor,
-  logger: app.log,
-  getUniverseBySource: () => [],
-  getUniverseTiers: () => universeSearch.getLatestResult?.()?.outputs?.tiers || [],
-});
-await momentumManager.init();
-const manualService = createManualTradeService({ tradeExecutor, marketData: momentumMarketData, logger: app.log });
+const universeApp = createUniverseApp({ marketData, subscriptions, bybitRest, logger: app.log, emitState: (payload) => broadcastEvent('universeSearch.state', payload), emitResult: (payload) => broadcastEvent('universeSearch.result', payload) });
+const universeSearch = universeApp.service;
+const momentumApp = await createMomentumApp({ logger: app.log, tradeExecutor, getUniverseTiers: () => universeSearch.getLatestResult?.()?.outputs?.tiers || [] });
+const momentumManager = momentumApp.manager;
+const momentumMarketData = momentumApp.marketData;
+const manualApp = createManualApp({ tradeExecutor, marketData: momentumMarketData, logger: app.log });
+const manualService = manualApp.service;
 
 app.get('/api/health', async () => ({ ok: true }));
 app.get('/api/universe-search/state', async () => universeSearch.getState());
