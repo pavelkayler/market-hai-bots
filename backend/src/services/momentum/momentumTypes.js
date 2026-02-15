@@ -18,12 +18,9 @@ export const SIDE = {
 };
 
 export const DEFAULT_MOMENTUM_CONFIG = {
-  scanMode: 'UNIVERSE',
-  singleSymbol: null,
   mode: 'paper',
   directionMode: 'BOTH',
   windowMinutes: 1,
-  universeSource: 'TIER_1',
   turnoverSpikePct: 0,
   baselineFloorUSDT: 0,
   holdSeconds: 1,

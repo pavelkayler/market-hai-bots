@@ -1,11 +1,7 @@
 export const DEFAULT_MOMENTUM_FORM = {
   mode: 'paper',
   directionMode: 'BOTH',
-  scanMode: 'UNIVERSE',
-  universeSource: 'TIER_1',
-  universeMode: 'TIERS',
-  tierIndices: [],
-  singleSymbol: '',
+  tierIndices: [1, 2, 3, 4, 5, 6],
   windowMinutes: 1,
   turnover24hMin: 100000,
   vol24hMin: 0.1,

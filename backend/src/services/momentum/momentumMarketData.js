@@ -216,6 +216,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
       for (const row of list) {
         if (row?.contractType === 'LinearPerpetual' && row?.status === 'Trading' && row?.symbol?.endsWith('USDT')) {
           instruments.add(row.symbol);
+          universeSymbols.add(row.symbol);
           const tickSize = Number(row?.priceFilter?.tickSize);
           const contractMultiplier = Number(row?.contractSize);
           if (Number.isFinite(tickSize) && tickSize > 0) {
@@ -281,6 +282,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
               if (row && !(Number(row.prevOiValue) > 0)) row.prevOiValue = oiValue;
             }
           }
+        const vol24h = getVolPctFromTicker({ highPrice24h, lowPrice24h, price24hPcnt });
         current.set(symbol, {
           markPrice,
           lastPrice,
@@ -290,6 +292,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
           highPrice24h: Number(row.highPrice24h),
           lowPrice24h: Number(row.lowPrice24h),
           price24hPcnt: Number(row.price24hPcnt),
+          vol24h: Number.isFinite(vol24h) ? vol24h : null,
           ts: tsMs,
           tickSize: Number(meta.tickSize) || null,
           contractMultiplier: Number(meta.contractMultiplier) || null,
@@ -407,6 +410,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     ws = new WebSocket(WS_URL);
     ws.on('open', () => { connected = true; reconcileSubscriptions('wsOpen'); });
+    ws.on('error', (err) => { logger.warn?.({ err }, 'momentum ws error'); });
     ws.on('close', () => { connected = false; setTimeout(connect, 1500); });
     ws.on('message', (buf) => {
       try {
@@ -780,7 +784,11 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     if (started) return;
     started = true;
     bootstrapStartedAtMs = Date.now();
-    await fetchUniverse();
+    try {
+      await fetchUniverse();
+    } catch (err) {
+      logger.warn?.({ err }, 'momentum universe bootstrap failed');
+    }
     try {
       await refreshTickersSnapshot();
     } catch (err) {
