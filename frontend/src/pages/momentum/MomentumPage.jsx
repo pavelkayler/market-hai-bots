@@ -37,12 +37,11 @@ export default function MomentumPage() {
 
   const persistPatch = useCallback(async (patch = {}) => {
     if (!Object.keys(patch).length) return;
+    saveDraft({ ...DEFAULT_MOMENTUM_FORM, ...JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'), ...patch });
     if (selectedId) {
       const out = await ws.request('momentum.updateInstanceConfig', { instanceId: selectedId, patch });
       if (!out?.ok) throw new Error(out?.message || out?.error || 'update config failed');
-      return;
     }
-    saveDraft({ ...DEFAULT_MOMENTUM_FORM, ...JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'), ...patch });
   }, [selectedId, ws, saveDraft]);
 
   const loadUniverse = useCallback(async () => {
