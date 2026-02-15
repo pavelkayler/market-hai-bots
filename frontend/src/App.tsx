@@ -1,0 +1,200 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Badge, Container, Nav, Navbar } from 'react-bootstrap';
+import { Link, Navigate, Route, Routes } from 'react-router-dom';
+
+import { API_BASE, WS_URL, getBotState, getHealth, getUniverse } from './api';
+import type { BotState, QueueUpdatePayload, SymbolUpdatePayload, UniverseState, WsEnvelope } from './types';
+import { BotPage } from './pages/BotPage';
+import { HomePage } from './pages/HomePage';
+
+type LogLine = {
+  ts: number;
+  text: string;
+};
+
+function pushLog(current: LogLine[], entry: LogLine): LogLine[] {
+  const next = [...current, entry];
+  if (next.length <= 5) {
+    return next;
+  }
+
+  return next.slice(next.length - 5);
+}
+
+export function App() {
+  const [restHealthy, setRestHealthy] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [botState, setBotState] = useState<BotState>({
+    running: false,
+    mode: null,
+    direction: null,
+    tf: null,
+    queueDepth: 0,
+    activeOrders: 0,
+    openPositions: 0
+  });
+  const [universeState, setUniverseState] = useState<UniverseState>({ ok: false, ready: false });
+  const [symbolMap, setSymbolMap] = useState<Record<string, SymbolUpdatePayload>>({});
+  const [logs, setLogs] = useState<LogLine[]>([]);
+  const reconnectTimer = useRef<number | null>(null);
+
+  const appendLog = useCallback((text: string, ts?: number) => {
+    setLogs((prev) => pushLog(prev, { text, ts: ts ?? Date.now() }));
+  }, []);
+
+  const syncRest = useCallback(async () => {
+    try {
+      const [health, nextUniverse, nextBotState] = await Promise.all([getHealth(), getUniverse(), getBotState()]);
+      setRestHealthy(health.ok);
+      setUniverseState(nextUniverse);
+      setBotState(nextBotState);
+    } catch {
+      setRestHealthy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void syncRest();
+    const interval = window.setInterval(() => {
+      void getHealth()
+        .then((health) => {
+          setRestHealthy(health.ok);
+        })
+        .catch(() => {
+          setRestHealthy(false);
+        });
+    }, 5000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [syncRest]);
+
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+
+    const connect = () => {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        setWsConnected(true);
+        appendLog('WS connected');
+        void syncRest();
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        appendLog('WS disconnected');
+        reconnectTimer.current = window.setTimeout(connect, 1500);
+      };
+
+      ws.onerror = () => {
+        ws?.close();
+      };
+
+      ws.onmessage = (event) => {
+        const message = JSON.parse(event.data) as WsEnvelope;
+
+        if (message.type === 'state') {
+          const payload = message.payload as Partial<BotState>;
+          setBotState((prev) => ({ ...prev, ...payload }));
+          return;
+        }
+
+        if (message.type === 'symbol:update') {
+          const payload = message.payload as SymbolUpdatePayload;
+          setSymbolMap((prev) => ({ ...prev, [payload.symbol]: payload }));
+          return;
+        }
+
+        if (message.type === 'queue:update') {
+          const payload = message.payload as QueueUpdatePayload;
+          setBotState((prev) => ({ ...prev, queueDepth: payload.depth }));
+          return;
+        }
+
+        if (message.type === 'universe:created' || message.type === 'universe:refreshed') {
+          appendLog(`${message.type} event`);
+          void syncRest();
+          return;
+        }
+
+        if (message.type === 'log') {
+          const payload = message.payload as { message?: string };
+          if (payload.message) {
+            appendLog(payload.message, message.ts);
+          }
+          return;
+        }
+
+        if (message.type === 'order:update' || message.type === 'position:update' || message.type === 'signal:new') {
+          appendLog(`${message.type}: ${JSON.stringify(message.payload)}`, message.ts);
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      if (reconnectTimer.current) {
+        window.clearTimeout(reconnectTimer.current);
+      }
+      ws?.close();
+    };
+  }, [appendLog, syncRest]);
+
+  const connectionBadge = useMemo(
+    () => (
+      <>
+        <Badge bg={restHealthy ? 'success' : 'danger'} className="me-2">
+          REST {restHealthy ? 'up' : 'down'}
+        </Badge>
+        <Badge bg={wsConnected ? 'success' : 'danger'}>WS {wsConnected ? 'connected' : 'disconnected'}</Badge>
+      </>
+    ),
+    [restHealthy, wsConnected]
+  );
+
+  return (
+    <>
+      <Navbar bg="dark" variant="dark" expand="sm" className="mb-3">
+        <Container>
+          <Navbar.Brand>Bybit OI/Price Bot</Navbar.Brand>
+          <Nav className="me-auto">
+            <Nav.Link as={Link} to="/">
+              Home
+            </Nav.Link>
+            <Nav.Link as={Link} to="/bot">
+              Bot
+            </Nav.Link>
+          </Nav>
+          <span>{connectionBadge}</span>
+        </Container>
+      </Navbar>
+      <Container className="pb-4">
+        <Alert variant="secondary" className="py-2">
+          Backend: {API_BASE}
+        </Alert>
+        <Routes>
+          <Route path="/" element={<HomePage restHealthy={restHealthy} wsConnected={wsConnected} botState={botState} />} />
+          <Route
+            path="/bot"
+            element={
+              <BotPage
+                botState={botState}
+                setBotState={setBotState}
+                universeState={universeState}
+                setUniverseState={setUniverseState}
+                symbolMap={symbolMap}
+                setSymbolMap={setSymbolMap}
+                logs={logs}
+                syncRest={syncRest}
+              />
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Container>
+    </>
+  );
+}
