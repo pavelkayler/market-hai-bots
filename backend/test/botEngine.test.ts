@@ -1,7 +1,12 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import type { DemoCreateOrderParams, DemoOpenOrder, IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
 import { BotEngine, type BotConfig, type OrderUpdatePayload, type PositionUpdatePayload, type SignalPayload } from '../src/bot/botEngine.js';
+import { FileSnapshotStore } from '../src/bot/snapshotStore.js';
 
 const defaultConfig: BotConfig = {
   mode: 'paper',
@@ -239,5 +244,115 @@ describe('BotEngine demo execution', () => {
     expect(orderUpdates.map((entry) => entry.status)).toContain('FILLED');
     expect(positionUpdates.map((entry) => entry.status)).toContain('OPEN');
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('POSITION_OPEN');
+  });
+});
+
+
+describe('BotEngine snapshot + pause/resume', () => {
+  it('writes runtime snapshot with pending paper order', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'snapshot-test-'));
+    const runtimePath = path.join(tempDir, 'data', 'runtime.json');
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      snapshotStore: new FileSnapshotStore(runtimePath),
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start(defaultConfig);
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+
+    const raw = await readFile(runtimePath, 'utf-8');
+    const parsed = JSON.parse(raw) as { symbols: Record<string, { pendingOrder: unknown }> };
+    expect(parsed.symbols.BTCUSDT.pendingOrder).toBeTruthy();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('restores symbol runtime from loaded snapshot', () => {
+    const now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const snapshotStore = {
+      load: () => null,
+      save: () => undefined,
+      clear: () => undefined
+    };
+    const snapshot = {
+      savedAt: now,
+      paused: true,
+      running: true,
+      config: defaultConfig,
+      symbols: {
+        BTCUSDT: {
+          fsmState: 'ENTRY_PENDING' as const,
+          baseline: { basePrice: 100, baseOiValue: 1000, baseTs: now },
+          blockedUntilTs: 0,
+          overrideGateOnce: false,
+          pendingOrder: {
+            symbol: 'BTCUSDT',
+            side: 'Buy' as const,
+            limitPrice: 100,
+            qty: 1,
+            placedTs: now,
+            expiresTs: now + 1000,
+            sentToExchange: true
+          },
+          position: null,
+          demo: null
+        }
+      }
+    };
+
+    const engine = new BotEngine({
+      snapshotStore,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.restoreFromSnapshot(snapshot);
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
+    expect(engine.getState()).toMatchObject({ paused: true, running: false, hasSnapshot: true });
+  });
+
+  it('pause stops new signals but allows paper TP/SL close, and resume re-enables generation', () => {
+    const signals: SignalPayload[] = [];
+    const positionUpdates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: (payload) => positionUpdates.push(payload),
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start(defaultConfig);
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+
+    engine.pause();
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now + 1 });
+    expect(signals).toHaveLength(1);
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1030, ts: now + 2 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100.4, openInterestValue: 1030, ts: now + 3 });
+    expect(positionUpdates.map((u) => u.status)).toContain('CLOSED');
+
+    engine.resume(true);
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1300, ts: now });
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('HOLDING_LONG');
   });
 });

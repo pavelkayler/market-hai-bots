@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -64,12 +64,21 @@ class BlockingDemoTradeClient implements IDemoTradeClient {
   }
 }
 
+const buildIsolatedServer = (options: Parameters<typeof buildServer>[0] = {}) => {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return buildServer({
+    universeFilePath: options.universeFilePath ?? path.join(os.tmpdir(), `universe-${suffix}.json`),
+    runtimeSnapshotFilePath: options.runtimeSnapshotFilePath ?? path.join(os.tmpdir(), `runtime-${suffix}.json`),
+    ...options
+  });
+};
+
 describe('server routes', () => {
-  let app = buildServer();
+  let app = buildIsolatedServer();
 
   afterEach(async () => {
     await app.close();
-    app = buildServer();
+    app = buildIsolatedServer();
   });
 
   it('GET /health returns ok', async () => {
@@ -85,6 +94,9 @@ describe('server routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       running: false,
+      paused: false,
+      hasSnapshot: false,
+      lastConfig: null,
       mode: null,
       direction: null,
       tf: null,
@@ -169,7 +181,7 @@ describe('server routes', () => {
     const activeSymbols = new ActiveSymbolSet();
     activeSymbols.add('ETHUSDT');
 
-    app = buildServer({ marketClient, universeFilePath, activeSymbolSet: activeSymbols });
+    app = buildIsolatedServer({ marketClient, universeFilePath, activeSymbolSet: activeSymbols });
 
     const createResponse = await app.inject({
       method: 'POST',
@@ -239,7 +251,7 @@ describe('server routes', () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-test-'));
     const universeFilePath = path.join(tempDir, 'data', 'universe.json');
 
-    app = buildServer({
+    app = buildIsolatedServer({
       marketClient: new FakeMarketClient([], new Map()),
       universeFilePath
     });
@@ -262,7 +274,7 @@ describe('server routes', () => {
     const wsMessages: string[] = [];
     const wsClients = new Set([{ send: (payload: string) => wsMessages.push(payload) }]);
 
-    app = buildServer({
+    app = buildIsolatedServer({
       tickerStream,
       wsClients,
       marketClient: new FakeMarketClient(
@@ -285,7 +297,7 @@ describe('server routes', () => {
 
     await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
 
-    expect(tickerStream.setSymbolsCalls).toEqual([['BTCUSDT']]);
+    expect(tickerStream.setSymbolsCalls).toEqual([[], ['BTCUSDT']]);
 
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 2000, ts: Date.now() });
     const firstSymbolUpdateCount = wsMessages.filter((raw) => JSON.parse(raw).type === 'symbol:update').length;
@@ -302,7 +314,7 @@ describe('server routes', () => {
   it('POST /api/orders/cancel cancels pending paper order and returns ok', async () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const tickerStream = new FakeTickerStream();
-    app = buildServer({
+    app = buildIsolatedServer({
       now: () => now,
       tickerStream,
       marketClient: new FakeMarketClient(
@@ -358,7 +370,7 @@ describe('server routes', () => {
   it('GET /api/bot/state reflects demo queueDepth', async () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const tickerStream = new FakeTickerStream();
-    app = buildServer({
+    app = buildIsolatedServer({
       now: () => now,
       tickerStream,
       demoTradeClient: new BlockingDemoTradeClient(),
@@ -411,4 +423,25 @@ describe('server routes', () => {
 
 
 
+
+  it('universe clear removes runtime snapshot and state hasSnapshot=false', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'runtime-test-'));
+    const runtimeSnapshotFilePath = path.join(tempDir, 'data', 'runtime.json');
+    await mkdir(path.dirname(runtimeSnapshotFilePath), { recursive: true });
+    await writeFile(
+      runtimeSnapshotFilePath,
+      JSON.stringify({ savedAt: Date.now(), paused: true, running: true, config: null, symbols: {} }),
+      'utf-8'
+    );
+
+    app = buildIsolatedServer({ runtimeSnapshotFilePath });
+    const clearResponse = await app.inject({ method: 'POST', url: '/api/universe/clear' });
+    expect(clearResponse.statusCode).toBe(200);
+
+    const stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(stateResponse.json()).toMatchObject({ hasSnapshot: false });
+
+    await expect(access(runtimeSnapshotFilePath)).rejects.toBeTruthy();
+    await rm(tempDir, { recursive: true, force: true });
+  });
 });

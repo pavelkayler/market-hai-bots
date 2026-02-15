@@ -1,8 +1,11 @@
+import path from 'node:path';
+
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { BotEngine, normalizeBotConfig } from './bot/botEngine.js';
+import { FileSnapshotStore } from './bot/snapshotStore.js';
 import { DemoTradeClient, type IDemoTradeClient } from './bybit/demoTradeClient.js';
 import { MarketHub } from './market/marketHub.js';
 import type { TickerStream } from './market/tickerStream.js';
@@ -13,11 +16,12 @@ import { SymbolUpdateBroadcaster } from './ws/symbolUpdateBroadcaster.js';
 type BuildServerOptions = {
   marketClient?: IBybitMarketClient;
   universeFilePath?: string;
+  runtimeSnapshotFilePath?: string;
   activeSymbolSet?: ActiveSymbolSet;
   tickerStream?: TickerStream;
   now?: () => number;
   demoTradeClient?: IDemoTradeClient;
-  wsClients?: Set<{ send: (payload: string) => unknown }>
+  wsClients?: Set<{ send: (payload: string) => unknown }>;
 };
 
 const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
@@ -40,6 +44,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const wsClients = options.wsClients ?? new Set<{ send: (payload: string) => unknown }>();
   const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
   const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500);
+  const snapshotStore = new FileSnapshotStore(options.runtimeSnapshotFilePath ?? path.resolve(process.cwd(), 'data/runtime.json'));
 
   const broadcast = (type: string, payload: unknown): void => {
     const message = JSON.stringify({ type, ts: Date.now(), payload });
@@ -62,7 +67,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     emitQueueUpdate: (payload) => {
       broadcast('queue:update', payload);
     },
-    demoTradeClient
+    demoTradeClient,
+    snapshotStore
   });
 
   const marketHub = new MarketHub({
@@ -74,14 +80,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         return;
       }
 
-      symbolUpdateBroadcaster.broadcast(
-        symbol,
-        state,
-        symbolState.fsmState,
-        symbolState.baseline,
-        symbolState.pendingOrder,
-        symbolState.position
-      );
+      symbolUpdateBroadcaster.broadcast(symbol, state, symbolState.fsmState, symbolState.baseline, symbolState.pendingOrder, symbolState.position);
     }
   });
   marketHubByApp.set(app, marketHub);
@@ -119,10 +118,34 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return { ok: true, ...botEngine.getState() };
   });
 
+  app.post('/api/bot/pause', async () => {
+    botEngine.pause();
+    return { ok: true, ...botEngine.getState() };
+  });
+
+  app.post('/api/bot/resume', async (_request, reply) => {
+    const state = botEngine.getState();
+    if (!state.hasSnapshot) {
+      return reply.code(400).send({ ok: false, error: 'NO_SNAPSHOT' });
+    }
+
+    const universe = await universeService.get();
+    const canRun = !!universe?.ready && universe.symbols.length > 0 && marketHub.isRunning();
+    if (!canRun) {
+      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+    }
+
+    botEngine.resume(true);
+    return { ok: true, ...botEngine.getState() };
+  });
+
   app.get('/api/bot/state', async () => {
     const state = botEngine.getState();
     return {
       running: state.running,
+      paused: state.paused,
+      hasSnapshot: state.hasSnapshot,
+      lastConfig: state.config,
       mode: state.config?.mode ?? null,
       direction: state.config?.direction ?? null,
       tf: state.config?.tf ?? null,
@@ -228,6 +251,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     await universeService.clear();
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
+    botEngine.clearSnapshotState();
     symbolUpdateBroadcaster.setTrackedSymbols([]);
     symbolUpdateBroadcaster.reset();
     return { ok: true };
@@ -256,13 +280,25 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     });
   });
 
-
   const demoPoller = setInterval(() => {
     void botEngine.pollDemoOrders(marketHub.getAllStates());
   }, 1500);
 
   app.addHook('onReady', async () => {
+    const snapshot = snapshotStore.load();
+    if (snapshot) {
+      botEngine.restoreFromSnapshot(snapshot);
+    }
+
+    const universe = await universeService.get();
+    const universeSymbols = universe?.ready ? universe.symbols.map((entry) => entry.symbol) : [];
+    const runtimeSymbols = botEngine.getRuntimeSymbols();
+    const symbols = Array.from(new Set([...universeSymbols, ...runtimeSymbols]));
+
     await marketHub.start();
+    await marketHub.setUniverseSymbols(symbols);
+    botEngine.setUniverseSymbols(symbols);
+    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
   });
 
   app.addHook('onClose', async () => {
