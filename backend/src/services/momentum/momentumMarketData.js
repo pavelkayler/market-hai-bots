@@ -410,6 +410,10 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     ws = new WebSocket(WS_URL);
     ws.on('open', () => { connected = true; reconcileSubscriptions('wsOpen'); });
     ws.on('close', () => { connected = false; setTimeout(connect, 1500); });
+    ws.on('error', (err) => {
+      connected = false;
+      logger.warn?.({ err }, 'momentum market ws error');
+    });
     ws.on('message', (buf) => {
       try {
         const msg = JSON.parse(buf.toString('utf8'));
@@ -782,7 +786,11 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
     if (started) return;
     started = true;
     bootstrapStartedAtMs = Date.now();
-    await fetchUniverse();
+    try {
+      await fetchUniverse();
+    } catch (err) {
+      logger.warn?.({ err }, 'momentum universe bootstrap failed');
+    }
     try {
       await refreshTickersSnapshot();
     } catch (err) {
