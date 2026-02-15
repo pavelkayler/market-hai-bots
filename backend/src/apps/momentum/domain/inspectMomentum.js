@@ -16,9 +16,9 @@ export function inspectMomentumSymbol({ symbol, config = {}, marketData }) {
   const priceNow = Number(snap.lastPrice || 0);
   const markPrice = Number(snap.markPrice || 0);
   const turnover24h = Number(snap.turnover24h || 0);
-  const vol24h = Number.isFinite(Number(snap.price24hPcnt))
+  const vol24h = Number.isFinite(Number(snap.vol24h)) ? Number(snap.vol24h) : (Number.isFinite(Number(snap.price24hPcnt))
     ? Number(snap.price24hPcnt) * 100
-    : (Number(snap.lowPrice24h) > 0 && Number(snap.highPrice24h) > 0 ? ((Number(snap.highPrice24h) / Number(snap.lowPrice24h)) - 1) * 100 : null);
+    : (Number(snap.lowPrice24h) > 0 && Number(snap.highPrice24h) > 0 ? ((Number(snap.highPrice24h) / Number(snap.lowPrice24h)) - 1) * 100 : null));
 
   const prevClose = baseline.ok ? Number(baseline.prevClose || 0) : null;
   const prevOiValue = baseline.ok ? Number(baseline.prevOiValue || 0) : null;
@@ -57,18 +57,20 @@ export function inspectMomentumSymbol({ symbol, config = {}, marketData }) {
   const turnoverGateOkLong = baselineFloorOk && turnoverSpikeOk;
 
   const checks = {
-    baselineReady: { pass: Boolean(baseline.ok), reason: baseline.ok ? 'ok' : (baseline.reason || 'baseline missing') },
+    baselineReady: { pass: Boolean(baseline.ok), reason: baseline.ok ? 'ok' : (baseline.reason || 'NO_PREV_CANDLE') },
     priceChangePctW: { pass: priceOkLong, reason: `LONG ${fmt(priceChangePctW, 3, '%')}` },
     oiChangePctW: { pass: oiOkLong, reason: `LONG ${fmt(oiChangePctW, 3, '%')}` },
     priceOkLong: { pass: priceOkLong, reason: `priceChangePctW=${fmt(priceChangePctW, 3, '%')}` },
     priceOkShort: { pass: priceOkShort, reason: `priceChangePctW=${fmt(priceChangePctW, 3, '%')}` },
     oiOkLong: { pass: oiOkLong, reason: `oiChangePctW=${fmt(oiChangePctW, 3, '%')}` },
     oiOkShort: { pass: oiOkShort, reason: `oiChangePctW=${fmt(oiChangePctW, 3, '%')}` },
-    oiAgeSec: { pass: oiFreshOk, reason: `oiAgeSec=${fmt(oiAgeSec, 1, 's')}` },
+    oiAgeSec: { pass: oiFreshOk, reason: Number.isFinite(oiAgeSec) ? `oiAgeSec=${fmt(oiAgeSec, 1, 's')}` : 'NO_OI' },
     oiFreshOk: { pass: oiFreshOk, reason: `oiAgeSec=${fmt(oiAgeSec, 1, 's')}` },
     baselineFloorUSDT: { pass: baselineFloorOk, reason: `prevTurnoverUSDT=${fmt(prevTurnoverUSDT, 2)}` },
     turnoverSpikePct: { pass: turnoverSpikeOk, reason: `actual=${fmt(turnoverSpikeActualPct, 3, '%')}` },
     turnoverGateOkLong: { pass: turnoverGateOkLong, reason: `floor=${baselineFloorOk ? 'ok' : 'fail'}, spike=${turnoverSpikeOk ? 'ok' : 'fail'}` },
+    turnover24hMin: { pass: Number(turnover24h) >= Number(config.turnover24hMin || 0), reason: `turnover24h=${fmt(turnover24h, 2)}` },
+    vol24hMin: { pass: Number(vol24h) >= Number(config.vol24hMin || 0), reason: `vol24h=${fmt(vol24h, 2, '%')}` },
   };
 
   const metrics = {

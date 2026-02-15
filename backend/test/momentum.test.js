@@ -24,9 +24,9 @@ test('volatility high/low and fallback', () => {
 
 test('manager rejects invalid windows and allows 1/3/5', async () => {
   const md = { onTick() {}, getEligibleSymbols: () => [], setActiveIntervals() {}, getStatus: () => ({}) };
-  const manager = createMomentumManager({ marketData: md, sqlite: { getTrades: async () => ({ trades: [], total: 0 }) }, getUniverseBySource: () => ['BTCUSDT'] });
+  const manager = createMomentumManager({ marketData: md, sqlite: { getTrades: async () => ({ trades: [], total: 0 }) }, getUniverseTiers: () => [{ tierIndex: 1, symbols: ['BTCUSDT'] }] });
   assert.equal((await manager.start({ windowMinutes: 15 })).ok, false);
-  assert.equal((await manager.start({ windowMinutes: 3, universeMode: 'SINGLE', singleSymbol: 'BTCUSDT' })).ok, true);
+  assert.equal((await manager.start({ windowMinutes: 3, tierIndices: [1] })).ok, true);
 });
 
 test('manager blocks demo/real momentum start when hedge mode preflight fails', async () => {
@@ -34,14 +34,14 @@ test('manager blocks demo/real momentum start when hedge mode preflight fails', 
   const manager = createMomentumManager({
     marketData: md,
     sqlite: { getTrades: async () => ({ trades: [], total: 0 }) },
-    getUniverseBySource: () => ['BTCUSDT'],
+    getUniverseTiers: () => [{ tierIndex: 1, symbols: ['BTCUSDT'] }],
     tradeExecutor: {
       enabled: () => true,
       getHedgeModeSnapshot: async () => ({ mode: 'ONE_WAY' }),
       getPreflightStatus: () => ({ hedgeMode: 'ONE_WAY' }),
     },
   });
-  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'BOTH', universeMode: 'SINGLE', singleSymbol: 'BTCUSDT' });
+  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'BOTH', tierIndices: [1] });
   assert.equal(out.ok, false);
   assert.equal(out.error, 'HEDGE_MODE_REQUIRED');
 });
@@ -146,13 +146,13 @@ test('signals use last price and oi value lookback', async () => {
 });
 
 
-test('manager allows single-direction demo start without hedge when no opposite direction runs', async () => {
+test('manager allows long-only demo start without hedge when no opposite direction runs', async () => {
   let hedgeChecks = 0;
   const md = { onTick() {}, getEligibleSymbols: () => ['BTCUSDT'], setActiveIntervals() {}, getStatus: () => ({}) };
   const manager = createMomentumManager({
     marketData: md,
     sqlite: { getTrades: async () => ({ trades: [], total: 0 }) },
-    getUniverseBySource: () => ['BTCUSDT'],
+    getUniverseTiers: () => [{ tierIndex: 1, symbols: ['BTCUSDT'] }],
     tradeExecutor: {
       enabled: () => true,
       getHedgeModeSnapshot: async () => { hedgeChecks += 1; return { mode: 'ONE_WAY' }; },
@@ -160,7 +160,7 @@ test('manager allows single-direction demo start without hedge when no opposite 
       getPreflightStatus: () => ({ hedgeMode: 'ONE_WAY' }),
     },
   });
-  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'LONG', universeMode: 'SINGLE', singleSymbol: 'BTCUSDT' });
+  const out = await manager.start({ windowMinutes: 1, mode: 'demo', directionMode: 'LONG', tierIndices: [1] });
   assert.equal(out.ok, true);
   assert.equal(hedgeChecks, 0);
 });
@@ -177,7 +177,7 @@ test('manager resolves tier union with stable dedupe order', async () => {
       { tierIndex: 3, symbols: ['DDDUSDT'] },
     ],
   });
-  const out = await manager.start({ windowMinutes: 1, universeMode: 'TIERS', tierIndices: [2, 1] });
+  const out = await manager.start({ windowMinutes: 1, tierIndices: [2, 1] });
   assert.equal(out.ok, true);
   assert.deepEqual(out.stateSnapshot.config.evalSymbols, ['AAAUSDT', 'BBBUSDT', 'CCCUSDT']);
 });
