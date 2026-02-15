@@ -216,6 +216,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
       for (const row of list) {
         if (row?.contractType === 'LinearPerpetual' && row?.status === 'Trading' && row?.symbol?.endsWith('USDT')) {
           instruments.add(row.symbol);
+          universeSymbols.add(row.symbol);
           const tickSize = Number(row?.priceFilter?.tickSize);
           const contractMultiplier = Number(row?.contractSize);
           if (Number.isFinite(tickSize) && tickSize > 0) {
@@ -290,6 +291,7 @@ export function createMomentumMarketData({ logger = console, cap = 1000, turnove
           highPrice24h: Number(row.highPrice24h),
           lowPrice24h: Number(row.lowPrice24h),
           price24hPcnt: Number(row.price24hPcnt),
+          vol24h: Number.isFinite(price24hPcnt) ? (Math.abs(price24hPcnt) <= 1.5 ? Math.abs(price24hPcnt) * 100 : Math.abs(price24hPcnt)) : (Number.isFinite(highPrice24h) && Number.isFinite(lowPrice24h) && lowPrice24h > 0 ? ((highPrice24h - lowPrice24h) / lowPrice24h) * 100 : null),
           ts: tsMs,
           tickSize: Number(meta.tickSize) || null,
           contractMultiplier: Number(meta.contractMultiplier) || null,

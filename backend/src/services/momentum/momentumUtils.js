@@ -68,20 +68,13 @@ export function normalizeMomentumConfig(raw = {}) {
   const c = { ...DEFAULT_MOMENTUM_CONFIG, ...(raw || {}) };
   c.mode = ['paper', 'demo', 'real'].includes(String(c.mode)) ? String(c.mode) : 'demo';
   c.directionMode = ['LONG', 'SHORT', 'BOTH'].includes(String(c.directionMode).toUpperCase()) ? String(c.directionMode).toUpperCase() : 'BOTH';
-  c.scanMode = ['UNIVERSE', 'SINGLE'].includes(String(c.scanMode).toUpperCase()) ? String(c.scanMode).toUpperCase() : 'UNIVERSE';
-  c.singleSymbol = String(c.singleSymbol || '').trim().toUpperCase() || null;
   c.windowMinutes = Math.trunc(parseFloatSafe(c.windowMinutes, 1));
   if (![1, 3, 5].includes(c.windowMinutes)) c.windowMinutes = 1;
   c.priceThresholdPct = Math.max(0.01, parseFloatSafe(c.priceThresholdPct, 0.2));
   c.oiThresholdPct = Math.max(0, parseFloatSafe(c.oiThresholdPct, 0));
   c.turnover24hMin = Math.max(0, parseFloatSafe(c.turnover24hMin, 0));
   c.vol24hMin = Math.max(0, parseFloatSafe(c.vol24hMin, 0));
-  const normalizedUniverseSource = String(c.universeSource || '').toUpperCase();
-  c.universeSource = /^TIER_\d+$/.test(normalizedUniverseSource)
-    ? normalizedUniverseSource
-    : (normalizedUniverseSource === 'FAST' ? 'TIER_1' : (normalizedUniverseSource === 'SLOW' ? 'TIER_2' : 'TIER_1'));
-  c.universeMode = String(c.universeMode || (c.scanMode === 'SINGLE' ? 'SINGLE' : 'TIERS')).toUpperCase() === 'SINGLE' ? 'SINGLE' : 'TIERS';
-  c.tierIndices = [...new Set((Array.isArray(c.tierIndices) ? c.tierIndices : [c.universeTierIndex]).map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))].sort((a, b) => a - b);
+  c.tierIndices = [...new Set((Array.isArray(c.tierIndices) ? c.tierIndices : [1, 2, 3, 4, 5, 6]).map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0))].sort((a, b) => a - b);
   c.resolvedSymbolsCount = Math.max(0, Number(c.resolvedSymbolsCount || 0));
   c.leverage = Math.max(1, parseFloatSafe(c.leverage, 10));
   c.marginUsd = Math.max(1, parseFloatSafe(c.marginUsd, 100));

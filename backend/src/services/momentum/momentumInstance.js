@@ -657,14 +657,10 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
       }
 
       let baseline = marketData.getCandleBaseline?.(symbol, cfg.windowMinutes) || { ok: false, reason: 'NO_PREV_CANDLE' };
-      if (!baseline.ok && marketData.seedKlineBaseline) {
-        if (cfg.scanMode === 'SINGLE') {
-          await marketData.seedKlineBaseline(symbol, cfg.windowMinutes, true);
-          baseline = marketData.getCandleBaseline?.(symbol, cfg.windowMinutes) || baseline;
-        } else if (universeSeedAttempts < 3) {
-          universeSeedAttempts += 1;
-          marketData.seedKlineBaseline(symbol, cfg.windowMinutes, true).catch(() => {});
-        }
+      if (!baseline.ok && marketData.seedKlineBaseline && universeSeedAttempts < 3) {
+        universeSeedAttempts += 1;
+        await marketData.seedKlineBaseline(symbol, cfg.windowMinutes, true).catch(() => {});
+        baseline = marketData.getCandleBaseline?.(symbol, cfg.windowMinutes) || baseline;
       }
       if (!baseline.ok) {
         const reason = baseline.reason === 'NO_PREV_CANDLE' ? 'NOT_READY_NO_PREV_CANDLE' : 'NOT_READY_BASELINE_MISSING';
@@ -893,6 +889,6 @@ export function createMomentumInstance({ id, config, marketData, sqlite, tradeEx
     cancelEntry,
     getSnapshot,
     setConfig,
-    getLight: () => ({ id, status, mode: cfg.mode, scanMode: cfg.scanMode, universeMode: cfg.universeMode, universeTierIndex: cfg.universeTierIndex, universeSource: cfg.universeSource, singleSymbol: cfg.singleSymbol, tierIndices: Array.isArray(cfg.tierIndices) ? cfg.tierIndices : [], resolvedSymbolsCount: Number(cfg.resolvedSymbolsCount || (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols.length : 0)), direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, tradesCount: stats.trades, wins: stats.wins, losses: stats.losses, winratePct: stats.trades > 0 ? (stats.wins * 100) / stats.trades : 0, pnl: stats.pnl, pnlNetTotal: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
+    getLight: () => ({ id, status, mode: cfg.mode, tierIndices: Array.isArray(cfg.tierIndices) ? cfg.tierIndices : [], resolvedSymbolsCount: Number(cfg.resolvedSymbolsCount || (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols.length : 0)), direction: cfg.directionMode, windowMinutes: cfg.windowMinutes, entryOffsetPct: cfg.entryOffsetPct, turnoverSpikePct: cfg.turnoverSpikePct, startedAt, uptimeSec: Math.floor((Date.now() - startedAt) / 1000), trades: stats.trades, tradesCount: stats.trades, wins: stats.wins, losses: stats.losses, winratePct: stats.trades > 0 ? (stats.wins * 100) / stats.trades : 0, pnl: stats.pnl, pnlNetTotal: stats.pnl, fees: stats.fees, openPositionsCount: getSnapshot().openPositions.length, signals1m: stats.signals1m, signals5m: stats.signals5m, marginModeDesired: 'ISOLATED', isolatedPreflightOk: Boolean(isolatedPreflight?.ok), isolatedPreflightError: isolatedPreflight?.error || null, lastBybitError }),
   };
 }
