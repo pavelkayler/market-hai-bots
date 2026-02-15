@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
 
-import { cancelOrder, clearUniverse, createUniverse, getBotState, getUniverse, refreshUniverse, startBot, stopBot } from '../api';
+import { ApiRequestError, cancelOrder, clearUniverse, createUniverse, getBotState, getUniverse, pauseBot, refreshUniverse, resumeBot, startBot, stopBot } from '../api';
 import type { BotSettings, BotState, SymbolUpdatePayload, UniverseState } from '../types';
 
 type LogLine = {
@@ -70,6 +70,14 @@ export function BotPage({
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
 
+  useEffect(() => {
+    if (!botState.lastConfig) {
+      return;
+    }
+
+    persistSettings(botState.lastConfig);
+  }, [botState.lastConfig]);
+
   const trackedSymbols = useMemo(() => {
     return Object.values(symbolMap).filter((item) => item.state !== 'IDLE' || item.pendingOrder || item.position);
   }, [symbolMap]);
@@ -126,6 +134,37 @@ export function BotPage({
     }
   };
 
+  const handlePause = async () => {
+    setError('');
+    try {
+      await pauseBot();
+      const next = await getBotState();
+      setBotState(next);
+      setStatus('Bot paused');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleResume = async () => {
+    setError('');
+    try {
+      await resumeBot();
+      const next = await getBotState();
+      setBotState(next);
+      setStatus('Bot resumed');
+    } catch (err) {
+      const apiError = err as ApiRequestError;
+      if (apiError.code === 'NO_SNAPSHOT') {
+        setError('Snapshot not found. Start a new session or wait for a snapshot to be saved.');
+        return;
+      }
+      setError(apiError.message);
+    }
+  };
+
+  const disableSettings = botState.running;
+
   return (
     <Row className="g-3">
       <Col md={6}>
@@ -162,10 +201,15 @@ export function BotPage({
         <Card>
           <Card.Header>Settings</Card.Header>
           <Card.Body>
+            {disableSettings ? <Alert variant="warning">Settings are locked while the bot is running.</Alert> : null}
             <Row className="g-2">
               <Col>
                 <Form.Label>Mode</Form.Label>
-                <Form.Select value={settings.mode} onChange={(event) => persistSettings({ ...settings, mode: event.target.value as BotSettings['mode'] })}>
+                <Form.Select
+                  disabled={disableSettings}
+                  value={settings.mode}
+                  onChange={(event) => persistSettings({ ...settings, mode: event.target.value as BotSettings['mode'] })}
+                >
                   <option value="paper">paper</option>
                   <option value="demo">demo</option>
                 </Form.Select>
@@ -173,6 +217,7 @@ export function BotPage({
               <Col>
                 <Form.Label>Direction</Form.Label>
                 <Form.Select
+                  disabled={disableSettings}
                   value={settings.direction}
                   onChange={(event) => persistSettings({ ...settings, direction: event.target.value as BotSettings['direction'] })}
                 >
@@ -183,7 +228,11 @@ export function BotPage({
               </Col>
               <Col>
                 <Form.Label>TF</Form.Label>
-                <Form.Select value={settings.tf} onChange={(event) => persistSettings({ ...settings, tf: Number(event.target.value) as 1 | 3 | 5 })}>
+                <Form.Select
+                  disabled={disableSettings}
+                  value={settings.tf}
+                  onChange={(event) => persistSettings({ ...settings, tf: Number(event.target.value) as 1 | 3 | 5 })}
+                >
                   <option value="1">1</option>
                   <option value="3">3</option>
                   <option value="5">5</option>
@@ -205,6 +254,7 @@ export function BotPage({
                 <Col md={4} key={key}>
                   <Form.Label>{label}</Form.Label>
                   <Form.Control
+                    disabled={disableSettings}
                     type="number"
                     value={settings[key]}
                     onChange={(event) => persistSettings({ ...settings, [key]: Number(event.target.value) })}
@@ -221,13 +271,33 @@ export function BotPage({
           <Card.Header>Controls</Card.Header>
           <Card.Body>
             <div className="d-flex gap-2 mb-3">
-              <Button variant="success" onClick={() => void handleStart()}>
+              <Button variant="success" onClick={() => void handleStart()} disabled={botState.running}>
                 Start
               </Button>
-              <Button variant="warning" onClick={() => void handleStop()}>
+              <Button variant="warning" onClick={() => void handlePause()} disabled={!botState.running || botState.paused}>
+                Pause
+              </Button>
+              <Button variant="info" onClick={() => void handleResume()} disabled={!botState.hasSnapshot && !botState.paused}>
+                Resume
+              </Button>
+              <Button variant="danger" onClick={() => void handleStop()} disabled={!botState.running}>
                 Stop
               </Button>
             </div>
+            <Card className="mb-3">
+              <Card.Header>Session</Card.Header>
+              <Card.Body>
+                <div className="mb-2">
+                  Snapshot:{' '}
+                  <Badge bg={botState.hasSnapshot ? 'success' : 'secondary'}>{botState.hasSnapshot ? 'hasSnapshot=true' : 'none'}</Badge>
+                </div>
+                {botState.hasSnapshot && !botState.running ? (
+                  <Alert variant="info" className="mt-2 mb-0">
+                    Snapshot found. Click Resume to continue monitoring/orders.
+                  </Alert>
+                ) : null}
+              </Card.Body>
+            </Card>
             <Badge bg="info" className="me-2">
               queueDepth: {botState.queueDepth}
             </Badge>

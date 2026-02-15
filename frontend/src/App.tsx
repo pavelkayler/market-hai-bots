@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Badge, Container, Nav, Navbar } from 'react-bootstrap';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
 
-import { API_BASE, WS_URL, getBotState, getHealth, getUniverse } from './api';
+import { API_BASE, ApiRequestError, WS_URL, getBotState, getHealth, getUniverse, pauseBot, resumeBot, stopBot } from './api';
 import type { BotState, QueueUpdatePayload, SymbolUpdatePayload, UniverseState, WsEnvelope } from './types';
 import { BotPage } from './pages/BotPage';
 import { HomePage } from './pages/HomePage';
@@ -26,6 +26,9 @@ export function App() {
   const [wsConnected, setWsConnected] = useState(false);
   const [botState, setBotState] = useState<BotState>({
     running: false,
+    paused: false,
+    hasSnapshot: false,
+    lastConfig: null,
     mode: null,
     direction: null,
     tf: null,
@@ -37,6 +40,7 @@ export function App() {
   const [symbolMap, setSymbolMap] = useState<Record<string, SymbolUpdatePayload>>({});
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [symbolUpdatesPerSecond, setSymbolUpdatesPerSecond] = useState(0);
+  const [homeActionError, setHomeActionError] = useState('');
   const reconnectTimer = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const symbolUpdatesInWindowRef = useRef(0);
@@ -135,7 +139,8 @@ export function App() {
 
         if (message.type === 'state') {
           const payload = message.payload as Partial<BotState>;
-          setBotState((prev) => ({ ...prev, ...payload }));
+          const { paused: _paused, hasSnapshot: _hasSnapshot, lastConfig: _lastConfig, ...allowedPayload } = payload;
+          setBotState((prev) => ({ ...prev, ...allowedPayload }));
           return;
         }
 
@@ -196,6 +201,41 @@ export function App() {
     [restHealthy, wsConnected]
   );
 
+  const handleHomePause = async () => {
+    setHomeActionError('');
+    try {
+      await pauseBot();
+      await syncRest();
+    } catch (err) {
+      setHomeActionError((err as Error).message);
+    }
+  };
+
+  const handleHomeResume = async () => {
+    setHomeActionError('');
+    try {
+      await resumeBot();
+      await syncRest();
+    } catch (err) {
+      const apiError = err as ApiRequestError;
+      if (apiError.code === 'NO_SNAPSHOT') {
+        setHomeActionError('Snapshot not found. Start a new session or wait for a snapshot to be saved.');
+        return;
+      }
+      setHomeActionError(apiError.message);
+    }
+  };
+
+  const handleHomeStop = async () => {
+    setHomeActionError('');
+    try {
+      await stopBot();
+      await syncRest();
+    } catch (err) {
+      setHomeActionError((err as Error).message);
+    }
+  };
+
   return (
     <>
       <Navbar bg="dark" variant="dark" expand="sm" className="mb-3">
@@ -216,8 +256,21 @@ export function App() {
         <Alert variant="secondary" className="py-2">
           Backend: {API_BASE}
         </Alert>
+        {homeActionError ? <Alert variant="danger">{homeActionError}</Alert> : null}
         <Routes>
-          <Route path="/" element={<HomePage restHealthy={restHealthy} wsConnected={wsConnected} botState={botState} />} />
+          <Route
+            path="/"
+            element={
+              <HomePage
+                restHealthy={restHealthy}
+                wsConnected={wsConnected}
+                botState={botState}
+                onPause={() => void handleHomePause()}
+                onResume={() => void handleHomeResume()}
+                onStop={() => void handleHomeStop()}
+              />
+            }
+          />
           <Route
             path="/bot"
             element={
