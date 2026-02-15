@@ -1,8 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Table } from 'react-bootstrap';
 
-import { ApiRequestError, cancelOrder, clearUniverse, createUniverse, downloadUniverseJson, getBotState, getUniverse, pauseBot, refreshUniverse, resumeBot, startBot, stopBot } from '../api';
-import type { BotSettings, BotState, SymbolUpdatePayload, UniverseState } from '../types';
+import {
+  ApiRequestError,
+  cancelOrder,
+  clearUniverse,
+  createUniverse,
+  downloadUniverseJson,
+  getBotState,
+  getReplayFiles,
+  getReplayState,
+  getUniverse,
+  pauseBot,
+  refreshUniverse,
+  resumeBot,
+  startBot,
+  startRecording,
+  startReplay,
+  stopBot,
+  stopRecording,
+  stopReplay
+} from '../api';
+import type { BotSettings, BotState, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
 
 type LogLine = {
   ts: number;
@@ -73,6 +92,19 @@ export function BotPage({
   const [universeSearch, setUniverseSearch] = useState<string>('');
   const [universeSort, setUniverseSort] = useState<'turnover' | 'symbol'>('turnover');
   const [universePage, setUniversePage] = useState<number>(1);
+  const [recordTopN, setRecordTopN] = useState<number>(20);
+  const [recordFileName, setRecordFileName] = useState<string>(`session-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.ndjson`);
+  const [replayFileName, setReplayFileName] = useState<string>('');
+  const [replaySpeed, setReplaySpeed] = useState<ReplaySpeed>('1x');
+  const [replayState, setReplayState] = useState<ReplayState>({
+    recording: false,
+    replaying: false,
+    fileName: null,
+    speed: null,
+    recordsWritten: 0,
+    progress: { read: 0, total: 0 }
+  });
+  const [replayFiles, setReplayFiles] = useState<string[]>([]);
 
   useEffect(() => {
     if (!botState.lastConfig) {
@@ -109,6 +141,27 @@ export function BotPage({
   useEffect(() => {
     setUniversePage(1);
   }, [universeSearch, universeSort, universeState.symbols]);
+
+  useEffect(() => {
+    const refreshReplayState = async () => {
+      try {
+        const [state, filesResponse] = await Promise.all([getReplayState(), getReplayFiles()]);
+        setReplayState(state);
+        setReplayFiles(filesResponse.files);
+      } catch {
+        // no-op: optional card state
+      }
+    };
+
+    void refreshReplayState();
+    const interval = window.setInterval(() => {
+      void refreshReplayState();
+    }, 2000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const persistSettings = (next: BotSettings) => {
     setSettings(next);
@@ -216,6 +269,52 @@ export function BotPage({
       setStatus('Universe symbols copied');
     } catch {
       alert('Clipboard unavailable in this browser/session.');
+    }
+  };
+
+  const handleRecordStart = async () => {
+    setError('');
+    try {
+      await startRecording(recordTopN, recordFileName);
+      setStatus('Recording started');
+      setReplayState(await getReplayState());
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleRecordStop = async () => {
+    setError('');
+    try {
+      await stopRecording();
+      setStatus('Recording stopped');
+      setReplayState(await getReplayState());
+      const files = await getReplayFiles();
+      setReplayFiles(files.files);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleReplayStart = async () => {
+    setError('');
+    try {
+      await startReplay(replayFileName, replaySpeed);
+      setStatus('Replay started');
+      setReplayState(await getReplayState());
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleReplayStop = async () => {
+    setError('');
+    try {
+      await stopReplay();
+      setStatus('Replay stopped');
+      setReplayState(await getReplayState());
+    } catch (err) {
+      setError((err as Error).message);
     }
   };
 
@@ -442,6 +541,98 @@ export function BotPage({
             <Badge bg="dark" className="me-2">openPositions: {botState.openPositions}</Badge>
             <Badge bg="primary" className="me-2">universeSymbols: {universeState.symbols?.length ?? 0}</Badge>
             <Badge bg="light" text="dark">symbolUpdates/s: {symbolUpdatesPerSecond}</Badge>
+          </Card.Body>
+        </Card>
+      </Col>
+
+      <Col md={12}>
+        <Card>
+          <Card.Header>Replay</Card.Header>
+          <Card.Body>
+            <Row className="g-3">
+              <Col md={6}>
+                <Card>
+                  <Card.Header>Recording</Card.Header>
+                  <Card.Body>
+                    <Form.Group className="mb-2">
+                      <Form.Label>Top N symbols by turnover</Form.Label>
+                      <Form.Control type="number" value={recordTopN} onChange={(event) => setRecordTopN(Number(event.target.value))} />
+                    </Form.Group>
+                    <Form.Group className="mb-2">
+                      <Form.Label>File name (.ndjson)</Form.Label>
+                      <Form.Control value={recordFileName} onChange={(event) => setRecordFileName(event.target.value)} />
+                    </Form.Group>
+                    <div className="d-flex gap-2">
+                      <Button variant="success" onClick={() => void handleRecordStart()} disabled={replayState.recording || replayState.replaying}>
+                        Start recording
+                      </Button>
+                      <Button variant="danger" onClick={() => void handleRecordStop()} disabled={!replayState.recording}>
+                        Stop recording
+                      </Button>
+                    </div>
+                  </Card.Body>
+                </Card>
+              </Col>
+              <Col md={6}>
+                <Card>
+                  <Card.Header>Replay run</Card.Header>
+                  <Card.Body>
+                    <Form.Group className="mb-2">
+                      <Form.Label>Recorded file</Form.Label>
+                      <Form.Select value={replayFileName} onChange={(event) => setReplayFileName(event.target.value)}>
+                        <option value="">Select file</option>
+                        {replayFiles.map((file) => (
+                          <option key={file} value={file}>
+                            {file}
+                          </option>
+                        ))}
+                      </Form.Select>
+                    </Form.Group>
+                    <Form.Group className="mb-2">
+                      <Form.Label>Or type file name</Form.Label>
+                      <Form.Control value={replayFileName} onChange={(event) => setReplayFileName(event.target.value)} />
+                    </Form.Group>
+                    <Form.Group className="mb-2">
+                      <Form.Label>Speed</Form.Label>
+                      <Form.Select value={replaySpeed} onChange={(event) => setReplaySpeed(event.target.value as ReplaySpeed)}>
+                        <option value="1x">1x</option>
+                        <option value="5x">5x</option>
+                        <option value="20x">20x</option>
+                        <option value="fast">fast</option>
+                      </Form.Select>
+                    </Form.Group>
+                    <div className="d-flex gap-2">
+                      <Button variant="primary" onClick={() => void handleReplayStart()} disabled={replayState.recording || replayState.replaying || replayFileName.length === 0}>
+                        Start replay
+                      </Button>
+                      <Button variant="outline-danger" onClick={() => void handleReplayStop()} disabled={!replayState.replaying}>
+                        Stop replay
+                      </Button>
+                    </div>
+                  </Card.Body>
+                </Card>
+              </Col>
+            </Row>
+            <div className="mt-3">
+              <Badge bg={replayState.recording ? 'success' : 'secondary'} className="me-2">
+                recording: {replayState.recording ? 'on' : 'off'}
+              </Badge>
+              <Badge bg={replayState.replaying ? 'warning' : 'secondary'} className="me-2">
+                replaying: {replayState.replaying ? 'on' : 'off'}
+              </Badge>
+              <Badge bg="info" className="me-2">
+                file: {replayState.fileName ?? '-'}
+              </Badge>
+              <Badge bg="dark" className="me-2">
+                speed: {replayState.speed ?? '-'}
+              </Badge>
+              <Badge bg="primary" className="me-2">
+                recordsWritten: {replayState.recordsWritten}
+              </Badge>
+              <Badge bg="light" text="dark">
+                progress: {replayState.progress.read}/{replayState.progress.total}
+              </Badge>
+            </div>
           </Card.Body>
         </Card>
       </Col>

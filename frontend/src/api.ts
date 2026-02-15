@@ -1,4 +1,4 @@
-import type { BotSettings, BotState, UniverseState } from './types';
+import type { BotSettings, BotState, ReplaySpeed, ReplayState, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -100,4 +100,40 @@ export async function downloadUniverseJson(): Promise<Blob> {
   }
 
   return response.blob();
+}
+
+export async function startRecording(topN: number, fileName: string): Promise<{ ok: boolean; path: string; startedAt: number }> {
+  return request('/api/replay/record/start', {
+    method: 'POST',
+    body: JSON.stringify({ topN, fileName })
+  });
+}
+
+export async function stopRecording(): Promise<{ ok: boolean; stoppedAt: number; recordsWritten: number }> {
+  return request('/api/replay/record/stop', {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
+export async function startReplay(fileName: string, speed: ReplaySpeed): Promise<{ ok: boolean; startedAt: number }> {
+  return request('/api/replay/start', {
+    method: 'POST',
+    body: JSON.stringify({ fileName, speed })
+  });
+}
+
+export async function stopReplay(): Promise<{ ok: boolean; stoppedAt: number }> {
+  return request('/api/replay/stop', {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
+export async function getReplayState(): Promise<ReplayState> {
+  return request('/api/replay/state');
+}
+
+export async function getReplayFiles(): Promise<{ ok: boolean; files: string[] }> {
+  return request('/api/replay/files');
 }

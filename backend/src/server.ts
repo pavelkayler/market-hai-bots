@@ -9,6 +9,7 @@ import { FileSnapshotStore } from './bot/snapshotStore.js';
 import { DemoTradeClient, type IDemoTradeClient } from './bybit/demoTradeClient.js';
 import { MarketHub } from './market/marketHub.js';
 import type { TickerStream } from './market/tickerStream.js';
+import { ReplayService, type ReplaySpeed } from './replay/replayService.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
 import { SymbolUpdateBroadcaster } from './ws/symbolUpdateBroadcaster.js';
@@ -71,17 +72,47 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     snapshotStore
   });
 
+  const emitLog = (message: string): void => {
+    broadcast('log', { message });
+  };
+
+  const processMarketStateUpdate = (symbol: string, state: { markPrice: number; openInterestValue: number; ts: number }): void => {
+    botEngine.onMarketUpdate(symbol, state);
+    const symbolState = botEngine.getSymbolState(symbol);
+    if (!symbolState) {
+      return;
+    }
+
+    symbolUpdateBroadcaster.broadcast(symbol, state, symbolState.fsmState, symbolState.baseline, symbolState.pendingOrder, symbolState.position);
+  };
+
   const marketHub = new MarketHub({
     tickerStream: options.tickerStream,
     onMarketStateUpdate: (symbol, state) => {
-      botEngine.onMarketUpdate(symbol, state);
-      const symbolState = botEngine.getSymbolState(symbol);
-      if (!symbolState) {
-        return;
-      }
-
-      symbolUpdateBroadcaster.broadcast(symbol, state, symbolState.fsmState, symbolState.baseline, symbolState.pendingOrder, symbolState.position);
+      processMarketStateUpdate(symbol, state);
     }
+  });
+
+  const replayService = new ReplayService({
+    getUniverse: () => universeService.get(),
+    getCurrentBotMode: () => botEngine.getState().config?.mode ?? null,
+    isBotRunning: () => botEngine.getState().running,
+    disableLiveMarket: async () => {
+      if (marketHub.isRunning()) {
+        await marketHub.stop();
+      }
+    },
+    enableLiveMarket: async () => {
+      if (!marketHub.isRunning()) {
+        await marketHub.start();
+      }
+    },
+    feedTick: (symbol, state) => {
+      processMarketStateUpdate(symbol, state);
+    },
+    subscribeMarketTicks: (handler) => marketHub.onStateUpdate(handler),
+    log: emitLog,
+    replayDir: path.resolve(process.cwd(), 'data/replay')
   });
   marketHubByApp.set(app, marketHub);
 
@@ -154,6 +185,72 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       openPositions: state.openPositions,
       startedAt: state.startedAt
     };
+  });
+
+  app.post('/api/replay/record/start', async (request, reply) => {
+    const body = request.body as { topN?: unknown; fileName?: unknown };
+    const topN = body?.topN === undefined ? 20 : body.topN;
+    if (typeof topN !== 'number' || !Number.isFinite(topN) || topN < 1) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_TOP_N' });
+    }
+
+    const fileName = typeof body?.fileName === 'string' && body.fileName.length > 0 ? body.fileName : '';
+    if (!fileName.endsWith('.ndjson')) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_FILE_NAME' });
+    }
+
+    try {
+      const result = await replayService.startRecording(fileName, topN);
+      return { ok: true, path: `backend/data/replay/${path.basename(result.path)}`, startedAt: result.startedAt };
+    } catch (error) {
+      const code = (error as Error).message;
+      if (code === 'UNIVERSE_NOT_READY') {
+        return reply.code(400).send({ ok: false, error: code });
+      }
+
+      return reply.code(400).send({ ok: false, error: 'REPLAY_BUSY' });
+    }
+  });
+
+  app.post('/api/replay/record/stop', async () => {
+    const result = await replayService.stopRecording();
+    return { ok: true, stoppedAt: result.stoppedAt, recordsWritten: result.recordsWritten };
+  });
+
+  app.post('/api/replay/start', async (request, reply) => {
+    const body = request.body as { fileName?: unknown; speed?: unknown };
+    if (typeof body?.fileName !== 'string' || body.fileName.length === 0) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_FILE_NAME' });
+    }
+
+    if (body.speed !== '1x' && body.speed !== '5x' && body.speed !== '20x' && body.speed !== 'fast') {
+      return reply.code(400).send({ ok: false, error: 'INVALID_SPEED' });
+    }
+
+    try {
+      const result = await replayService.startReplay(body.fileName, body.speed as ReplaySpeed);
+      return { ok: true, startedAt: result.startedAt };
+    } catch (error) {
+      const code = (error as Error).message;
+      if (code === 'REPLAY_REQUIRES_PAPER_MODE') {
+        return reply.code(400).send({ ok: false, error: code });
+      }
+
+      return reply.code(400).send({ ok: false, error: 'REPLAY_BUSY' });
+    }
+  });
+
+  app.post('/api/replay/stop', async () => {
+    const result = await replayService.stopReplay();
+    return { ok: true, stoppedAt: result.stoppedAt };
+  });
+
+  app.get('/api/replay/state', async () => {
+    return replayService.getState();
+  });
+
+  app.get('/api/replay/files', async () => {
+    return { ok: true, files: await replayService.listFiles() };
   });
 
   app.post('/api/orders/cancel', async (request, reply) => {
@@ -312,6 +409,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.addHook('onClose', async () => {
     clearInterval(demoPoller);
+    await replayService.stopRecording();
+    await replayService.stopReplay();
     await marketHub.stop();
   });
 
