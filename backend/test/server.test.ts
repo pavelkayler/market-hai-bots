@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildServer } from '../src/server.js';
+import type { TickerStream, TickerUpdate } from '../src/market/tickerStream.js';
 import type { IBybitMarketClient, InstrumentLinear, TickerLinear } from '../src/services/bybitMarketClient.js';
 import { ActiveSymbolSet } from '../src/services/universeService.js';
 
@@ -20,6 +21,28 @@ class FakeMarketClient implements IBybitMarketClient {
 
   async getTickersLinear(): Promise<Map<string, TickerLinear>> {
     return this.tickers;
+  }
+}
+
+
+class FakeTickerStream implements TickerStream {
+  private handler: ((update: TickerUpdate) => void) | null = null;
+
+  async start(): Promise<void> {}
+
+  async stop(): Promise<void> {}
+
+  async setSymbols(_symbols: string[]): Promise<void> {}
+
+  onTicker(handler: (update: TickerUpdate) => void): () => void {
+    this.handler = handler;
+    return () => {
+      this.handler = null;
+    };
+  }
+
+  emit(update: TickerUpdate): void {
+    this.handler?.(update);
   }
 }
 
@@ -214,4 +237,61 @@ describe('server routes', () => {
 
     await rm(tempDir, { recursive: true, force: true });
   });
+  it('POST /api/orders/cancel cancels pending paper order and returns ok', async () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const tickerStream = new FakeTickerStream();
+    app = buildServer({
+      now: () => now,
+      tickerStream,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 12000000,
+              highPrice24h: 110,
+              lowPrice24h: 100,
+              markPrice: 100,
+              openInterestValue: 100000
+            }
+          ]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper',
+        direction: 'long',
+        tf: 1,
+        holdSeconds: 1,
+        priceUpThrPct: 1,
+        oiUpThrPct: 1,
+        marginUSDT: 100,
+        leverage: 2,
+        tpRoiPct: 1,
+        slRoiPct: 1
+      }
+    });
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
+
+    const cancelResponse = await app.inject({ method: 'POST', url: '/api/orders/cancel', payload: { symbol: 'BTCUSDT' } });
+    expect(cancelResponse.statusCode).toBe(200);
+    expect(cancelResponse.json()).toEqual({ ok: true });
+
+    const botState = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(botState.json()).toMatchObject({ activeOrders: 0, openPositions: 0 });
+  });
+
+
 });

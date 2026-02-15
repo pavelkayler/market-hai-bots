@@ -48,6 +48,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     now: options.now,
     emitSignal: (payload) => {
       broadcast('signal:new', payload);
+    },
+    emitOrderUpdate: (payload) => {
+      broadcast('order:update', payload);
+    },
+    emitPositionUpdate: (payload) => {
+      broadcast('position:update', payload);
     }
   });
 
@@ -60,7 +66,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         return;
       }
 
-      symbolUpdateBroadcaster.broadcast(symbol, state, symbolState.fsmState, symbolState.baseline);
+      symbolUpdateBroadcaster.broadcast(
+        symbol,
+        state,
+        symbolState.fsmState,
+        symbolState.baseline,
+        symbolState.pendingOrder,
+        symbolState.position
+      );
     }
   });
   marketHubByApp.set(app, marketHub);
@@ -110,6 +123,21 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       openPositions: state.openPositions,
       startedAt: state.startedAt
     };
+  });
+
+  app.post('/api/orders/cancel', async (request, reply) => {
+    const body = request.body as { symbol?: unknown };
+    if (typeof body?.symbol !== 'string' || body.symbol.length === 0) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_SYMBOL' });
+    }
+
+    const marketState = marketHub.getState(body.symbol);
+    if (!marketState) {
+      return { ok: true };
+    }
+
+    botEngine.cancelPendingOrder(body.symbol, marketState);
+    return { ok: true };
   });
 
   app.post('/api/universe/create', async (request, reply) => {
