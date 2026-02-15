@@ -1,8 +1,10 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { dataPath, ensureDataDir } from '../../libraries/config/dataDir.js';
 
-export function createMomentumSqlite({ dbPath = 'backend/data/momentum.sqlite', logger = console } = {}) {
+export function createMomentumSqlite({ dbPath = dataPath('momentum.sqlite'), logger = console } = {}) {
+  ensureDataDir({ logger });
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   const queue = [];
