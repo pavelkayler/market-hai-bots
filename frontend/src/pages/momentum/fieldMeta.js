@@ -1,11 +1,7 @@
 export const MOMENTUM_FIELD_META = {
   mode: { label: 'Режим торговли', help: 'paper = симуляция, demo = тестовый Bybit, real = реальный счёт. Пример: paper.' },
   directionMode: { label: 'Направление', help: 'LONG — только лонги, SHORT — только шорты, BOTH — оба направления.' },
-  scanMode: { label: 'Режим скана', help: 'UNIVERSE сканирует выбранный набор символов, SINGLE работает по одному символу.' },
-  universeSource: { label: 'Источник Universe', help: 'Источник списка символов из Universe Search (например TIER_1 или TIER_2).' },
-  universeMode: { label: 'Режим Universe', help: 'TIERS — работать по выбранным tierIndex, SINGLE — режим одного символа.' },
   tierIndices: { label: 'Tier индексы', help: 'Мультивыбор индексов tiers из Universe Search. Пример: 1,2.' },
-  singleSymbol: { label: 'Single symbol', help: 'Один символ строго из Universe list. Ручной ввод отключён.' },
   windowMinutes: { label: 'Окно расчёта', help: 'Размер окна в минутах для baseline/изменений. Допустимо: 1, 3, 5. Пример: 1.' },
   turnover24hMin: { label: 'Минимальный 24h turnover', help: 'Минимальный оборот за 24 часа в USDT для отбора символов. Пример: 100000.' },
   vol24hMin: { label: 'Минимальная 24h волатильность', help: 'Порог дневной волатильности в процентах. Пример: 0.1%.' },
