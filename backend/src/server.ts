@@ -247,6 +247,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     };
   });
 
+  app.get('/api/universe/download', async (_request, reply) => {
+    const state = await universeService.get();
+    if (!state?.ready) {
+      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+    }
+
+    return reply.type('application/json').send(state);
+  });
+
   app.post('/api/universe/clear', async () => {
     await universeService.clear();
     await marketHub.setUniverseSymbols([]);

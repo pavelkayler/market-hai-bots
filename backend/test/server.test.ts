@@ -268,6 +268,51 @@ describe('server routes', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+  it('GET /api/universe/download returns persisted universe payload when ready', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-download-'));
+    const universeFilePath = path.join(tempDir, 'data', 'universe.json');
+
+    app = buildIsolatedServer({
+      universeFilePath,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 12000000,
+              highPrice24h: 110,
+              lowPrice24h: 100,
+              markPrice: 105,
+              openInterestValue: 200000
+            }
+          ]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 5 } });
+
+    const response = await app.inject({ method: 'GET', url: '/api/universe/download' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(response.json()).toMatchObject({
+      ready: true,
+      symbols: [expect.objectContaining({ symbol: 'BTCUSDT' })]
+    });
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('GET /api/universe/download returns UNIVERSE_NOT_READY when missing', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/universe/download' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ ok: false, error: 'UNIVERSE_NOT_READY' });
+  });
+
 
   it('universe create wires market symbols once and clear resets symbol update throttle', async () => {
     const tickerStream = new FakeTickerStream();
