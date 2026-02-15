@@ -2,14 +2,19 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+import { MarketHub } from './market/marketHub.js';
+import type { TickerStream } from './market/tickerStream.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
+import { SymbolUpdateBroadcaster } from './ws/symbolUpdateBroadcaster.js';
 
 type BuildServerOptions = {
   marketClient?: IBybitMarketClient;
   universeFilePath?: string;
   activeSymbolSet?: ActiveSymbolSet;
+  tickerStream?: TickerStream;
 };
+
 
 const botStateResponse = {
   running: false,
@@ -21,6 +26,17 @@ const botStateResponse = {
   openPositions: 0
 };
 
+const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
+
+export function getMarketHub(app: FastifyInstance): MarketHub {
+  const marketHub = marketHubByApp.get(app);
+  if (!marketHub) {
+    throw new Error('MarketHub is not registered for this app instance');
+  }
+
+  return marketHub;
+}
+
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: true });
 
@@ -28,6 +44,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const activeSymbolSet = options.activeSymbolSet ?? new ActiveSymbolSet();
   const universeService = new UniverseService(marketClient, activeSymbolSet, app.log, options.universeFilePath);
   const wsClients = new Set<{ send: (payload: string) => unknown }>();
+  const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500);
+
+  const marketHub = new MarketHub({
+    tickerStream: options.tickerStream,
+    onMarketStateUpdate: (symbol, state) => {
+      symbolUpdateBroadcaster.broadcast(symbol, state);
+    }
+  });
+  marketHubByApp.set(app, marketHub);
 
   const broadcast = (type: string, payload: Record<string, unknown>): void => {
     const message = JSON.stringify({ type, ts: Date.now(), payload });
@@ -55,6 +80,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const result = await universeService.create(body.minVolPct);
+    await marketHub.setUniverseSymbols(result.state.symbols.map((entry) => entry.symbol));
     const response = {
       ok: true,
       createdAt: result.state.createdAt,
@@ -84,6 +110,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     if (!result) {
       return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }
+
+    await marketHub.setUniverseSymbols(result.state.symbols.map((entry) => entry.symbol));
 
     const response = {
       ok: true,
@@ -116,6 +144,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/universe/clear', async () => {
     await universeService.clear();
+    await marketHub.setUniverseSymbols([]);
+    symbolUpdateBroadcaster.reset();
     return { ok: true };
   });
 
@@ -139,6 +169,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         })
       );
     });
+  });
+
+  app.addHook('onClose', async () => {
+    await marketHub.stop();
   });
 
   return app;
