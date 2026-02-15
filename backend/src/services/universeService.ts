@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type { FastifyBaseLogger } from 'fastify';
 
-import type { IBybitMarketClient, TickerLinear } from './bybitMarketClient.js';
+import type { IBybitMarketClient, InstrumentLinear, TickerLinear } from './bybitMarketClient.js';
 import type { UniverseEntry, UniverseFilters, UniverseState } from '../types/universe.js';
 
 const MIN_TURNOVER = 10000000 as const;
@@ -77,7 +77,7 @@ export class UniverseService {
     }
 
     const built = await this.buildFilteredUniverse(effectiveMinVolPct);
-    const forced = this.mergeForcedActive(built.entries, built.tickersBySymbol);
+    const forced = this.mergeForcedActive(built.entries, built.tickersBySymbol, built.instrumentBySymbol);
 
     const nextState: UniverseState = {
       createdAt: Date.now(),
@@ -117,12 +117,14 @@ export class UniverseService {
     entries: UniverseEntry[];
     totalFetched: number;
     tickersBySymbol: Map<string, TickerLinear>;
+    instrumentBySymbol: Map<string, InstrumentLinear>;
   }> {
     const [instruments, tickersBySymbol] = await Promise.all([
       this.marketClient.getInstrumentsLinearAll(),
       this.marketClient.getTickersLinear()
     ]);
 
+    const instrumentBySymbol = new Map(instruments.map((instrument) => [instrument.symbol, instrument]));
     const entries: UniverseEntry[] = [];
 
     for (const instrument of instruments) {
@@ -150,15 +152,22 @@ export class UniverseService {
           highPrice24h,
           lowPrice24h,
           vol24hPct,
-          forcedActive: false
+          forcedActive: false,
+          qtyStep: instrument.qtyStep,
+          minOrderQty: instrument.minOrderQty,
+          maxOrderQty: instrument.maxOrderQty
         });
       }
     }
 
-    return { entries, totalFetched: instruments.length, tickersBySymbol };
+    return { entries, totalFetched: instruments.length, tickersBySymbol, instrumentBySymbol };
   }
 
-  private mergeForcedActive(filtered: UniverseEntry[], tickersBySymbol: Map<string, TickerLinear>): {
+  private mergeForcedActive(
+    filtered: UniverseEntry[],
+    tickersBySymbol: Map<string, TickerLinear>,
+    instrumentBySymbol: Map<string, InstrumentLinear>
+  ): {
     entries: UniverseEntry[];
     forcedCount: number;
   } {
@@ -175,6 +184,7 @@ export class UniverseService {
       }
 
       const ticker = tickersBySymbol.get(activeSymbol);
+      const instrument = instrumentBySymbol.get(activeSymbol);
       if (!ticker) {
         this.logger.warn({ symbol: activeSymbol }, 'Active symbol missing from tickers during universe refresh');
         symbols.set(activeSymbol, {
@@ -183,7 +193,10 @@ export class UniverseService {
           highPrice24h: 0,
           lowPrice24h: 0,
           vol24hPct: 0,
-          forcedActive: true
+          forcedActive: true,
+          qtyStep: null,
+          minOrderQty: null,
+          maxOrderQty: null
         });
         forcedCount += 1;
         continue;
@@ -203,7 +216,10 @@ export class UniverseService {
         highPrice24h,
         lowPrice24h,
         vol24hPct,
-        forcedActive: true
+        forcedActive: true,
+        qtyStep: instrument?.qtyStep ?? null,
+        minOrderQty: instrument?.minOrderQty ?? null,
+        maxOrderQty: instrument?.maxOrderQty ?? null
       });
       forcedCount += 1;
     }
@@ -245,7 +261,10 @@ export class UniverseService {
         isFiniteNumber(entry.highPrice24h) &&
         isFiniteNumber(entry.lowPrice24h) &&
         isFiniteNumber(entry.vol24hPct) &&
-        typeof entry.forcedActive === 'boolean'
+        typeof entry.forcedActive === 'boolean' &&
+        (entry.qtyStep === null || entry.qtyStep === undefined || isFiniteNumber(entry.qtyStep)) &&
+        (entry.minOrderQty === null || entry.minOrderQty === undefined || isFiniteNumber(entry.minOrderQty)) &&
+        (entry.maxOrderQty === null || entry.maxOrderQty === undefined || isFiniteNumber(entry.maxOrderQty))
       );
     });
 
@@ -258,7 +277,12 @@ export class UniverseService {
       createdAt: parsed.createdAt,
       ready: parsed.ready,
       filters,
-      symbols
+      symbols: symbols.map((entry) => ({
+        ...entry,
+        qtyStep: entry.qtyStep ?? null,
+        minOrderQty: entry.minOrderQty ?? null,
+        maxOrderQty: entry.maxOrderQty ?? null
+      }))
     };
   }
 }

@@ -4,6 +4,8 @@ import { DemoOrderQueue, type DemoQueueSnapshot } from './demoOrderQueue.js';
 import { PAPER_FEES } from './paperFees.js';
 import type { PaperPendingOrder, PaperPosition } from './paperTypes.js';
 import type { RuntimeSnapshot, RuntimeSnapshotSymbol, SnapshotStore } from './snapshotStore.js';
+import type { UniverseEntry } from '../types/universe.js';
+import { normalizeQty } from '../utils/qty.js';
 
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
@@ -93,6 +95,7 @@ type BotEngineDeps = {
   emitQueueUpdate: (payload: DemoQueueSnapshot) => void;
   demoTradeClient?: IDemoTradeClient;
   snapshotStore?: SnapshotStore;
+  emitLog?: (message: string) => void;
 };
 
 const DEFAULT_HOLD_SECONDS = 3;
@@ -145,6 +148,7 @@ export class BotEngine {
   private readonly now: () => number;
   private readonly symbols = new Map<string, SymbolRuntimeState>();
   private readonly demoQueue: DemoOrderQueue;
+  private readonly lotSizeBySymbol = new Map<string, Pick<UniverseEntry, 'qtyStep' | 'minOrderQty' | 'maxOrderQty'>>();
   private state: BotState = {
     running: false,
     paused: false,
@@ -178,6 +182,7 @@ export class BotEngine {
     for (const symbol of this.symbols.keys()) {
       if (!symbolSet.has(symbol)) {
         this.symbols.delete(symbol);
+        this.lotSizeBySymbol.delete(symbol);
       }
     }
 
@@ -185,9 +190,26 @@ export class BotEngine {
       if (!this.symbols.has(symbol)) {
         this.symbols.set(symbol, this.buildEmptySymbolState(symbol));
       }
+
+      if (!this.lotSizeBySymbol.has(symbol)) {
+        this.lotSizeBySymbol.set(symbol, { qtyStep: null, minOrderQty: null, maxOrderQty: null });
+      }
     }
     this.updateSummaryCounts();
     this.persistSnapshot();
+  }
+
+  setUniverseEntries(entries: UniverseEntry[]): void {
+    this.lotSizeBySymbol.clear();
+    for (const entry of entries) {
+      this.lotSizeBySymbol.set(entry.symbol, {
+        qtyStep: entry.qtyStep,
+        minOrderQty: entry.minOrderQty,
+        maxOrderQty: entry.maxOrderQty
+      });
+    }
+
+    this.setUniverseSymbols(entries.map((entry) => entry.symbol));
   }
 
   start(config: BotConfig): void {
@@ -423,7 +445,22 @@ export class BotEngine {
 
     const leverage = this.state.config.leverage;
     const entryNotional = this.state.config.marginUSDT * leverage;
-    const qty = this.roundQty(entryNotional / marketState.markPrice);
+    const rawQty = entryNotional / marketState.markPrice;
+    const lotSize = this.lotSizeBySymbol.get(symbolState.symbol);
+    let qty: number | null;
+    if (lotSize && lotSize.qtyStep !== null && lotSize.minOrderQty !== null) {
+      qty = normalizeQty(rawQty, lotSize.qtyStep, lotSize.minOrderQty, lotSize.maxOrderQty);
+    } else {
+      qty = this.roundQty(rawQty);
+    }
+
+    if (qty === null || qty <= 0) {
+      this.resetToIdle(symbolState);
+      this.deps.emitLog?.(`Skipped ${symbolState.symbol}: qty below minOrderQty or invalid after lot-size normalization.`);
+      this.updateSummaryCounts();
+      this.persistSnapshot();
+      return;
+    }
 
     this.placeConfirmedOrder(symbolState, marketState, side, qty);
     this.updateSummaryCounts();
