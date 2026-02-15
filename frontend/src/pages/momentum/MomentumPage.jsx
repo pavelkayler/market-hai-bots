@@ -5,31 +5,9 @@ import { DEFAULT_MOMENTUM_FORM } from './defaults.js';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 const DRAFT_KEY = 'momentumDraftConfig';
-
-const FIELD_META = {
-  mode: { label: 'Execution mode', text: 'paper — локальная симуляция, demo — торговля на Bybit DEMO через private REST.' },
-  directionMode: { label: 'Direction', text: 'BOTH проверяет LONG и SHORT; LONG/SHORT ограничивает сигналы только одной стороной.' },
-  windowMinutes: { label: 'W (minutes)', text: 'Размер окна для расчёта price/OI change относительно предыдущей свечи этого интервала.' },
-  turnover24hMin: { label: 'Min 24h turnover (USDT)', text: 'Фильтр ликвидности: символы с turnover24h ниже порога не участвуют в скане.' },
-  vol24hMin: { label: 'Min 24h volatility (%)', text: 'Минимальная 24h волатильность для отбора активных символов во входной universe.' },
-  priceThresholdPct: { label: 'Price change over W (%)', text: 'Порог изменения цены за окно W. LONG: >= порог, SHORT: <= -порог.' },
-  oiThresholdPct: { label: 'OI value change over W (%)', text: 'Порог изменения OI value за окно W. LONG: рост, SHORT: падение на величину порога.' },
-  turnoverSpikePct: { label: 'Turnover spike (%)', text: 'Доп. фильтр для LONG: текущий turnover свечи должен быть >= baseline × (1 + spike/100). 0 = выключено.' },
-  baselineFloorUSDT: { label: 'Turnover baseline floor (USDT)', text: 'Минимальная база turnover для spike-фильтра; если baseline ниже, сигнал LONG не рассматривается.' },
-  holdSeconds: { label: 'Conditions must hold (ticks)', text: 'Сколько последовательных тиков все условия должны держаться перед созданием trigger.' },
-  trendConfirmSeconds: { label: 'Trend confirm (seconds)', text: 'Подтверждение тренда по истории цены: используется в getTrendOk(symbol, seconds, side).' },
-  oiMaxAgeSec: { label: 'Max OI staleness (sec)', text: 'Максимальный возраст OI. Если OI старше — символ временно пропускается как stale.' },
-  entryOffsetPct: { label: 'Entry offset (%)', text: 'Смещение trigger цены: trigger = sourcePrice × (1 + offset/100), знак сохраняется (например -0.01%).' },
-  marginUsd: { label: 'Margin (USDT)', text: 'Маржа на вход; фактический qty рассчитывается из margin × leverage / entryPrice.' },
-  leverage: { label: 'Leverage', text: 'Кредитное плечо для входа и расчёта TP/SL ROI.' },
-  tpRoiPct: { label: 'TP ROI (%)', text: 'Целевой ROI для take-profit. Конвертируется в TP цену через calcTpSl().' },
-  slRoiPct: { label: 'SL ROI (%)', text: 'Риск-лимит ROI для stop-loss. Конвертируется в SL цену через calcTpSl().' },
-};
-
 const NUMERIC_FIELDS = ['windowMinutes', 'turnover24hMin', 'vol24hMin', 'priceThresholdPct', 'oiThresholdPct', 'turnoverSpikePct', 'baselineFloorUSDT', 'holdSeconds', 'trendConfirmSeconds', 'oiMaxAgeSec', 'entryOffsetPct', 'marginUsd', 'leverage', 'tpRoiPct', 'slRoiPct'];
 
 const toFormStrings = (cfg = {}) => ({ ...DEFAULT_MOMENTUM_FORM, ...cfg, ...Object.fromEntries(NUMERIC_FIELDS.map((key) => [key, String(cfg?.[key] ?? DEFAULT_MOMENTUM_FORM[key] ?? '')])) });
-
 const normalizeForm = (form) => {
   const out = { ...form };
   for (const key of NUMERIC_FIELDS) {
@@ -46,41 +24,48 @@ const normalizeForm = (form) => {
 
 export default function MomentumPage() {
   const ws = useWs();
-  const [form, setForm] = useState(() => {
-    try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      return raw ? toFormStrings(JSON.parse(raw)) : toFormStrings(DEFAULT_MOMENTUM_FORM);
-    } catch {
-      return toFormStrings(DEFAULT_MOMENTUM_FORM);
-    }
-  });
+  const [form, setForm] = useState(() => toFormStrings(JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null') || DEFAULT_MOMENTUM_FORM));
   const [instances, setInstances] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [detail, setDetail] = useState(null);
   const [trades, setTrades] = useState([]);
   const [fixedSignals, setFixedSignals] = useState([]);
-  const [signals, setSignals] = useState([]);
-  const [sort, setSort] = useState({ key: 'entryTs', dir: 'desc' });
-  const [universe, setUniverse] = useState([]);
-  const saveTimerRef = useRef(null);
+  const [latestSignals, setLatestSignals] = useState([]);
+  const [statsView, setStatsView] = useState(null);
+  const [universeSymbols, setUniverseSymbols] = useState([]);
+  const [inspectSymbol, setInspectSymbol] = useState('');
+  const [inspectData, setInspectData] = useState(null);
+  const statsRef = useRef(null);
 
-  useEffect(() => { fetch(`${API_BASE}/api/universe-search/result`).then((r) => r.json()).then((r) => setUniverse(r?.outputs?.tiers || [])).catch(() => {}); }, []);
+  useEffect(() => {
+    fetch(`${API_BASE}/api/universe-search/result`).then((r) => r.json()).then((r) => {
+      const symbols = (r?.outputs?.tiers || []).flatMap((t) => t.symbols || []);
+      setUniverseSymbols(symbols);
+      if (!inspectSymbol && symbols[0]) setInspectSymbol(symbols[0]);
+    }).catch(() => {});
+  }, [inspectSymbol]);
 
-  const loadSelected = useCallback(async (instanceId) => {
-    if (!instanceId) return;
-    const [state, t, fs, sig] = await Promise.all([
-      ws.request('momentum.getInstanceState', { instanceId }),
-      ws.request('momentum.getTrades', { instanceId, limit: 300, offset: 0 }),
-      ws.request('momentum.getFixedSignals', { instanceId, limit: 200 }),
-      ws.request('momentum.getSignals', { instanceId, limit: 200 }),
+  const loadSelected = useCallback(async (id) => {
+    if (!id) return;
+    const [state, t, fs] = await Promise.all([
+      ws.request('momentum.getInstanceState', { instanceId: id }),
+      ws.request('momentum.getTrades', { instanceId: id, limit: 300, offset: 0 }),
+      ws.request('momentum.getFixedSignals', { instanceId: id, limit: 100 }),
     ]);
     if (state?.ok) {
       setDetail(state.stateSnapshot);
-      setForm(toFormStrings(state.stateSnapshot?.config || DEFAULT_MOMENTUM_FORM));
+      const rows = (state.stateSnapshot?.signalNotifications || []).slice(0, 100);
+      setLatestSignals((prev) => rows.reduce((acc, row) => {
+        const top = acc[0];
+        if (top && top.symbol === row.symbol && top.action === row.action && top.message === row.message) {
+          acc[0] = { ...top, ts: row.ts, count: Number(top.count || 1) + 1 };
+          return acc;
+        }
+        return [{ ...row, count: 1 }, ...acc].slice(0, 3);
+      }, prev.slice(0, 3)));
     }
-    if (t?.ok) setTrades((t.trades || []).filter((row) => Number(row.entryPriceActual || row.entryPrice) > 0 && Number(row.entryQtyActual || row.qty || 0) > 0));
+    if (t?.ok) setTrades(t.trades || []);
     if (fs?.ok) setFixedSignals(fs.rows || []);
-    if (sig?.ok) setSignals(sig.rows || []);
   }, [ws]);
 
   useEffect(() => {
@@ -88,125 +73,80 @@ export default function MomentumPage() {
       const list = await ws.request('momentum.list', {});
       if (list?.ok) {
         setInstances(list.instances || []);
-        setSelectedId((prev) => prev || list.instances?.[0]?.id || '');
+        if (!selectedId && list.instances?.[0]?.id) setSelectedId(list.instances[0].id);
       }
-      if (selectedId) await loadSelected(selectedId);
-    }, 1200);
+      if (document.visibilityState === 'visible' && selectedId) await loadSelected(selectedId);
+    }, 1500);
     return () => clearInterval(loop);
   }, [ws, selectedId, loadSelected]);
 
-  useEffect(() => {
-    if (selectedId) loadSelected(selectedId);
-  }, [selectedId, loadSelected]);
+  useEffect(() => { if (selectedId) loadSelected(selectedId); }, [selectedId, loadSelected]);
 
-  const saveNow = useCallback(async () => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
+  const setField = (key, value) => setForm((p) => ({ ...p, [key]: value }));
+  const save = async () => {
     const normalized = normalizeForm(form);
     if (selectedId) await ws.request('momentum.updateInstanceConfig', { instanceId: selectedId, patch: normalized });
     else localStorage.setItem(DRAFT_KEY, JSON.stringify(normalized));
-  }, [form, selectedId, ws]);
-
-  const scheduleSave = useCallback(() => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(saveNow, 450);
-  }, [saveNow]);
+  };
 
   const onStart = async () => {
     const out = await ws.request('momentum.start', { config: normalizeForm(form) });
-    if (out?.ok) {
-      setSelectedId(out.instanceId);
-      localStorage.removeItem(DRAFT_KEY);
-    }
-  };
-  const onStop = async (id) => { await ws.request('momentum.stop', { instanceId: id }); };
-  const onContinue = async (id) => { await ws.request('momentum.continue', { instanceId: id }); };
-  const onDelete = async (id) => {
-    if (!window.confirm(`Delete bot ${id}?`)) return;
-    const out = await ws.request('momentum.deleteInstance', { instanceId: id });
-    if (out?.ok && selectedId === id) setSelectedId('');
+    if (out?.ok) setSelectedId(out.instanceId);
   };
 
-  const sortedTrades = useMemo(() => {
-    const rows = [...trades];
-    rows.sort((a, b) => {
-      const av = a?.[sort.key]; const bv = b?.[sort.key];
-      const cmp = (Number.isFinite(Number(av)) && Number.isFinite(Number(bv))) ? (Number(av) - Number(bv)) : String(av ?? '').localeCompare(String(bv ?? ''));
-      return sort.dir === 'asc' ? cmp : -cmp;
-    });
-    return rows;
-  }, [trades, sort]);
-
-  const latestSignals = useMemo(() => {
-    const rows = Array.isArray(detail?.signalNotifications) ? [...detail.signalNotifications] : [];
-    rows.sort((a, b) => Number(b?.ts || 0) - Number(a?.ts || 0));
-    return rows.slice(0, 40);
-  }, [detail]);
-
-  const stats = useMemo(() => {
-    const total = trades.length;
-    const longs = trades.filter((x) => x.side === 'LONG');
-    const shorts = trades.filter((x) => x.side === 'SHORT');
-    const isWin = (x) => Number(x.pnlNet ?? x.pnlUsd ?? 0) >= 0;
-    return { total, longCount: longs.length, shortCount: shorts.length, longWin: longs.filter(isWin).length, shortWin: shorts.filter(isWin).length };
-  }, [trades]);
-
-  const tierSet = new Set(form.tierIndices || []);
-  const setField = (key, value) => {
-    setForm((p) => ({ ...p, [key]: value }));
-    scheduleSave();
+  const loadStats = async (botId) => {
+    setSelectedId(botId);
+    const res = await fetch(`${API_BASE}/api/momentum/bots/${botId}/stats`).then((r) => r.json());
+    setStatsView(res);
+    setTimeout(() => statsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
-  const renderField = (key) => <Form.Group key={key} className='mb-2'>
-    <Form.Label>{FIELD_META[key].label}</Form.Label>
-    <Form.Control type='text' inputMode='decimal' value={form[key]} onChange={(e) => setField(key, e.target.value)} onBlur={saveNow} />
-    <Form.Text className='text-muted'>{FIELD_META[key].text}</Form.Text>
-  </Form.Group>;
+
+  const refreshInspect = async () => {
+    if (!inspectSymbol) return;
+    const q = new URLSearchParams({ symbol: inspectSymbol, botId: selectedId || '' });
+    const out = await fetch(`${API_BASE}/api/momentum/inspect?${q}`).then((r) => r.json());
+    setInspectData(out);
+  };
 
   return <Row className='g-3'>
     <Col md={4}><Card><Card.Body>
-      <Card.Title>Momentum</Card.Title>
-      <Form.Group className='mb-2'>
-        <Form.Label>{FIELD_META.mode.label}</Form.Label>
-        <Form.Select value={form.mode} onChange={(e) => setField('mode', e.target.value)} onBlur={saveNow}><option value='paper'>paper</option><option value='demo'>demo</option></Form.Select>
-        <Form.Text className='text-muted'>{FIELD_META.mode.text}</Form.Text>
-      </Form.Group>
-      <Form.Group className='mb-2'>
-        <Form.Label>{FIELD_META.directionMode.label}</Form.Label>
-        <Form.Select value={form.directionMode} onChange={(e) => setField('directionMode', e.target.value)} onBlur={saveNow}><option>BOTH</option><option>LONG</option><option>SHORT</option></Form.Select>
-        <Form.Text className='text-muted'>{FIELD_META.directionMode.text}</Form.Text>
-      </Form.Group>
-      {NUMERIC_FIELDS.map(renderField)}
-      <div className='mb-2'>
-        <Button size='sm' variant='outline-secondary' onClick={() => setField('tierIndices', universe.map((t) => Number(t.tierIndex)))}>Выбрать все</Button>{' '}
-        <Button size='sm' variant='outline-secondary' onClick={() => setField('tierIndices', [])}>Снять все</Button>
-      </div>
-      {(universe || []).map((t) => <Form.Check key={t.tierIndex} type='checkbox' label={`Tier ${t.tierIndex} (${t.size})`} checked={tierSet.has(Number(t.tierIndex))} onChange={(e) => setField('tierIndices', e.target.checked ? [...new Set([...(form.tierIndices || []), Number(t.tierIndex)])] : (form.tierIndices || []).filter((x) => Number(x) !== Number(t.tierIndex)))} onBlur={saveNow} />)}
-      <div className='d-flex gap-2 mt-3'><Button onClick={onStart}>Create</Button><Button variant='outline-secondary' onClick={() => setForm(toFormStrings(DEFAULT_MOMENTUM_FORM))}>Reset</Button></div>
+      <Card.Title>Momentum Settings</Card.Title>
+      {NUMERIC_FIELDS.map((key) => <Form.Group key={key} className='mb-2'><Form.Label>{key}</Form.Label><Form.Control value={form[key]} onChange={(e) => setField(key, e.target.value)} onBlur={save} /></Form.Group>)}
+      <Button onClick={onStart}>Create</Button>
+      <Card className='mt-3'><Card.Body>
+        <div className='d-flex justify-content-between align-items-center'><strong>Signals</strong><Badge bg='secondary'>max 3</Badge></div>
+        <Table size='sm'><tbody>{latestSignals.map((n, idx) => <tr key={`${n.symbol}-${n.action}-${idx}`}><td>{n.symbol}</td><td>{n.action}</td><td>{n.count > 1 ? `x${n.count}` : ''} {n.message}</td></tr>)}</tbody></Table>
+      </Card.Body></Card>
     </Card.Body></Card></Col>
-
     <Col md={8}><Card><Card.Body>
       <Card.Title>Bots summary</Card.Title>
-      <Table size='sm'><thead><tr><th>ID</th><th>Config</th><th>Action</th></tr></thead><tbody>
-        {instances.map((i) => <tr key={i.id}><td><div>{i.id}</div><div><Badge bg={i.status === 'RUNNING' ? 'success' : 'secondary'}>{i.status}</Badge></div></td><td><div className='text-muted'>mode={i.mode} | trades={i.tradesCount || 0} | winrate={(Number(i.winratePct || 0)).toFixed(1)}% | pnl={(Number(i.pnlNetTotal || 0)).toFixed(3)}</div></td><td className='d-flex gap-1'>{i.status === 'RUNNING' ? <Button size='sm' variant='danger' onClick={() => onStop(i.id)}>Stop</Button> : <Button size='sm' onClick={() => onContinue(i.id)}>Continue</Button>}<Button size='sm' variant='outline-primary' onClick={() => setSelectedId(i.id)}>View stats</Button><Button size='sm' variant='outline-danger' onClick={() => onDelete(i.id)}>Delete</Button></td></tr>)}
+      <Table size='sm'><thead><tr><th>ID</th><th>Status</th><th>Action</th></tr></thead><tbody>
+        {instances.map((i) => <tr key={i.id}><td>{i.id}</td><td><Badge bg={i.status === 'RUNNING' ? 'success' : 'secondary'}>{i.status}</Badge></td><td className='d-flex gap-1'><Button size='sm' onClick={() => loadStats(i.id)}>View stats</Button><Button size='sm' variant='outline-danger' onClick={() => ws.request('momentum.deleteInstance', { instanceId: i.id })}>Delete</Button></td></tr>)}
       </tbody></Table>
-
-      <Form.Select className='mb-2' value={selectedId} onChange={(e) => setSelectedId(e.target.value)}><option value=''>Select</option>{instances.map((i) => <option key={i.id} value={i.id}>{i.id}</option>)}</Form.Select>
-      <div className='mb-2'>Active trades / Pending trades: {detail?.openPositions?.length || 0} / {detail?.pendingOrders?.length || 0}</div>
 
       <h6>Зафиксированные сигналы</h6>
-      <Table size='sm'><thead><tr><th>time</th><th>symbol</th><th>side</th><th>W</th><th>priceΔ%</th><th>oiΔ%</th><th>action</th><th>reason</th></tr></thead><tbody>
-        {fixedSignals.map((r) => <tr key={r.id}><td>{new Date(r.tsMs).toLocaleTimeString()}</td><td>{r.symbol}</td><td>{r.side}</td><td>{r.windowMinutes}</td><td style={{ fontFamily: 'monospace' }}>{Number(r.metrics?.priceChangePctW || 0).toFixed(2)}</td><td style={{ fontFamily: 'monospace' }}>{Number(r.metrics?.oiChangePctW || 0).toFixed(2)}</td><td>{r.action}</td><td>{r.reason || '-'}</td></tr>)}
-      </tbody></Table>
-
-      <h6>Trades ({stats.total})</h6>
-      <div style={{ height: 340, overflow: 'auto', resize: 'vertical', minHeight: 220, maxHeight: '70vh' }}>
-        <Table size='sm'><thead><tr>{['symbol', 'side', 'entryTs', 'entryPrice', 'exitPrice', 'qty', 'pnlNet', 'outcome'].map((k) => <th key={k} onClick={() => setSort((s) => ({ key: k, dir: s.key === k && s.dir === 'asc' ? 'desc' : 'asc' }))} style={{ cursor: 'pointer' }}>{k} {sort.key === k ? (sort.dir === 'asc' ? '▲' : '▼') : ''}</th>)}</tr></thead><tbody>{sortedTrades.map((t) => <tr key={t.id}><td>{t.symbol}</td><td>{t.side}</td><td>{t.entryTs}</td><td>{t.entryPriceActual || t.entryPrice}</td><td>{t.exitPrice}</td><td>{t.entryQtyActual || t.qty}</td><td>{Number(t.pnlNet ?? t.pnlUsd ?? 0).toFixed(3)}</td><td>{t.outcome}</td></tr>)}</tbody></Table>
+      <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+        <Table size='sm'><thead style={{ position: 'sticky', top: 0, background: 'white' }}><tr><th>time</th><th>symbol</th><th>side</th><th>action</th><th>reason</th></tr></thead><tbody>
+          {fixedSignals.slice(0, 200).map((r) => <tr key={r.id}><td>{new Date(r.tsMs).toLocaleTimeString()}</td><td>{r.symbol}</td><td>{r.side}</td><td>{r.action}</td><td>{r.reason || '-'}</td></tr>)}
+        </tbody></Table>
       </div>
 
-      <h6>Signals</h6>
-      <Table size='sm'><tbody>{latestSignals.map((n, idx) => <tr key={`${n.symbol}-${n.ts || idx}`}><td>{n.symbol}</td><td>{n.action}</td><td>{n.message}</td></tr>)}{signals.map((n) => <tr key={`db-${n.id}`}><td>{n.symbol}</td><td>{n.action}</td><td>{Number(n.priceChange || 0).toFixed(4)}</td></tr>)}</tbody></Table>
+      <h6 ref={statsRef}>Runs</h6>
+      <Table size='sm'><thead><tr><th>runId</th><th>startedAt</th><th>stoppedAt</th><th>mode</th><th>trades</th><th>winrate</th><th>pnl</th></tr></thead><tbody>
+        {(statsView?.runs || []).map((r) => <tr key={r.runId}><td>{r.runId}</td><td>{new Date(r.startedAt).toLocaleString()}</td><td>{r.stoppedAt ? new Date(r.stoppedAt).toLocaleString() : '-'}</td><td>{r.mode}</td><td>{r.tradesCount}</td><td>{Number(r.winrate || 0).toFixed(1)}%</td><td>{Number(r.pnl || 0).toFixed(3)}</td></tr>)}
+      </tbody></Table>
+      <h6>Trades</h6>
+      <Table size='sm'><thead><tr><th>runId</th><th>symbol</th><th>side</th><th>entry</th><th>exit</th><th>qty</th><th>pnl</th><th>outcome</th></tr></thead><tbody>
+        {(statsView?.trades || []).map((t) => <tr key={t.id}><td>{t.runId || '-'}</td><td>{t.symbol}</td><td>{t.side}</td><td>{t.entryPriceActual || t.entryPrice}</td><td>{t.exitPrice}</td><td>{t.entryQtyActual || t.qty}</td><td>{Number(t.pnlNet ?? t.pnlUsd ?? 0).toFixed(3)}</td><td>{t.outcome}</td></tr>)}
+      </tbody></Table>
+
+      <Card className='mt-3'><Card.Body>
+        <Card.Title>Запрос данных / Инспектор метрик</Card.Title>
+        <div className='d-flex gap-2 mb-2'><Form.Select value={inspectSymbol} onChange={(e) => setInspectSymbol(e.target.value)}>{universeSymbols.map((s) => <option key={s}>{s}</option>)}</Form.Select><Button onClick={refreshInspect}>Refresh</Button></div>
+        <Table size='sm'><thead><tr><th>Metric</th><th>Current</th><th>Threshold</th><th>PASS/FAIL</th><th>source</th></tr></thead><tbody>
+          {Object.entries(inspectData?.metrics || {}).map(([key, v]) => <tr key={key}><td>{key}</td><td>{v.human}</td><td>{inspectData?.thresholds?.[key] ? `${inspectData.thresholds[key].op} ${inspectData.thresholds[key].value}` : '-'}</td><td>{inspectData?.checks?.[key]?.pass ? 'PASS' : 'FAIL'} {inspectData?.checks?.[key]?.reason || ''}</td><td>{inspectData?.source} / {inspectData?.tsMs}</td></tr>)}
+        </tbody></Table>
+      </Card.Body></Card>
     </Card.Body></Card></Col>
   </Row>;
 }

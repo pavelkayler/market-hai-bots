@@ -21,3 +21,7 @@ build
 # Logs
 logs
 *.log
+
+# Backend runtime data
+backend/data/*
+!backend/data/.gitkeep

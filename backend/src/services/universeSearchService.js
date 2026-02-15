@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import fs from 'fs/promises';
 import path from 'path';
+import { dataPath, ensureDataDir } from '../libraries/config/dataDir.js';
 
 const DEFAULTS = {
   maxWaitFirstTickSec: 60,
@@ -76,7 +77,8 @@ function normalizeLegacyResult(result) {
   };
 }
 
-export function createUniverseSearchService({ marketData, subscriptions, bybitRest, logger = console, persistPath = 'backend/data/universe_search_latest.json', emitState = () => {}, emitResult = () => {} } = {}) {
+export function createUniverseSearchService({ marketData, subscriptions, bybitRest, logger = console, persistPath = dataPath('universe_search_latest.json'), emitState = () => {}, emitResult = () => {} } = {}) {
+  ensureDataDir({ logger });
   const emitter = new EventEmitter();
   let state = {
     phase: 'IDLE',
