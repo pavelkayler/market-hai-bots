@@ -1,4 +1,6 @@
 import type { MarketState } from '../market/marketHub.js';
+import { PAPER_FEES } from './paperFees.js';
+import type { PaperPendingOrder, PaperPosition } from './paperTypes.js';
 
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
@@ -42,6 +44,8 @@ export type SymbolRuntimeState = {
   lastEvaluationGateTs: number | null;
   blockedUntilTs: number;
   overrideGateOnce: boolean;
+  pendingOrder: PaperPendingOrder | null;
+  position: PaperPosition | null;
 };
 
 export type SignalPayload = {
@@ -53,13 +57,30 @@ export type SignalPayload = {
   oiDeltaPct: number;
 };
 
+export type OrderUpdatePayload = {
+  symbol: string;
+  status: 'PLACED' | 'FILLED' | 'CANCELLED' | 'EXPIRED';
+  order: PaperPendingOrder;
+};
+
+export type PositionUpdatePayload = {
+  symbol: string;
+  status: 'OPEN' | 'CLOSED';
+  position: PaperPosition;
+  exitPrice?: number;
+  pnlUSDT?: number;
+};
+
 type BotEngineDeps = {
   now?: () => number;
   emitSignal: (payload: SignalPayload) => void;
+  emitOrderUpdate: (payload: OrderUpdatePayload) => void;
+  emitPositionUpdate: (payload: PositionUpdatePayload) => void;
 };
 
 const DEFAULT_HOLD_SECONDS = 3;
 const DEFAULT_OI_UP_THR_PCT = 50;
+const ONE_HOUR_MS = 60 * 60 * 1000;
 
 export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | null => {
   const tf = raw.tf;
@@ -139,10 +160,13 @@ export class BotEngine {
           holdStartTs: null,
           lastEvaluationGateTs: null,
           blockedUntilTs: 0,
-          overrideGateOnce: false
+          overrideGateOnce: false,
+          pendingOrder: null,
+          position: null
         });
       }
     }
+    this.updateSummaryCounts();
   }
 
   start(config: BotConfig): void {
@@ -169,8 +193,26 @@ export class BotEngine {
 
     return {
       ...symbolState,
-      baseline: symbolState.baseline ? { ...symbolState.baseline } : null
+      baseline: symbolState.baseline ? { ...symbolState.baseline } : null,
+      pendingOrder: symbolState.pendingOrder ? { ...symbolState.pendingOrder } : null,
+      position: symbolState.position ? { ...symbolState.position } : null
     };
+  }
+
+  cancelPendingOrder(symbol: string, marketState: MarketState): boolean {
+    const symbolState = this.symbols.get(symbol);
+    if (!symbolState || !symbolState.pendingOrder || symbolState.fsmState !== 'ENTRY_PENDING') {
+      return false;
+    }
+
+    const cancelledOrder = symbolState.pendingOrder;
+    symbolState.pendingOrder = null;
+    symbolState.fsmState = 'IDLE';
+    symbolState.holdStartTs = null;
+    this.resetBaseline(symbolState, marketState);
+    this.deps.emitOrderUpdate({ symbol, status: 'CANCELLED', order: cancelledOrder });
+    this.updateSummaryCounts();
+    return true;
   }
 
   onMarketUpdate(symbol: string, marketState: MarketState): void {
@@ -193,7 +235,13 @@ export class BotEngine {
       return;
     }
 
-    if (symbolState.fsmState === 'ENTRY_PENDING' || symbolState.fsmState === 'POSITION_OPEN') {
+    if (symbolState.fsmState === 'ENTRY_PENDING') {
+      this.processPendingOrder(symbolState, marketState);
+      return;
+    }
+
+    if (symbolState.fsmState === 'POSITION_OPEN') {
+      this.processOpenPosition(symbolState, marketState);
       return;
     }
 
@@ -208,16 +256,7 @@ export class BotEngine {
       }
 
       if (symbolState.holdStartTs !== null && now - symbolState.holdStartTs >= this.state.config.holdSeconds * 1000) {
-        this.deps.emitSignal({
-          symbol,
-          side: 'LONG',
-          markPrice: marketState.markPrice,
-          oiValue: marketState.openInterestValue,
-          priceDeltaPct,
-          oiDeltaPct
-        });
-        symbolState.blockedUntilTs = now + 1000;
-        this.resetToIdle(symbolState);
+        this.confirmSignalAndExecute(symbolState, marketState, 'LONG', priceDeltaPct, oiDeltaPct);
       }
       return;
     }
@@ -230,16 +269,7 @@ export class BotEngine {
       }
 
       if (symbolState.holdStartTs !== null && now - symbolState.holdStartTs >= this.state.config.holdSeconds * 1000) {
-        this.deps.emitSignal({
-          symbol,
-          side: 'SHORT',
-          markPrice: marketState.markPrice,
-          oiValue: marketState.openInterestValue,
-          priceDeltaPct,
-          oiDeltaPct
-        });
-        symbolState.blockedUntilTs = now + 1000;
-        this.resetToIdle(symbolState);
+        this.confirmSignalAndExecute(symbolState, marketState, 'SHORT', priceDeltaPct, oiDeltaPct);
       }
       return;
     }
@@ -260,6 +290,168 @@ export class BotEngine {
       symbolState.fsmState = 'HOLDING_SHORT';
       symbolState.holdStartTs = now;
     }
+  }
+
+  private confirmSignalAndExecute(
+    symbolState: SymbolRuntimeState,
+    marketState: MarketState,
+    side: 'LONG' | 'SHORT',
+    priceDeltaPct: number,
+    oiDeltaPct: number
+  ): void {
+    const now = this.now();
+    this.deps.emitSignal({
+      symbol: symbolState.symbol,
+      side,
+      markPrice: marketState.markPrice,
+      oiValue: marketState.openInterestValue,
+      priceDeltaPct,
+      oiDeltaPct
+    });
+
+    if (this.state.config!.mode !== 'paper') {
+      symbolState.blockedUntilTs = now + 1000;
+      this.resetToIdle(symbolState);
+      return;
+    }
+
+    if (symbolState.pendingOrder || symbolState.position) {
+      return;
+    }
+
+    const orderSide = side === 'LONG' ? 'Buy' : 'Sell';
+    const order: PaperPendingOrder = {
+      symbol: symbolState.symbol,
+      side: orderSide,
+      limitPrice: marketState.markPrice,
+      qty: this.roundQty((this.state.config!.marginUSDT * this.state.config!.leverage) / marketState.markPrice),
+      placedTs: now,
+      expiresTs: now + ONE_HOUR_MS
+    };
+
+    symbolState.pendingOrder = order;
+    symbolState.fsmState = 'ENTRY_PENDING';
+    symbolState.holdStartTs = null;
+    this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'PLACED', order });
+    this.updateSummaryCounts();
+  }
+
+  private processPendingOrder(symbolState: SymbolRuntimeState, marketState: MarketState): void {
+    if (!symbolState.pendingOrder || !this.state.config) {
+      return;
+    }
+
+    const now = this.now();
+    if (now >= symbolState.pendingOrder.expiresTs) {
+      const expiredOrder = symbolState.pendingOrder;
+      symbolState.pendingOrder = null;
+      symbolState.fsmState = 'IDLE';
+      this.resetBaseline(symbolState, marketState);
+      this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'EXPIRED', order: expiredOrder });
+      this.updateSummaryCounts();
+      return;
+    }
+
+    const shouldFill =
+      (symbolState.pendingOrder.side === 'Buy' && marketState.markPrice <= symbolState.pendingOrder.limitPrice) ||
+      (symbolState.pendingOrder.side === 'Sell' && marketState.markPrice >= symbolState.pendingOrder.limitPrice);
+
+    if (!shouldFill) {
+      return;
+    }
+
+    const filledOrder = symbolState.pendingOrder;
+    const side = filledOrder.side === 'Buy' ? 'LONG' : 'SHORT';
+    const tpMovePct = this.state.config.tpRoiPct / this.state.config.leverage;
+    const slMovePct = this.state.config.slRoiPct / this.state.config.leverage;
+
+    const position: PaperPosition = {
+      symbol: symbolState.symbol,
+      side,
+      entryPrice: filledOrder.limitPrice,
+      qty: filledOrder.qty,
+      tpPrice: side === 'LONG' ? filledOrder.limitPrice * (1 + tpMovePct / 100) : filledOrder.limitPrice * (1 - tpMovePct / 100),
+      slPrice: side === 'LONG' ? filledOrder.limitPrice * (1 - slMovePct / 100) : filledOrder.limitPrice * (1 + slMovePct / 100),
+      openedTs: now
+    };
+
+    symbolState.pendingOrder = null;
+    symbolState.position = position;
+    symbolState.fsmState = 'POSITION_OPEN';
+
+    this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'FILLED', order: filledOrder });
+    this.deps.emitPositionUpdate({ symbol: symbolState.symbol, status: 'OPEN', position });
+    this.updateSummaryCounts();
+  }
+
+  private processOpenPosition(symbolState: SymbolRuntimeState, marketState: MarketState): void {
+    if (!symbolState.position) {
+      return;
+    }
+
+    const position = symbolState.position;
+    const exitHit =
+      (position.side === 'LONG' && (marketState.markPrice >= position.tpPrice || marketState.markPrice <= position.slPrice)) ||
+      (position.side === 'SHORT' && (marketState.markPrice <= position.tpPrice || marketState.markPrice >= position.slPrice));
+
+    if (!exitHit) {
+      return;
+    }
+
+    const notional = position.entryPrice * position.qty;
+    const grossPnl = position.side === 'LONG' ? (marketState.markPrice - position.entryPrice) * position.qty : (position.entryPrice - marketState.markPrice) * position.qty;
+    const feePaid = notional * PAPER_FEES.makerFeeRate + marketState.markPrice * position.qty * PAPER_FEES.makerFeeRate;
+    const pnlUSDT = grossPnl - feePaid;
+
+    const closedPosition: PaperPosition = {
+      ...position,
+      lastPnlUSDT: pnlUSDT
+    };
+
+    symbolState.position = null;
+    symbolState.fsmState = 'IDLE';
+    this.resetBaseline(symbolState, marketState);
+    this.deps.emitPositionUpdate({
+      symbol: symbolState.symbol,
+      status: 'CLOSED',
+      position: closedPosition,
+      exitPrice: marketState.markPrice,
+      pnlUSDT
+    });
+    this.updateSummaryCounts();
+  }
+
+  private resetBaseline(symbolState: SymbolRuntimeState, marketState: MarketState): void {
+    symbolState.baseline = {
+      basePrice: marketState.markPrice,
+      baseOiValue: marketState.openInterestValue,
+      baseTs: marketState.ts
+    };
+    symbolState.overrideGateOnce = true;
+  }
+
+  private updateSummaryCounts(): void {
+    let activeOrders = 0;
+    let openPositions = 0;
+
+    for (const symbolState of this.symbols.values()) {
+      if (symbolState.pendingOrder) {
+        activeOrders += 1;
+      }
+      if (symbolState.position) {
+        openPositions += 1;
+      }
+    }
+
+    this.state = {
+      ...this.state,
+      activeOrders,
+      openPositions
+    };
+  }
+
+  private roundQty(qty: number): number {
+    return Math.round(qty * 1000) / 1000;
   }
 
   private canEvaluateAtCurrentGate(symbolState: SymbolRuntimeState, now: number): boolean {

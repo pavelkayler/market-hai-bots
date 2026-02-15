@@ -1,4 +1,5 @@
 import type { SymbolBaseline, SymbolFsmState } from '../bot/botEngine.js';
+import type { PaperPendingOrder, PaperPosition } from '../bot/paperTypes.js';
 import type { MarketState } from '../market/marketHub.js';
 
 type WsClient = { send: (payload: string) => unknown };
@@ -9,8 +10,8 @@ type SymbolBroadcastPayload = {
   markPrice: number;
   openInterestValue: number;
   baseline: SymbolBaseline | null;
-  pendingOrder: null;
-  position: null;
+  pendingOrder: PaperPendingOrder | null;
+  position: PaperPosition | null;
 };
 
 export class SymbolUpdateBroadcaster {
@@ -21,7 +22,14 @@ export class SymbolUpdateBroadcaster {
     private readonly throttleMs: number
   ) {}
 
-  broadcast(symbol: string, marketState: MarketState, state: SymbolFsmState, baseline: SymbolBaseline | null): void {
+  broadcast(
+    symbol: string,
+    marketState: MarketState,
+    state: SymbolFsmState,
+    baseline: SymbolBaseline | null,
+    pendingOrder: PaperPendingOrder | null,
+    position: PaperPosition | null
+  ): void {
     const now = Date.now();
     const lastSentAt = this.lastSentAtBySymbol.get(symbol) ?? 0;
     if (now - lastSentAt < this.throttleMs) {
@@ -36,8 +44,8 @@ export class SymbolUpdateBroadcaster {
       markPrice: marketState.markPrice,
       openInterestValue: marketState.openInterestValue,
       baseline,
-      pendingOrder: null,
-      position: null
+      pendingOrder,
+      position
     };
 
     const envelope = JSON.stringify({

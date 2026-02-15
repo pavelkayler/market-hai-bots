@@ -70,6 +70,9 @@ describe('SymbolUpdateBroadcaster', () => {
       },
       'HOLDING_LONG',
       { basePrice: 100, baseOiValue: 300000, baseTs: 500 }
+      ,
+      null,
+      null
     );
 
     expect(send).toHaveBeenCalledTimes(1);
