@@ -14,6 +14,7 @@ type MarketHubOptions = {
 
 export class MarketHub {
   private readonly states = new Map<string, MarketState>();
+  private running = false;
   private readonly tickerStream: TickerStream;
   private unsubscribeTicker: (() => void) | null = null;
   private readonly onMarketStateUpdate?: (symbol: string, state: MarketState) => void;
@@ -29,6 +30,7 @@ export class MarketHub {
     }
 
     await this.tickerStream.start();
+    this.running = true;
   }
 
   async stop(): Promise<void> {
@@ -38,6 +40,7 @@ export class MarketHub {
     }
 
     await this.tickerStream.stop();
+    this.running = false;
   }
 
   async setUniverseSymbols(symbols: string[]): Promise<void> {
@@ -49,6 +52,11 @@ export class MarketHub {
     }
 
     await this.tickerStream.setSymbols(symbols);
+  }
+
+
+  isRunning(): boolean {
+    return this.running;
   }
 
   getState(symbol: string): MarketState | undefined {
