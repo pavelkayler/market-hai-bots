@@ -24,10 +24,31 @@ export type DemoOpenOrder = {
   symbol?: string;
 };
 
+export type DemoPosition = {
+  symbol: string;
+  size: number;
+  entryPrice: number | null;
+  side: string | null;
+  positionIdx: number | null;
+  leverage?: number | null;
+  unrealisedPnl?: number | null;
+};
+
+type DemoPositionListEntry = {
+  positionIdx?: number;
+  symbol?: string;
+  side?: string;
+  size?: string;
+  avgPrice?: string;
+  leverage?: string;
+  unrealisedPnl?: string;
+};
+
 export interface IDemoTradeClient {
   createLimitOrderWithTpSl(params: DemoCreateOrderParams): Promise<DemoCreateOrderResult>;
   cancelOrder(params: { symbol: string; orderId?: string; orderLinkId?: string }): Promise<void>;
   getOpenOrders(symbol: string): Promise<DemoOpenOrder[]>;
+  getPosition(symbol: string): Promise<DemoPosition | null>;
 }
 
 type BybitV5Response = {
@@ -36,7 +57,7 @@ type BybitV5Response = {
   result?: {
     orderId?: string;
     orderLinkId?: string;
-    list?: DemoOpenOrder[];
+    list?: Array<DemoOpenOrder | DemoPositionListEntry>;
   };
 };
 
@@ -110,7 +131,41 @@ export class DemoTradeClient implements IDemoTradeClient {
       throw new Error(`Demo open orders failed: ${json.retCode} ${json.retMsg}`);
     }
 
-    return json.result?.list ?? [];
+    return (json.result?.list ?? []) as DemoOpenOrder[];
+  }
+
+  async getPosition(symbol: string): Promise<DemoPosition | null> {
+    const query = new URLSearchParams({ category: 'linear', symbol });
+    const queryString = query.toString();
+    const headers = this.buildSignedHeaders('GET', queryString);
+    const response = await request(`${this.baseUrl}/v5/position/list?${queryString}`, {
+      method: 'GET',
+      headers
+    });
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(`Demo position list failed with status ${response.statusCode}`);
+    }
+
+    const json = (await response.body.json()) as BybitV5Response;
+    if (json.retCode !== 0) {
+      throw new Error(`Demo position list failed: ${json.retCode} ${json.retMsg}`);
+    }
+
+    const position = (json.result?.list ?? []).find((entry) => entry.symbol === symbol) as DemoPositionListEntry | undefined;
+    if (!position) {
+      return null;
+    }
+
+    return {
+      symbol,
+      size: Number(position.size ?? '0'),
+      entryPrice: position.avgPrice ? Number(position.avgPrice) : null,
+      side: position.side ?? null,
+      positionIdx: typeof position.positionIdx === 'number' ? position.positionIdx : null,
+      leverage: position.leverage ? Number(position.leverage) : null,
+      unrealisedPnl: position.unrealisedPnl ? Number(position.unrealisedPnl) : null
+    };
   }
 
   private async post(path: string, body: string): Promise<BybitV5Response> {

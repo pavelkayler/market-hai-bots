@@ -1,4 +1,4 @@
-import type { DemoOpenOrder, IDemoTradeClient } from '../bybit/demoTradeClient.js';
+import type { DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../bybit/demoTradeClient.js';
 import type { MarketState } from '../market/marketHub.js';
 import { DemoOrderQueue, type DemoQueueSnapshot } from './demoOrderQueue.js';
 import { PAPER_FEES } from './paperFees.js';
@@ -61,7 +61,6 @@ export type SymbolRuntimeState = {
   pendingOrder: PaperPendingOrder | null;
   position: PaperPosition | null;
   demo: DemoRuntimeState | null;
-  demoNoOrderPolls: number;
 };
 
 export type SignalPayload = {
@@ -101,7 +100,6 @@ type BotEngineDeps = {
 const DEFAULT_HOLD_SECONDS = 3;
 const DEFAULT_OI_UP_THR_PCT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
-const DEMO_CLOSE_NO_ORDER_POLLS = 3;
 
 export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | null => {
   const tf = raw.tf;
@@ -263,8 +261,7 @@ export class BotEngine {
         overrideGateOnce: state.overrideGateOnce,
         pendingOrder: state.pendingOrder,
         position: state.position,
-        demo: state.demo,
-        demoNoOrderPolls: 0
+        demo: state.demo
       });
     }
 
@@ -354,13 +351,15 @@ export class BotEngine {
         continue;
       }
 
-      const openOrders = await this.deps.demoTradeClient.getOpenOrders(symbolState.symbol);
+      const startedAsPositionOpen = symbolState.fsmState === 'POSITION_OPEN';
       if (symbolState.fsmState === 'ENTRY_PENDING' && symbolState.pendingOrder) {
+        const openOrders = await this.deps.demoTradeClient.getOpenOrders(symbolState.symbol);
         await this.processDemoEntryPending(symbolState, marketState, openOrders);
       }
 
-      if (symbolState.fsmState === 'POSITION_OPEN' && symbolState.position) {
-        this.processDemoOpenPosition(symbolState, marketState, openOrders);
+      if (startedAsPositionOpen && symbolState.fsmState === 'POSITION_OPEN' && symbolState.position) {
+        const position = await this.deps.demoTradeClient.getPosition(symbolState.symbol);
+        this.processDemoOpenPosition(symbolState, marketState, position);
       }
     }
   }
@@ -478,8 +477,7 @@ export class BotEngine {
       overrideGateOnce: false,
       pendingOrder: null,
       position: null,
-      demo: null,
-      demoNoOrderPolls: 0
+      demo: null
     };
   }
 
@@ -619,7 +617,6 @@ export class BotEngine {
       symbolState.pendingOrder = null;
       symbolState.demo = null;
       symbolState.position = position;
-      symbolState.demoNoOrderPolls = 0;
       symbolState.fsmState = 'POSITION_OPEN';
       this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'FILLED', order: pendingOrder });
       this.deps.emitPositionUpdate({ symbol: symbolState.symbol, status: 'OPEN', position });
@@ -639,38 +636,30 @@ export class BotEngine {
     }
   }
 
-  private processDemoOpenPosition(symbolState: SymbolRuntimeState, marketState: MarketState, openOrders: DemoOpenOrder[]): void {
+
+
+  private processDemoOpenPosition(symbolState: SymbolRuntimeState, marketState: MarketState, position: DemoPosition | null): void {
     if (!symbolState.position) {
       return;
     }
 
-    const hasAnyOpenOrder = openOrders.some((order) => {
-      if (order.symbol !== symbolState.symbol) {
-        return false;
-      }
-
-      return order.orderStatus === 'New' || order.orderStatus === 'PartiallyFilled' || order.orderStatus === 'Untriggered';
-    });
-
-    if (hasAnyOpenOrder) {
-      symbolState.demoNoOrderPolls = 0;
+    if (position && Number.isFinite(position.size) && position.size > 0) {
       return;
     }
 
-    symbolState.demoNoOrderPolls += 1;
-    if (symbolState.demoNoOrderPolls < DEMO_CLOSE_NO_ORDER_POLLS) {
-      return;
-    }
+    const closedPosition: PaperPosition = {
+      ...symbolState.position,
+      entryPrice:
+        position && position.entryPrice !== null && Number.isFinite(position.entryPrice) ? position.entryPrice : symbolState.position.entryPrice
+    };
 
-    const position = symbolState.position;
     symbolState.position = null;
     symbolState.fsmState = 'IDLE';
-    symbolState.demoNoOrderPolls = 0;
     this.resetBaseline(symbolState, marketState);
     this.deps.emitPositionUpdate({
       symbol: symbolState.symbol,
       status: 'CLOSED',
-      position,
+      position: closedPosition,
       exitPrice: marketState.markPrice,
       pnlUSDT: 0
     });

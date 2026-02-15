@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import type { DemoCreateOrderParams, DemoOpenOrder, IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
+import type { DemoCreateOrderParams, DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
 import { BotEngine, type BotConfig, type OrderUpdatePayload, type PositionUpdatePayload, type SignalPayload } from '../src/bot/botEngine.js';
 import { FileSnapshotStore } from '../src/bot/snapshotStore.js';
 
@@ -25,6 +25,7 @@ class FakeDemoTradeClient implements IDemoTradeClient {
   public readonly createCalls: DemoCreateOrderParams[] = [];
   public readonly cancelCalls: Array<{ symbol: string; orderId?: string; orderLinkId?: string }> = [];
   public openOrdersBySymbol = new Map<string, DemoOpenOrder[]>();
+  public positionsBySymbol = new Map<string, DemoPosition | null>();
   public blockCreate = false;
 
   async createLimitOrderWithTpSl(params: DemoCreateOrderParams): Promise<{ orderId: string; orderLinkId: string }> {
@@ -45,6 +46,10 @@ class FakeDemoTradeClient implements IDemoTradeClient {
 
   async getOpenOrders(symbol: string): Promise<DemoOpenOrder[]> {
     return this.openOrdersBySymbol.get(symbol) ?? [];
+  }
+
+  async getPosition(symbol: string): Promise<DemoPosition | null> {
+    return this.positionsBySymbol.get(symbol) ?? null;
   }
 }
 
@@ -360,6 +365,119 @@ describe('BotEngine demo execution', () => {
     expect(positionUpdates.map((entry) => entry.status)).toContain('OPEN');
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('POSITION_OPEN');
   });
+
+  it('keeps POSITION_OPEN when position/list reports size > 0 even with no open orders', async () => {
+    const demoClient = new FakeDemoTradeClient();
+    const positionUpdates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      demoTradeClient: demoClient,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: (payload) => positionUpdates.push(payload),
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, mode: 'demo' });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    await flush();
+
+    const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
+    demoClient.openOrdersBySymbol.set('BTCUSDT', [
+      {
+        symbol: 'BTCUSDT',
+        orderStatus: 'Filled',
+        orderId: pendingOrder?.orderId,
+        orderLinkId: pendingOrder?.orderLinkId
+      }
+    ]);
+
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 103, openInterestValue: 1030, ts: now } });
+
+    demoClient.openOrdersBySymbol.set('BTCUSDT', []);
+    demoClient.positionsBySymbol.set('BTCUSDT', {
+      symbol: 'BTCUSDT',
+      size: 1.2,
+      entryPrice: 103,
+      side: 'Buy',
+      positionIdx: 0,
+      leverage: 2,
+      unrealisedPnl: 1.5
+    });
+
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 104, openInterestValue: 1035, ts: now + 1000 } });
+
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('POSITION_OPEN');
+    expect(positionUpdates.filter((entry) => entry.status === 'CLOSED')).toHaveLength(0);
+  });
+
+  it('closes POSITION_OPEN when position/list reports size = 0 and resets baseline override', async () => {
+    const demoClient = new FakeDemoTradeClient();
+    const positionUpdates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      demoTradeClient: demoClient,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: (payload) => positionUpdates.push(payload),
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, mode: 'demo' });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    await flush();
+
+    const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
+    demoClient.openOrdersBySymbol.set('BTCUSDT', [
+      {
+        symbol: 'BTCUSDT',
+        orderStatus: 'Filled',
+        orderId: pendingOrder?.orderId,
+        orderLinkId: pendingOrder?.orderLinkId
+      }
+    ]);
+
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 103, openInterestValue: 1030, ts: now } });
+
+    const closeMarket = { markPrice: 99, openInterestValue: 900, ts: now + 1000 };
+    demoClient.positionsBySymbol.set('BTCUSDT', {
+      symbol: 'BTCUSDT',
+      size: 0,
+      entryPrice: 103,
+      side: 'Buy',
+      positionIdx: 0
+    });
+
+    await engine.pollDemoOrders({ BTCUSDT: closeMarket });
+
+    const symbolState = engine.getSymbolState('BTCUSDT');
+    expect(symbolState?.fsmState).toBe('IDLE');
+    expect(symbolState?.overrideGateOnce).toBe(true);
+    expect(symbolState?.baseline).toEqual({
+      basePrice: closeMarket.markPrice,
+      baseOiValue: closeMarket.openInterestValue,
+      baseTs: closeMarket.ts
+    });
+    expect(positionUpdates[positionUpdates.length - 1]).toMatchObject({
+      status: 'CLOSED',
+      exitPrice: closeMarket.markPrice
+    });
+  });
+
 });
 
 

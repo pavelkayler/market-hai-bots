@@ -16,6 +16,8 @@
 - Place: `POST /v5/order/create` (LIMIT + attached TP/SL)
 - Cancel: `POST /v5/order/cancel`
 - Open orders polling: `GET /v5/order/realtime?category=linear&symbol=...`
+- Positions polling (demo close detection): `GET /v5/position/list?category=linear&symbol=...`
+  - Key fields used: `symbol`, `size`, `avgPrice`, `side`, `positionIdx`, `leverage` (optional), `unrealisedPnl` (optional)
 - Auth: HMAC SHA256 signing per v5
 
 ### Demo create order implemented fields
