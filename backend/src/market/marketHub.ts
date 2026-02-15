@@ -14,6 +14,7 @@ type MarketHubOptions = {
 
 export class MarketHub {
   private readonly states = new Map<string, MarketState>();
+  private readonly stateUpdateListeners = new Set<(symbol: string, state: MarketState) => void>();
   private running = false;
   private readonly tickerStream: TickerStream;
   private unsubscribeTicker: (() => void) | null = null;
@@ -67,6 +68,13 @@ export class MarketHub {
     return Object.fromEntries(this.states.entries());
   }
 
+  onStateUpdate(handler: (symbol: string, state: MarketState) => void): () => void {
+    this.stateUpdateListeners.add(handler);
+    return () => {
+      this.stateUpdateListeners.delete(handler);
+    };
+  }
+
   private handleTickerUpdate(update: TickerUpdate): void {
     const nextState: MarketState = {
       markPrice: update.markPrice,
@@ -76,5 +84,8 @@ export class MarketHub {
 
     this.states.set(update.symbol, nextState);
     this.onMarketStateUpdate?.(update.symbol, nextState);
+    for (const listener of this.stateUpdateListeners) {
+      listener(update.symbol, nextState);
+    }
   }
 }

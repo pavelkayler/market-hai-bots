@@ -93,6 +93,20 @@ export type QueueUpdatePayload = {
   depth: number;
 };
 
+export type ReplaySpeed = '1x' | '5x' | '20x' | 'fast';
+
+export type ReplayState = {
+  recording: boolean;
+  replaying: boolean;
+  fileName: string | null;
+  speed: ReplaySpeed | null;
+  recordsWritten: number;
+  progress: {
+    read: number;
+    total: number;
+  };
+};
+
 export type WsEnvelope<T = unknown> = {
   type: string;
   ts: number;

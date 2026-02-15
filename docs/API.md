@@ -38,6 +38,30 @@ Response shape for `/api/bot/state`:
 ### Orders
 - `POST /api/orders/cancel` `{ "symbol": "BTCUSDT" }`
 
+### Replay / local recording
+- `POST /api/replay/record/start` `{ "topN": 20, "fileName": "session-2026-02-15.ndjson" }`
+  - Response: `{ "ok": true, "path": "backend/data/replay/<fileName>", "startedAt": 0 }`
+- `POST /api/replay/record/stop`
+  - Response: `{ "ok": true, "stoppedAt": 0, "recordsWritten": 12345 }`
+- `POST /api/replay/start` `{ "fileName": "session-2026-02-15.ndjson", "speed": "1x" | "5x" | "20x" | "fast" }`
+  - Response: `{ "ok": true, "startedAt": 0 }`
+- `POST /api/replay/stop`
+  - Response: `{ "ok": true, "stoppedAt": 0 }`
+- `GET /api/replay/state`
+  - Response:
+  ```json
+  {
+    "recording": false,
+    "replaying": false,
+    "fileName": null,
+    "speed": null,
+    "recordsWritten": 0,
+    "progress": { "read": 0, "total": 0 }
+  }
+  ```
+- `GET /api/replay/files`
+  - Response: `{ "ok": true, "files": ["session-2026-02-15.ndjson"] }`
+
 ## WS message envelope
 ```json
 { "type": "state", "ts": 0, "payload": {} }
