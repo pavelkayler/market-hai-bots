@@ -17,3 +17,10 @@
 - Cancel: `POST /v5/order/cancel`
 - Open orders polling: `GET /v5/order/realtime?category=linear&symbol=...`
 - Auth: HMAC SHA256 signing per v5
+
+### Demo create order implemented fields
+The demo order-create request currently sends these attached TP/SL fields:
+- `takeProfit`
+- `stopLoss`
+- `tpTriggerBy` = `MarkPrice`
+- `slTriggerBy` = `MarkPrice`

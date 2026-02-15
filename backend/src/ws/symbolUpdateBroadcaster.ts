@@ -22,6 +22,15 @@ export class SymbolUpdateBroadcaster {
     private readonly throttleMs: number
   ) {}
 
+  setTrackedSymbols(symbols: string[]): void {
+    const trackedSet = new Set(symbols);
+    for (const symbol of this.lastSentAtBySymbol.keys()) {
+      if (!trackedSet.has(symbol)) {
+        this.lastSentAtBySymbol.delete(symbol);
+      }
+    }
+  }
+
   broadcast(
     symbol: string,
     marketState: MarketState,

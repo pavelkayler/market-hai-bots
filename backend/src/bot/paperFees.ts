@@ -1,5 +1,6 @@
-// TODO: Confirm exact Bybit non-VIP fee rates in docs/TASKS.md and update if needed.
+import { BYBIT_LINEAR_MAKER_FEE_RATE, BYBIT_LINEAR_TAKER_FEE_RATE } from '../config/fees.js';
+
 export const PAPER_FEES = {
-  makerFeeRate: 0.0002,
-  takerFeeRate: 0.00055
+  makerFeeRate: BYBIT_LINEAR_MAKER_FEE_RATE,
+  takerFeeRate: BYBIT_LINEAR_TAKER_FEE_RATE
 } as const;
