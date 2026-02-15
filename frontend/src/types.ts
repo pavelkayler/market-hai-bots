@@ -15,8 +15,13 @@ export type BotSettings = {
   slRoiPct: number;
 };
 
+export type BotConfig = BotSettings;
+
 export type BotState = {
   running: boolean;
+  paused: boolean;
+  hasSnapshot: boolean;
+  lastConfig: BotConfig | null;
   mode: BotMode | null;
   direction: BotDirection | null;
   tf: BotTf | null;
