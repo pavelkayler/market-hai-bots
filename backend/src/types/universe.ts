@@ -5,6 +5,9 @@ export type UniverseEntry = {
   lowPrice24h: number;
   vol24hPct: number;
   forcedActive: boolean;
+  qtyStep: number | null;
+  minOrderQty: number | null;
+  maxOrderQty: number | null;
 };
 
 export type UniverseState = {

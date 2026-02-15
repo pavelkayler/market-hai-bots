@@ -57,6 +57,9 @@ User chooses `tf` ∈ {1,3,5}.
 ## Execution
 Paper:
 - LIMIT @ mark at confirmation.
+- Qty normalization uses Bybit lotSizeFilter (qtyStep/minOrderQty/maxOrderQty) when available.
+- If maxOrderQty is exceeded, qty is clamped to max and then step-normalized downward.
+- If normalized qty is below minOrderQty, order is skipped and symbol remains IDLE.
 - Fill model: buy filled when mark<=limit; sell filled when mark>=limit.
 - Attached TP/SL internally; full close only.
 - Fees: Bybit non-VIP schedule (config constants).

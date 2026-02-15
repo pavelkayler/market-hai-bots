@@ -69,7 +69,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       broadcast('queue:update', payload);
     },
     demoTradeClient,
-    snapshotStore
+    snapshotStore,
+    emitLog: (message) => emitLog(message)
   });
 
   const emitLog = (message: string): void => {
@@ -138,7 +139,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
     }
 
-    botEngine.setUniverseSymbols(universe.symbols.map((entry) => entry.symbol));
+    botEngine.setUniverseEntries(universe.symbols);
     botEngine.start(config);
 
     return { ok: true, ...botEngine.getState() };
@@ -278,7 +279,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const result = await universeService.create(body.minVolPct);
     const symbols = result.state.symbols.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
-    botEngine.setUniverseSymbols(symbols);
+    botEngine.setUniverseEntries(result.state.symbols);
     symbolUpdateBroadcaster.setTrackedSymbols(symbols);
     const response = {
       ok: true,
@@ -312,7 +313,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const symbols = result.state.symbols.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
-    botEngine.setUniverseSymbols(symbols);
+    botEngine.setUniverseEntries(result.state.symbols);
     symbolUpdateBroadcaster.setTrackedSymbols(symbols);
 
     const response = {
@@ -403,7 +404,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     await marketHub.start();
     await marketHub.setUniverseSymbols(symbols);
-    botEngine.setUniverseSymbols(symbols);
+    if (universe?.ready) {
+      botEngine.setUniverseEntries(universe.symbols);
+      const missingRuntimeSymbols = runtimeSymbols.filter((symbol) => !universeSymbols.includes(symbol));
+      if (missingRuntimeSymbols.length > 0) {
+        botEngine.setUniverseSymbols(Array.from(new Set([...universeSymbols, ...missingRuntimeSymbols])));
+      }
+    } else {
+      botEngine.setUniverseSymbols(symbols);
+    }
     symbolUpdateBroadcaster.setTrackedSymbols(symbols);
   });
 

@@ -84,6 +84,82 @@ describe('BotEngine paper execution', () => {
     expect(positionUpdates).toEqual([]);
   });
 
+
+
+  it('uses lot-size filters for paper qty normalization', () => {
+    const orderUpdates: OrderUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: (payload) => orderUpdates.push(payload),
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseEntries([
+      {
+        symbol: 'BTCUSDT',
+        turnover24h: 11000000,
+        highPrice24h: 110,
+        lowPrice24h: 100,
+        vol24hPct: 10,
+        forcedActive: false,
+        qtyStep: 0.01,
+        minOrderQty: 0.01,
+        maxOrderQty: null
+      }
+    ]);
+    engine.start(defaultConfig);
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+
+    expect(orderUpdates[0]?.order.qty).toBe(1.94);
+  });
+
+  it('skips paper order and logs when normalized qty is below minOrderQty', () => {
+    const logs: string[] = [];
+    const orderUpdates: OrderUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: (payload) => orderUpdates.push(payload),
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      emitLog: (message) => logs.push(message)
+    });
+
+    engine.setUniverseEntries([
+      {
+        symbol: 'BTCUSDT',
+        turnover24h: 11000000,
+        highPrice24h: 110,
+        lowPrice24h: 100,
+        vol24hPct: 10,
+        forcedActive: false,
+        qtyStep: 0.1,
+        minOrderQty: 5,
+        maxOrderQty: null
+      }
+    ]);
+    engine.start(defaultConfig);
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
+    expect(orderUpdates).toHaveLength(0);
+    expect(logs.some((entry) => entry.includes('Skipped BTCUSDT'))).toBe(true);
+  });
+
   it('auto-cancels pending order after 1 hour and resets baseline', () => {
     const orderUpdates: OrderUpdatePayload[] = [];
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
@@ -141,6 +217,45 @@ describe('BotEngine demo execution', () => {
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
     expect(orderUpdates.map((entry) => entry.status)).toEqual(['PLACED']);
     expect(queueUpdates.some((entry) => entry.depth > 0)).toBe(true);
+  });
+
+
+
+  it('normalizes demo qty before REST placement', async () => {
+    const demoClient = new FakeDemoTradeClient();
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      demoTradeClient: demoClient,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseEntries([
+      {
+        symbol: 'BTCUSDT',
+        turnover24h: 11000000,
+        highPrice24h: 110,
+        lowPrice24h: 100,
+        vol24hPct: 10,
+        forcedActive: false,
+        qtyStep: 0.01,
+        minOrderQty: 0.01,
+        maxOrderQty: null
+      }
+    ]);
+    engine.start({ ...defaultConfig, mode: 'demo' });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    await flush();
+
+    expect(demoClient.createCalls[0]?.qty).toBe('1.94');
   });
 
   it('manual cancel before send removes queued job and resets to IDLE', async () => {
