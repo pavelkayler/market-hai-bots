@@ -91,3 +91,13 @@ export async function resumeBot(): Promise<unknown> {
 export async function cancelOrder(symbol: string): Promise<{ ok: boolean }> {
   return request('/api/orders/cancel', { method: 'POST', body: JSON.stringify({ symbol }) });
 }
+
+export async function downloadUniverseJson(): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/api/universe/download`);
+  if (!response.ok) {
+    const body = (await response.json()) as { error?: string };
+    throw new ApiRequestError(body.error ?? `HTTP ${response.status}`, body.error);
+  }
+
+  return response.blob();
+}

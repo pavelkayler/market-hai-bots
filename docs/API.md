@@ -9,6 +9,7 @@ WS: `/ws`
 - `POST /api/universe/create` `{ "minVolPct": 10 }`
 - `POST /api/universe/refresh` `{ "minVolPct": 12 }`
 - `GET /api/universe`
+- `GET /api/universe/download` (returns the persisted `UniverseState` JSON directly)
 - `POST /api/universe/clear`
 
 ### Bot

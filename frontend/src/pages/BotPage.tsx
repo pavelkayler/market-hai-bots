@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
+import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Table } from 'react-bootstrap';
 
-import { ApiRequestError, cancelOrder, clearUniverse, createUniverse, getBotState, getUniverse, pauseBot, refreshUniverse, resumeBot, startBot, stopBot } from '../api';
+import { ApiRequestError, cancelOrder, clearUniverse, createUniverse, downloadUniverseJson, getBotState, getUniverse, pauseBot, refreshUniverse, resumeBot, startBot, stopBot } from '../api';
 import type { BotSettings, BotState, SymbolUpdatePayload, UniverseState } from '../types';
 
 type LogLine = {
@@ -69,6 +69,10 @@ export function BotPage({
   const [settings, setSettings] = useState<BotSettings>(loadSettings());
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [showUniverseSymbols, setShowUniverseSymbols] = useState<boolean>(false);
+  const [universeSearch, setUniverseSearch] = useState<string>('');
+  const [universeSort, setUniverseSort] = useState<'turnover' | 'symbol'>('turnover');
+  const [universePage, setUniversePage] = useState<number>(1);
 
   useEffect(() => {
     if (!botState.lastConfig) {
@@ -81,6 +85,30 @@ export function BotPage({
   const trackedSymbols = useMemo(() => {
     return Object.values(symbolMap).filter((item) => item.state !== 'IDLE' || item.pendingOrder || item.position);
   }, [symbolMap]);
+
+  const filteredUniverseSymbols = useMemo(() => {
+    const symbols = [...(universeState.symbols ?? [])];
+    const query = universeSearch.trim().toLowerCase();
+    const searched = query.length === 0 ? symbols : symbols.filter((entry) => entry.symbol.toLowerCase().includes(query));
+
+    if (universeSort === 'symbol') {
+      return searched.sort((a, b) => a.symbol.localeCompare(b.symbol));
+    }
+
+    return searched.sort((a, b) => b.turnover24h - a.turnover24h);
+  }, [universeSearch, universeSort, universeState.symbols]);
+
+  const pageSize = 50;
+  const universePageCount = Math.max(1, Math.ceil(filteredUniverseSymbols.length / pageSize));
+  const currentUniversePage = Math.min(universePage, universePageCount);
+  const paginatedUniverseSymbols = useMemo(() => {
+    const start = (currentUniversePage - 1) * pageSize;
+    return filteredUniverseSymbols.slice(start, start + pageSize);
+  }, [currentUniversePage, filteredUniverseSymbols]);
+
+  useEffect(() => {
+    setUniversePage(1);
+  }, [universeSearch, universeSort, universeState.symbols]);
 
   const persistSettings = (next: BotSettings) => {
     setSettings(next);
@@ -163,6 +191,34 @@ export function BotPage({
     }
   };
 
+  const handleDownloadUniverseJson = async () => {
+    setError('');
+    try {
+      const blob = await downloadUniverseJson();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'universe.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus('Universe download started');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleCopySymbols = async () => {
+    const value = (universeState.symbols ?? []).map((entry) => entry.symbol).join('\n');
+    try {
+      await navigator.clipboard.writeText(value);
+      setStatus('Universe symbols copied');
+    } catch {
+      alert('Clipboard unavailable in this browser/session.');
+    }
+  };
+
   const disableSettings = botState.running;
 
   return (
@@ -193,6 +249,85 @@ export function BotPage({
               <div>Filters: {universeState.filters ? JSON.stringify(universeState.filters) : '-'}</div>
               <div>Symbols: {universeState.symbols?.length ?? 0}</div>
             </div>
+
+            <div className="d-flex gap-2 flex-wrap mt-3">
+              <Button variant="outline-primary" onClick={() => setShowUniverseSymbols((value) => !value)}>
+                Universe Symbols
+              </Button>
+              <Button variant="outline-success" onClick={() => void handleDownloadUniverseJson()}>
+                Download universe.json
+              </Button>
+              <Button variant="outline-secondary" onClick={() => void handleCopySymbols()}>
+                Copy symbols
+              </Button>
+            </div>
+
+            <Collapse in={showUniverseSymbols}>
+              <div className="mt-3">
+                {!universeState.ready ? <Alert variant="warning">Universe is not ready. Create it first.</Alert> : null}
+                <Row className="g-2 mb-2">
+                  <Col md={8}>
+                    <Form.Control
+                      placeholder="Search symbol"
+                      value={universeSearch}
+                      onChange={(event) => setUniverseSearch(event.target.value)}
+                    />
+                  </Col>
+                  <Col md={4}>
+                    <Form.Select
+                      value={universeSort}
+                      onChange={(event) => setUniverseSort(event.target.value as 'turnover' | 'symbol')}
+                    >
+                      <option value="turnover">Sort: turnover24h desc</option>
+                      <option value="symbol">Sort: symbol A-Z</option>
+                    </Form.Select>
+                  </Col>
+                </Row>
+                <Table bordered striped size="sm" className="mb-2">
+                  <thead>
+                    <tr>
+                      <th>symbol</th>
+                      <th>turnover24h</th>
+                      <th>vol24hPct</th>
+                      <th>forcedActive</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedUniverseSymbols.map((entry) => (
+                      <tr key={entry.symbol}>
+                        <td>{entry.symbol}</td>
+                        <td>{entry.turnover24h.toLocaleString()}</td>
+                        <td>{entry.vol24hPct.toFixed(2)}%</td>
+                        <td>{entry.forcedActive ? <Badge bg="warning" text="dark">forced</Badge> : <Badge bg="secondary">no</Badge>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+                <div className="d-flex align-items-center justify-content-between">
+                  <small>
+                    Page {currentUniversePage}/{universePageCount} ({filteredUniverseSymbols.length} symbols)
+                  </small>
+                  <div className="d-flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline-secondary"
+                      disabled={currentUniversePage <= 1}
+                      onClick={() => setUniversePage((value) => Math.max(1, value - 1))}
+                    >
+                      Prev
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline-secondary"
+                      disabled={currentUniversePage >= universePageCount}
+                      onClick={() => setUniversePage((value) => Math.min(universePageCount, value + 1))}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </Collapse>
           </Card.Body>
         </Card>
       </Col>
