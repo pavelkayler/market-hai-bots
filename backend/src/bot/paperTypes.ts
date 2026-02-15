@@ -5,6 +5,11 @@ export type PaperPendingOrder = {
   qty: number;
   placedTs: number;
   expiresTs: number;
+  tpPrice?: number;
+  slPrice?: number;
+  orderId?: string;
+  orderLinkId?: string;
+  sentToExchange?: boolean;
 };
 
 export type PaperPosition = {
