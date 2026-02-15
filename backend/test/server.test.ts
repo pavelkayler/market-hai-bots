@@ -49,9 +49,34 @@ describe('server routes', () => {
       tf: null,
       queueDepth: 0,
       activeOrders: 0,
-      openPositions: 0
+      openPositions: 0,
+      startedAt: null
     });
   });
+
+
+  it('POST /api/bot/start returns UNIVERSE_NOT_READY when universe does not exist', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper',
+        direction: 'long',
+        tf: 1,
+        holdSeconds: 1,
+        priceUpThrPct: 1,
+        oiUpThrPct: 1,
+        marginUSDT: 100,
+        leverage: 2,
+        tpRoiPct: 1,
+        slRoiPct: 1
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ ok: false, error: 'UNIVERSE_NOT_READY' });
+  });
+
 
   it('universe create/get/refresh/clear persists and reloads state', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-test-'));

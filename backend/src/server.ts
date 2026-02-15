@@ -2,6 +2,7 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+import { BotEngine, normalizeBotConfig } from './bot/botEngine.js';
 import { MarketHub } from './market/marketHub.js';
 import type { TickerStream } from './market/tickerStream.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
@@ -13,17 +14,7 @@ type BuildServerOptions = {
   universeFilePath?: string;
   activeSymbolSet?: ActiveSymbolSet;
   tickerStream?: TickerStream;
-};
-
-
-const botStateResponse = {
-  running: false,
-  mode: null,
-  direction: null,
-  tf: null,
-  queueDepth: 0,
-  activeOrders: 0,
-  openPositions: 0
+  now?: () => number;
 };
 
 const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
@@ -46,20 +37,33 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const wsClients = new Set<{ send: (payload: string) => unknown }>();
   const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500);
 
-  const marketHub = new MarketHub({
-    tickerStream: options.tickerStream,
-    onMarketStateUpdate: (symbol, state) => {
-      symbolUpdateBroadcaster.broadcast(symbol, state);
-    }
-  });
-  marketHubByApp.set(app, marketHub);
-
   const broadcast = (type: string, payload: Record<string, unknown>): void => {
     const message = JSON.stringify({ type, ts: Date.now(), payload });
     for (const client of wsClients) {
       client.send(message);
     }
   };
+
+  const botEngine = new BotEngine({
+    now: options.now,
+    emitSignal: (payload) => {
+      broadcast('signal:new', payload);
+    }
+  });
+
+  const marketHub = new MarketHub({
+    tickerStream: options.tickerStream,
+    onMarketStateUpdate: (symbol, state) => {
+      botEngine.onMarketUpdate(symbol, state);
+      const symbolState = botEngine.getSymbolState(symbol);
+      if (!symbolState) {
+        return;
+      }
+
+      symbolUpdateBroadcaster.broadcast(symbol, state, symbolState.fsmState, symbolState.baseline);
+    }
+  });
+  marketHubByApp.set(app, marketHub);
 
   app.register(cors, { origin: true });
   app.register(websocket);
@@ -68,8 +72,44 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return { ok: true };
   });
 
+  app.post('/api/bot/start', async (request, reply) => {
+    const universe = await universeService.get();
+    if (!universe?.ready || universe.symbols.length === 0) {
+      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+    }
+
+    if (!marketHub.isRunning()) {
+      return reply.code(400).send({ ok: false, error: 'MARKET_HUB_NOT_RUNNING' });
+    }
+
+    const config = normalizeBotConfig((request.body as Record<string, unknown>) ?? {});
+    if (!config) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
+    }
+
+    botEngine.setUniverseSymbols(universe.symbols.map((entry) => entry.symbol));
+    botEngine.start(config);
+
+    return { ok: true, ...botEngine.getState() };
+  });
+
+  app.post('/api/bot/stop', async () => {
+    botEngine.stop();
+    return { ok: true, ...botEngine.getState() };
+  });
+
   app.get('/api/bot/state', async () => {
-    return botStateResponse;
+    const state = botEngine.getState();
+    return {
+      running: state.running,
+      mode: state.config?.mode ?? null,
+      direction: state.config?.direction ?? null,
+      tf: state.config?.tf ?? null,
+      queueDepth: state.queueDepth,
+      activeOrders: state.activeOrders,
+      openPositions: state.openPositions,
+      startedAt: state.startedAt
+    };
   });
 
   app.post('/api/universe/create', async (request, reply) => {
@@ -80,7 +120,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const result = await universeService.create(body.minVolPct);
-    await marketHub.setUniverseSymbols(result.state.symbols.map((entry) => entry.symbol));
+    const symbols = result.state.symbols.map((entry) => entry.symbol);
+    await marketHub.setUniverseSymbols(symbols);
+    botEngine.setUniverseSymbols(symbols);
     const response = {
       ok: true,
       createdAt: result.state.createdAt,
@@ -111,7 +153,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }
 
-    await marketHub.setUniverseSymbols(result.state.symbols.map((entry) => entry.symbol));
+    const symbols = result.state.symbols.map((entry) => entry.symbol);
+    await marketHub.setUniverseSymbols(symbols);
+    botEngine.setUniverseSymbols(symbols);
 
     const response = {
       ok: true,
@@ -145,6 +189,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   app.post('/api/universe/clear', async () => {
     await universeService.clear();
     await marketHub.setUniverseSymbols([]);
+    botEngine.setUniverseSymbols([]);
     symbolUpdateBroadcaster.reset();
     return { ok: true };
   });
@@ -156,19 +201,24 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         wsClients.delete(socket as { send: (payload: string) => unknown });
       });
 
+      const state = botEngine.getState();
       socket.send(
         JSON.stringify({
           type: 'state',
           ts: Date.now(),
           payload: {
             universeReady: false,
-            running: false,
-            mode: null,
-            queueDepth: 0
+            running: state.running,
+            mode: state.config?.mode ?? null,
+            queueDepth: state.queueDepth
           }
         })
       );
     });
+  });
+
+  app.addHook('onReady', async () => {
+    await marketHub.start();
   });
 
   app.addHook('onClose', async () => {

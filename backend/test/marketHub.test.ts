@@ -61,11 +61,16 @@ describe('SymbolUpdateBroadcaster', () => {
     const clients = new Set([{ send }]);
     const broadcaster = new SymbolUpdateBroadcaster(clients, 500);
 
-    broadcaster.broadcast('BTCUSDT', {
-      markPrice: 101,
-      openInterestValue: 310000,
-      ts: 999
-    });
+    broadcaster.broadcast(
+      'BTCUSDT',
+      {
+        markPrice: 101,
+        openInterestValue: 310000,
+        ts: 999
+      },
+      'HOLDING_LONG',
+      { basePrice: 100, baseOiValue: 300000, baseTs: 500 }
+    );
 
     expect(send).toHaveBeenCalledTimes(1);
     const sentPayload = JSON.parse(send.mock.calls[0][0] as string) as {
@@ -84,10 +89,10 @@ describe('SymbolUpdateBroadcaster', () => {
     expect(sentPayload.type).toBe('symbol:update');
     expect(sentPayload.payload).toEqual({
       symbol: 'BTCUSDT',
-      state: 'IDLE',
+      state: 'HOLDING_LONG',
       markPrice: 101,
       openInterestValue: 310000,
-      baseline: { basePrice: 0, baseOiValue: 0, baseTs: 0 },
+      baseline: { basePrice: 100, baseOiValue: 300000, baseTs: 500 },
       pendingOrder: null,
       position: null
     });

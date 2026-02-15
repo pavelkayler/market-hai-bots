@@ -1,17 +1,14 @@
+import type { SymbolBaseline, SymbolFsmState } from '../bot/botEngine.js';
 import type { MarketState } from '../market/marketHub.js';
 
 type WsClient = { send: (payload: string) => unknown };
 
 type SymbolBroadcastPayload = {
   symbol: string;
-  state: 'IDLE';
+  state: SymbolFsmState;
   markPrice: number;
   openInterestValue: number;
-  baseline: {
-    basePrice: number;
-    baseOiValue: number;
-    baseTs: number;
-  };
+  baseline: SymbolBaseline | null;
   pendingOrder: null;
   position: null;
 };
@@ -24,7 +21,7 @@ export class SymbolUpdateBroadcaster {
     private readonly throttleMs: number
   ) {}
 
-  broadcast(symbol: string, marketState: MarketState): void {
+  broadcast(symbol: string, marketState: MarketState, state: SymbolFsmState, baseline: SymbolBaseline | null): void {
     const now = Date.now();
     const lastSentAt = this.lastSentAtBySymbol.get(symbol) ?? 0;
     if (now - lastSentAt < this.throttleMs) {
@@ -35,14 +32,10 @@ export class SymbolUpdateBroadcaster {
 
     const payload: SymbolBroadcastPayload = {
       symbol,
-      state: 'IDLE',
+      state,
       markPrice: marketState.markPrice,
       openInterestValue: marketState.openInterestValue,
-      baseline: {
-        basePrice: 0,
-        baseOiValue: 0,
-        baseTs: 0
-      },
+      baseline,
       pendingOrder: null,
       position: null
     };

@@ -1,11 +1,10 @@
-import { buildServer, getMarketHub } from './server.js';
+import { buildServer } from './server.js';
 
 const app = buildServer();
 
 const start = async (): Promise<void> => {
   try {
     await app.ready();
-    await getMarketHub(app).start();
     await app.listen({ host: '0.0.0.0', port: 8080 });
   } catch (error) {
     app.log.error(error);
