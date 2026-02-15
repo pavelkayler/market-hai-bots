@@ -17,6 +17,7 @@ type BuildServerOptions = {
   tickerStream?: TickerStream;
   now?: () => number;
   demoTradeClient?: IDemoTradeClient;
+  wsClients?: Set<{ send: (payload: string) => unknown }>
 };
 
 const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
@@ -36,7 +37,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const marketClient = options.marketClient ?? new BybitMarketClient();
   const activeSymbolSet = options.activeSymbolSet ?? new ActiveSymbolSet();
   const universeService = new UniverseService(marketClient, activeSymbolSet, app.log, options.universeFilePath);
-  const wsClients = new Set<{ send: (payload: string) => unknown }>();
+  const wsClients = options.wsClients ?? new Set<{ send: (payload: string) => unknown }>();
   const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
   const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500);
 
@@ -158,6 +159,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const symbols = result.state.symbols.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseSymbols(symbols);
+    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
     const response = {
       ok: true,
       createdAt: result.state.createdAt,
@@ -191,6 +193,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const symbols = result.state.symbols.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseSymbols(symbols);
+    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
 
     const response = {
       ok: true,
@@ -225,6 +228,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     await universeService.clear();
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
+    symbolUpdateBroadcaster.setTrackedSymbols([]);
     symbolUpdateBroadcaster.reset();
     return { ok: true };
   });

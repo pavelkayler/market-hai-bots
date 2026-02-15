@@ -36,7 +36,10 @@ export function App() {
   const [universeState, setUniverseState] = useState<UniverseState>({ ok: false, ready: false });
   const [symbolMap, setSymbolMap] = useState<Record<string, SymbolUpdatePayload>>({});
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [symbolUpdatesPerSecond, setSymbolUpdatesPerSecond] = useState(0);
   const reconnectTimer = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const symbolUpdatesInWindowRef = useRef(0);
 
   const appendLog = useCallback((text: string, ts?: number) => {
     setLogs((prev) => pushLog(prev, { text, ts: ts ?? Date.now() }));
@@ -71,10 +74,41 @@ export function App() {
   }, [syncRest]);
 
   useEffect(() => {
-    let ws: WebSocket | null = null;
+    const interval = window.setInterval(() => {
+      setSymbolUpdatesPerSecond(symbolUpdatesInWindowRef.current);
+      symbolUpdatesInWindowRef.current = 0;
+    }, 1000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    const scheduleReconnect = () => {
+      if (reconnectTimer.current !== null) {
+        return;
+      }
+
+      reconnectTimer.current = window.setTimeout(() => {
+        reconnectTimer.current = null;
+        connect();
+      }, 1500);
+    };
 
     const connect = () => {
-      ws = new WebSocket(WS_URL);
+      const existing = wsRef.current;
+      if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+
+      if (reconnectTimer.current !== null) {
+        window.clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
+      }
+
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
 
       ws.onopen = () => {
         setWsConnected(true);
@@ -83,13 +117,17 @@ export function App() {
       };
 
       ws.onclose = () => {
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
+
         setWsConnected(false);
         appendLog('WS disconnected');
-        reconnectTimer.current = window.setTimeout(connect, 1500);
+        scheduleReconnect();
       };
 
       ws.onerror = () => {
-        ws?.close();
+        ws.close();
       };
 
       ws.onmessage = (event) => {
@@ -103,6 +141,7 @@ export function App() {
 
         if (message.type === 'symbol:update') {
           const payload = message.payload as SymbolUpdatePayload;
+          symbolUpdatesInWindowRef.current += 1;
           setSymbolMap((prev) => ({ ...prev, [payload.symbol]: payload }));
           return;
         }
@@ -136,10 +175,12 @@ export function App() {
     connect();
 
     return () => {
-      if (reconnectTimer.current) {
+      if (reconnectTimer.current !== null) {
         window.clearTimeout(reconnectTimer.current);
       }
-      ws?.close();
+
+      wsRef.current?.close();
+      wsRef.current = null;
     };
   }, [appendLog, syncRest]);
 
@@ -189,6 +230,7 @@ export function App() {
                 setSymbolMap={setSymbolMap}
                 logs={logs}
                 syncRest={syncRest}
+                symbolUpdatesPerSecond={symbolUpdatesPerSecond}
               />
             }
           />

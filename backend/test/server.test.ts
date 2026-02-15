@@ -28,12 +28,15 @@ class FakeMarketClient implements IBybitMarketClient {
 
 class FakeTickerStream implements TickerStream {
   private handler: ((update: TickerUpdate) => void) | null = null;
+  public readonly setSymbolsCalls: string[][] = [];
 
   async start(): Promise<void> {}
 
   async stop(): Promise<void> {}
 
-  async setSymbols(_symbols: string[]): Promise<void> {}
+  async setSymbols(symbols: string[]): Promise<void> {
+    this.setSymbolsCalls.push([...symbols]);
+  }
 
   onTicker(handler: (update: TickerUpdate) => void): () => void {
     this.handler = handler;
@@ -252,6 +255,50 @@ describe('server routes', () => {
 
     await rm(tempDir, { recursive: true, force: true });
   });
+
+
+  it('universe create wires market symbols once and clear resets symbol update throttle', async () => {
+    const tickerStream = new FakeTickerStream();
+    const wsMessages: string[] = [];
+    const wsClients = new Set([{ send: (payload: string) => wsMessages.push(payload) }]);
+
+    app = buildServer({
+      tickerStream,
+      wsClients,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 12000000,
+              highPrice24h: 110,
+              lowPrice24h: 100,
+              markPrice: 100,
+              openInterestValue: 100000
+            }
+          ]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+
+    expect(tickerStream.setSymbolsCalls).toEqual([['BTCUSDT']]);
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 2000, ts: Date.now() });
+    const firstSymbolUpdateCount = wsMessages.filter((raw) => JSON.parse(raw).type === 'symbol:update').length;
+    expect(firstSymbolUpdateCount).toBe(1);
+
+    await app.inject({ method: 'POST', url: '/api/universe/clear' });
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 101, openInterestValue: 2001, ts: Date.now() });
+    const secondSymbolUpdateCount = wsMessages.filter((raw) => JSON.parse(raw).type === 'symbol:update').length;
+    expect(secondSymbolUpdateCount).toBe(2);
+  });
+
   it('POST /api/orders/cancel cancels pending paper order and returns ok', async () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const tickerStream = new FakeTickerStream();

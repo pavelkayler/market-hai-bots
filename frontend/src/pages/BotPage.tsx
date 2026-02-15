@@ -18,6 +18,7 @@ type Props = {
   setSymbolMap: React.Dispatch<React.SetStateAction<Record<string, SymbolUpdatePayload>>>;
   logs: LogLine[];
   syncRest: () => Promise<void>;
+  symbolUpdatesPerSecond: number;
 };
 
 const SETTINGS_KEY = 'bot.settings.v1';
@@ -53,7 +54,17 @@ function formatSecondsLeft(expiresTs: number): string {
   return `${sec}s`;
 }
 
-export function BotPage({ botState, setBotState, universeState, setUniverseState, symbolMap, setSymbolMap, logs, syncRest }: Props) {
+export function BotPage({
+  botState,
+  setBotState,
+  universeState,
+  setUniverseState,
+  symbolMap,
+  setSymbolMap,
+  logs,
+  syncRest,
+  symbolUpdatesPerSecond
+}: Props) {
   const [minVolPct, setMinVolPct] = useState<number>(10);
   const [settings, setSettings] = useState<BotSettings>(loadSettings());
   const [status, setStatus] = useState<string>('');
@@ -223,7 +234,9 @@ export function BotPage({ botState, setBotState, universeState, setUniverseState
             <Badge bg="secondary" className="me-2">
               activeOrders: {botState.activeOrders}
             </Badge>
-            <Badge bg="dark">openPositions: {botState.openPositions}</Badge>
+            <Badge bg="dark" className="me-2">openPositions: {botState.openPositions}</Badge>
+            <Badge bg="primary" className="me-2">universeSymbols: {universeState.symbols?.length ?? 0}</Badge>
+            <Badge bg="light" text="dark">symbolUpdates/s: {symbolUpdatesPerSecond}</Badge>
           </Card.Body>
         </Card>
       </Col>
