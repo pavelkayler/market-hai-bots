@@ -16,9 +16,11 @@ export function inspectMomentumSymbol({ symbol, config = {}, marketData }) {
   const priceNow = Number(snap.lastPrice || 0);
   const markPrice = Number(snap.markPrice || 0);
   const turnover24h = Number(snap.turnover24h || 0);
-  const vol24h = Number.isFinite(Number(snap.price24hPcnt))
-    ? Number(snap.price24hPcnt) * 100
-    : (Number(snap.lowPrice24h) > 0 && Number(snap.highPrice24h) > 0 ? ((Number(snap.highPrice24h) / Number(snap.lowPrice24h)) - 1) * 100 : null);
+  const vol24h = Number.isFinite(Number(snap.vol24h))
+    ? Number(snap.vol24h)
+    : (Number.isFinite(Number(snap.price24hPcnt))
+      ? Number(snap.price24hPcnt) * 100
+      : (Number(snap.lowPrice24h) > 0 && Number(snap.highPrice24h) > 0 ? ((Number(snap.highPrice24h) / Number(snap.lowPrice24h)) - 1) * 100 : null));
 
   const prevClose = baseline.ok ? Number(baseline.prevClose || 0) : null;
   const prevOiValue = baseline.ok ? Number(baseline.prevOiValue || 0) : null;
@@ -88,7 +90,11 @@ export function inspectMomentumSymbol({ symbol, config = {}, marketData }) {
     turnoverSpikePct: { value: turnoverSpikeActualPct, human: fmt(turnoverSpikeActualPct, 3, '%'), unit: '%' },
   };
 
-  const failed = Object.entries(checks).filter(([, c]) => !c.pass).map(([k, c]) => `${k}: ${c.reason}`);
+  const infoKeys = new Set(['baselineReady']);
+  for (const [key, row] of Object.entries(checks)) {
+    row.status = infoKeys.has(key) ? 'INFO' : (row.pass ? 'PASS' : 'FAIL');
+  }
+  const failed = Object.entries(checks).filter(([, c]) => c.status === 'FAIL').map(([k, c]) => `${k}: ${c.reason}`);
   return {
     ok: true,
     symbol,

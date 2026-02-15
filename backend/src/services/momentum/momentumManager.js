@@ -34,13 +34,6 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
   }
 
 
-  function normalizeUniverseSource(universeSource) {
-    const raw = String(universeSource || 'TIER_1').toUpperCase();
-    if (/^TIER_\d+$/.test(raw)) return raw;
-    if (raw === 'FAST') return 'TIER_1';
-    if (raw === 'SLOW') return 'TIER_2';
-    return 'TIER_1';
-  }
   function normalizeDirection(directionMode) {
     const d = String(directionMode || 'BOTH').toUpperCase();
     return d === 'LONG' || d === 'SHORT' ? d : 'BOTH';
@@ -108,7 +101,8 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
 
   function syncSelectionPolicy() {
     marketData.setSelectionPolicy?.({ cap: 200, turnover24hMin: 0, vol24hMin: 0 });
-    marketData.reconcileSubscriptions?.('policyChange').catch?.(() => {});
+    const maybePromise = marketData.reconcileSubscriptions?.('policyChange');
+    if (maybePromise?.catch) maybePromise.catch(() => {});
   }
 
 
@@ -116,11 +110,6 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     const pinned = new Set();
     for (const inst of instances.values()) {
       const cfg = inst.getSnapshot?.()?.config || {};
-      if (cfg.scanMode === 'SINGLE') {
-        const sym = String(cfg.singleSymbol || '').toUpperCase().trim();
-        if (sym) pinned.add(sym);
-        continue;
-      }
       for (const sym of Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols : []) if (sym) pinned.add(String(sym).toUpperCase());
     }
     marketData.setPinnedSymbols?.([...pinned]);
@@ -130,10 +119,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
     for (const inst of instances.values()) {
       try {
         const cfg = inst.getSnapshot?.()?.config || {};
-        const singleSymbol = String(cfg.singleSymbol || '').toUpperCase().trim();
-        const evalSymbols = cfg.scanMode === 'SINGLE' && singleSymbol
-          ? [singleSymbol]
-          : (Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols : []);
+        const evalSymbols = Array.isArray(cfg.evalSymbols) ? cfg.evalSymbols : [];
         await inst.onTick(tick, evalSymbols);
       } catch (err) {
         logger?.error?.({ err, instanceId: inst.getLight?.()?.id }, 'momentum onTick failed, stopping instance');
@@ -151,44 +137,28 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       return { ok: false, error: 'INVALID_WINDOW_MINUTES', message: 'windowMinutes must be 1, 3, or 5' };
     }
     const mode = String(config?.mode || 'demo').toLowerCase();
-    const universeMode = String(config?.universeMode || '').toUpperCase() === 'SINGLE' ? 'SINGLE' : 'TIERS';
-    const scanMode = universeMode === 'SINGLE' ? 'SINGLE' : 'UNIVERSE';
     const tiers = Array.isArray(getUniverseTiers?.()) ? getUniverseTiers() : [];
     const totalTiers = tiers.length;
-    const tierIndices = [...new Set((Array.isArray(config?.tierIndices) ? config.tierIndices : [config?.tierIndex ?? config?.universeTierIndex])
+    const tierIndices = [...new Set((Array.isArray(config?.tierIndices) ? config.tierIndices : [1, 2, 3, 4, 5, 6])
       .map((x) => Number(x))
       .filter((x) => Number.isInteger(x) && x > 0))].sort((a, b) => a - b);
-    const universeSource = tierIndices.length > 0 ? normalizeUniverseSource(`TIER_${tierIndices[0]}`) : 'TIER_1';
-    let singleSymbol = String(config?.singleSymbol || '').trim().toUpperCase();
     let evalSymbols = [];
-    let resolvedSymbolsCount = 0;
-    if (scanMode === 'SINGLE') {
-      if (!singleSymbol) {
-        return { ok: false, error: 'SINGLE_SYMBOL_REQUIRED', message: 'singleSymbol is required when universeMode=SINGLE' };
+    if (tierIndices.length === 0) return { ok: false, error: 'TIER_INDICES_REQUIRED', message: 'tierIndices is required' };
+    if (totalTiers <= 0) return { ok: false, error: 'UNIVERSE_SOURCE_EMPTY', message: 'Run Universe Search first.' };
+    const outOfRange = tierIndices.find((idx) => idx < 1 || idx > totalTiers);
+    if (outOfRange) return { ok: false, error: 'TIER_INDEX_OUT_OF_RANGE', message: `tierIndices must be within 1..${totalTiers}` };
+    const seen = new Set();
+    for (const idx of tierIndices) {
+      const tier = tiers.find((x) => Number(x?.tierIndex) === idx);
+      for (const symbol of (tier?.symbols || [])) {
+        const sym = String(symbol || '').toUpperCase();
+        if (!sym || seen.has(sym)) continue;
+        seen.add(sym);
+        evalSymbols.push(sym);
       }
-      if (!/^[A-Z0-9]{3,}USDT$/.test(singleSymbol)) {
-        return { ok: false, error: 'INVALID_SINGLE_SYMBOL', message: 'singleSymbol must match /^[A-Z0-9]{3,}USDT$/' };
-      }
-      if (marketData.hasInstrument && !marketData.hasInstrument(singleSymbol)) logger?.warn?.({ symbol: singleSymbol }, 'UNKNOWN_SYMBOL');
-    } else {
-      singleSymbol = null;
-      if (tierIndices.length === 0) return { ok: false, error: 'TIER_INDICES_REQUIRED', message: 'tierIndices is required when universeMode=TIERS' };
-      if (totalTiers <= 0) return { ok: false, error: 'UNIVERSE_SOURCE_EMPTY', message: 'Run Universe Search first.' };
-      const outOfRange = tierIndices.find((idx) => idx < 1 || idx > totalTiers);
-      if (outOfRange) return { ok: false, error: 'TIER_INDEX_OUT_OF_RANGE', message: `tierIndices must be within 1..${totalTiers}` };
-      const seen = new Set();
-      for (const idx of tierIndices) {
-        const tier = tiers.find((x) => Number(x?.tierIndex) === idx);
-        for (const symbol of (tier?.symbols || [])) {
-          const sym = String(symbol || '').toUpperCase();
-          if (!sym || seen.has(sym)) continue;
-          seen.add(sym);
-          evalSymbols.push(sym);
-        }
-      }
-      if (!Array.isArray(evalSymbols) || evalSymbols.length === 0) return { ok: false, error: 'UNIVERSE_SOURCE_EMPTY', message: 'Run Universe Search first.' };
-      resolvedSymbolsCount = evalSymbols.length;
     }
+    if (!Array.isArray(evalSymbols) || evalSymbols.length === 0) return { ok: false, error: 'UNIVERSE_SOURCE_EMPTY', message: 'Run Universe Search first.' };
+    const resolvedSymbolsCount = evalSymbols.length;
     let isolatedPreflight = { ok: true, skipped: true };
     if ((mode === 'demo' || mode === 'real') && tradeExecutor?.enabled?.()) {
       const runningConfigs = [...instances.values()].map((x) => x.getSnapshot?.()?.config).filter(Boolean);
@@ -206,8 +176,7 @@ export function createMomentumManager({ marketData, sqlite, tradeExecutor = null
       isolatedPreflight = await tradeExecutor.ensureIsolatedPreflight?.({ symbol: firstSymbol }) || { ok: false, error: 'ISOLATED_PREFLIGHT_UNAVAILABLE' };
       if (!isolatedPreflight?.ok) logger?.warn?.({ mode, error: isolatedPreflight?.error }, 'momentum start isolated preflight failed');
     }
-    const normalizedUniverseMode = scanMode === 'SINGLE' ? 'SINGLE' : 'TIERS';
-    const inst = createMomentumInstance({ id, config: { ...config, mode, scanMode, universeMode: normalizedUniverseMode, universeTierIndex: scanMode === 'SINGLE' ? null : tierIndices[0], universeSource, singleSymbol, evalSymbols, tierIndices: scanMode === 'SINGLE' ? [] : tierIndices, resolvedSymbolsCount }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
+    const inst = createMomentumInstance({ id, config: { ...config, mode, evalSymbols, tierIndices, resolvedSymbolsCount }, marketData, sqlite, tradeExecutor, logger, isolatedPreflight });
     instances.set(id, inst);
     await persistInstance(inst, true);
     syncActiveIntervals();

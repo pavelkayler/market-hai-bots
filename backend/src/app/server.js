@@ -10,7 +10,12 @@ import { createMomentumApp } from '../apps/momentum/index.js';
 import { createUniverseApp } from '../apps/universe/index.js';
 import { createManualApp } from '../apps/manual/index.js';
 import { createMomentumRunsStore } from '../apps/momentum/data-access/momentumRunsStore.js';
-import { inspectMomentumSymbol } from '../apps/momentum/domain/inspectMomentum.js';
+import { registerStatusRoutes } from '../apps/status/api/registerStatusRoutes.js';
+import { registerUniverseRoutes } from '../apps/universe/api/registerUniverseRoutes.js';
+import { registerMomentumRoutes } from '../apps/momentum/api/registerMomentumRoutes.js';
+import { registerManualRoutes } from '../apps/manual/api/registerManualRoutes.js';
+import { createWsBroadcast } from '../libraries/ws/broadcast.js';
+import { createRpcRouter } from './ws/rpcRouter.js';
 
 dotenv.config();
 const app = Fastify({ logger: true });
@@ -21,23 +26,13 @@ ensureDataDir({ logger: app.log });
 await app.register(cors, { origin: ['http://localhost:5173', 'http://127.0.0.1:5173'] });
 await app.register(websocket);
 
-const clients = new Set();
-const wsTopics = new Map();
-const send = (ws, payload) => { try { ws.send(JSON.stringify(payload)); } catch {} };
-const subscribed = (ws, topic) => {
-  const filters = wsTopics.get(ws) || new Set(['*']);
-  for (const f of filters) if (f === '*' || f === topic || (f.endsWith('.*') && topic.startsWith(f.slice(0, -1)))) return true;
-  return false;
-};
-const broadcastEvent = (topic, payload) => {
-  for (const ws of clients) if (subscribed(ws, topic)) send(ws, { type: 'event', topic, payload });
-};
+const wsBroadcast = createWsBroadcast();
 
 const marketData = createMarketDataStore();
 const bybit = createBybitPublicWs({
   symbols: [],
   logger: app.log,
-  onStatus: (s) => broadcastEvent('status.bybit', s),
+  onStatus: (s) => wsBroadcast.broadcastEvent('status.bybit', s),
   onTicker: (t) => marketData.upsertTicker({ ...t, source: 'BT' }),
 });
 const subscriptions = createSubscriptionManager({ bybit, logger: app.log });
@@ -48,7 +43,7 @@ const instruments = createBybitInstrumentsCache({ baseUrl: tradeBaseUrl, private
 const tradeExecutor = createBybitTradeExecutor({ privateRest, instruments, logger: app.log });
 const runsStore = createMomentumRunsStore();
 const bybitRest = createBybitRest({ logger: app.log });
-const universeApp = createUniverseApp({ marketData, subscriptions, bybitRest, logger: app.log, emitState: (payload) => broadcastEvent('universeSearch.state', payload), emitResult: (payload) => broadcastEvent('universeSearch.result', payload) });
+const universeApp = createUniverseApp({ marketData, subscriptions, bybitRest, logger: app.log, emitState: (payload) => wsBroadcast.broadcastEvent('universeSearch.state', payload), emitResult: (payload) => wsBroadcast.broadcastEvent('universeSearch.result', payload) });
 const universeSearch = universeApp.service;
 const momentumApp = await createMomentumApp({ logger: app.log, tradeExecutor, getUniverseTiers: () => universeSearch.getLatestResult?.()?.outputs?.tiers || [] });
 const momentumManager = momentumApp.manager;
@@ -56,91 +51,49 @@ const momentumMarketData = momentumApp.marketData;
 const manualApp = createManualApp({ tradeExecutor, marketData: momentumMarketData, logger: app.log });
 const manualService = manualApp.service;
 
+const getStatusPayload = () => {
+  const bybitStatus = momentumMarketData.getStatus?.() || {};
+  const now = Date.now();
+  const lastTickTs = Number(bybitStatus.lastTickTs || 0);
+  return {
+    now,
+    ws: { connected: true, lastSeenAt: now, rttMs: 0 },
+    bybitWs: {
+      wsConnected: Boolean(bybitStatus.wsConnected),
+      subscribedCount: Number(bybitStatus.subscribedCount || 0),
+      lastTickTs,
+      lastTickAgeSec: lastTickTs > 0 ? Math.max(0, Math.floor((now - lastTickTs) / 1000)) : null,
+      snapshotAgeSec: bybitStatus.snapshotAgeSec,
+      activeIntervals: bybitStatus.activeIntervals || [],
+      tickersSnapshotCount: bybitStatus.tickersSnapshotCount || 0,
+    },
+  };
+};
+
+registerStatusRoutes(app, { momentumMarketData });
+registerUniverseRoutes(app, { universeSearch });
+registerMomentumRoutes(app, { runsStore, momentumManager, momentumMarketData });
+registerManualRoutes(app, { manualService });
 app.get('/api/health', async () => ({ ok: true }));
-app.get('/api/universe-search/state', async () => universeSearch.getState());
-app.get('/api/universe-search/result', async () => universeSearch.getLatestResult?.() || { error: 'NOT_FOUND' });
-app.post('/api/universe-search/start', async (req) => universeSearch.start(req.body || {}));
-app.post('/api/universe-search/stop', async () => universeSearch.stop());
-app.get('/api/universe/list', async () => {
-  const out = universeSearch.getLatestResult?.();
-  const symbols = (out?.outputs?.tiers || []).flatMap((t) => t.symbols || []);
-  return { symbols };
-});
-app.get('/api/momentum/bots/:id/stats', async (req) => runsStore.getStats(String(req.params.id || '')));
-app.get('/api/momentum/inspect', async (req, reply) => {
-  const symbol = String(req.query?.symbol || '').toUpperCase();
-  const botId = String(req.query?.botId || '');
-  if (!symbol) return reply.code(400).send({ error: 'SYMBOL_REQUIRED' });
-  const state = botId ? momentumManager.getState(botId) : null;
-  const config = state?.ok ? (state.stateSnapshot?.config || {}) : {};
-  return inspectMomentumSymbol({ symbol, config, marketData: momentumMarketData });
-});
+
+const rpcRouter = createRpcRouter({ momentumManager, runsStore, manualService, send: wsBroadcast.send, getStatusPayload });
 
 app.get('/ws', { websocket: true }, (ws) => {
-  clients.add(ws);
-  wsTopics.set(ws, new Set(['*']));
-  ws.on('close', () => { clients.delete(ws); wsTopics.delete(ws); });
+  wsBroadcast.onOpen(ws);
+  ws.on('close', () => wsBroadcast.onClose(ws));
   ws.on('message', async (raw) => {
     let msg = null;
     try { msg = JSON.parse(String(raw)); } catch { return; }
     if (!msg) return;
-    if (msg.type === 'ping') return send(ws, { type: 'pong', ts: Date.now() });
-    if (msg.type === 'ui.subscribe') {
-      const next = new Set((msg.payload?.topics || []).filter((x) => typeof x === 'string'));
-      wsTopics.set(ws, next.size ? next : new Set(['*']));
-      return;
-    }
-    if (msg.type === 'ui.unsubscribe') {
-      wsTopics.set(ws, new Set(['*']));
-      return;
-    }
-    if (msg.type === 'status.ping') return send(ws, { type: 'event', topic: 'status.pong', payload: { tsEcho: Number(msg.payload?.ts || Date.now()) } });
-    if (msg.type === 'status.watch') {
-      send(ws, { type: 'event', topic: 'status.health', payload: { now: Date.now(), ws: { connected: true, lastSeenAt: Date.now(), rttMs: 0 }, bybitWs: { status: bybit.getStatus?.().status || 'waiting', lastTickerAt: Date.now(), symbol: 'BTCUSDT' }, cmcApi: { status: 'ok', lastCheckAt: Date.now(), latencyMs: 0 } } });
-      return;
-    }
-    if (!msg.id || !msg.method) return;
-    const ok = (result) => send(ws, { id: msg.id, result });
-    const p = msg.params || {};
-    if (msg.method === 'momentum.list') return ok(momentumManager.list());
-    if (msg.method === 'momentum.start') {
-      const out = await momentumManager.start(p.config || {});
-      if (out?.ok) runsStore.startRun({ botId: out.instanceId, mode: p.config?.mode || 'paper' });
-      return ok(out);
-    }
-    if (msg.method === 'momentum.stop') {
-      const out = await momentumManager.stop(p.instanceId);
-      const state = momentumManager.getState(p.instanceId);
-      runsStore.stopActiveRun({ botId: p.instanceId, summary: state?.stateSnapshot?.stats || {} });
-      return ok(out);
-    }
-    if (msg.method === 'momentum.continue') {
-      const out = await momentumManager.continue(p.instanceId);
-      if (out?.ok) runsStore.startRun({ botId: p.instanceId, mode: out?.stateSnapshot?.config?.mode || 'paper' });
-      return ok(out);
-    }
-    if (msg.method === 'momentum.deleteInstance') {
-      const out = await momentumManager.deleteInstance(p.instanceId);
-      runsStore.deleteBot(p.instanceId);
-      return ok(out);
-    }
-    if (msg.method === 'momentum.getInstanceState') return ok(momentumManager.getState(p.instanceId));
-    if (msg.method === 'momentum.getTrades') return ok(await momentumManager.getTrades(p.instanceId, p.limit, p.offset));
-    if (msg.method === 'momentum.getSignals') return ok(await momentumManager.getSignals(p.instanceId, Math.min(3, Number(p.limit) || 3)));
-    if (msg.method === 'momentum.getFixedSignals') return ok(await momentumManager.getFixedSignals(p.instanceId, p.limit, p.sinceMs, p.symbol));
-    if (msg.method === 'momentum.updateInstanceConfig') return ok(await momentumManager.updateInstanceConfig(p.instanceId, p.patch || {}));
-    if (msg.method === 'manual.placeDemoOrder') return ok(await manualService.placeDemoOrder(p || {}));
-    if (msg.method === 'manual.getDemoState') return ok(await manualService.getDemoState(p || {}));
-    if (msg.method === 'manual.getQuote') return ok(await manualService.getQuote(p || {}));
-    if (msg.method === 'manual.closeDemoPosition') return ok(await manualService.closeDemoPosition(p || {}));
-    if (msg.method === 'manual.cancelDemoOrders') return ok(await manualService.cancelDemoOrders(p || {}));
-    return ok({ ok: false, reason: 'UNKNOWN_METHOD' });
+    if (msg.type === 'ping') return wsBroadcast.send(ws, { type: 'pong', ts: Date.now() });
+    if (msg.type === 'ui.subscribe') return wsBroadcast.subscribeTopics(ws, msg.payload?.topics || []);
+    if (msg.type === 'ui.unsubscribe') return wsBroadcast.resetTopics(ws);
+    await rpcRouter.handleRpcMessage(ws, msg);
   });
 });
 
 setInterval(() => {
-  momentumManager.list?.().instances?.forEach?.(() => {});
-  broadcastEvent('bots.overview', {
+  wsBroadcast.broadcastEvent('bots.overview', {
     paperBalance: 10000,
     bots: (momentumManager.list?.().instances || []).map((i) => ({ name: i.id, status: i.status, pnl: i.pnlNetTotal || 0, startedAt: i.startedAt })),
   });

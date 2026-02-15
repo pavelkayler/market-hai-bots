@@ -12,25 +12,27 @@ export const DATA_DIR = process.env.DATA_DIR
   : path.resolve(backendRoot, 'data');
 
 export function ensureDataDir({ logger = console } = {}) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
   migrateLegacyDataDir({ logger });
+  fs.mkdirSync(DATA_DIR, { recursive: true });
   return DATA_DIR;
 }
 
 function migrateLegacyDataDir({ logger = console } = {}) {
   if (legacyDataDir === DATA_DIR) return;
   if (!fs.existsSync(legacyDataDir)) return;
-  const files = fs.readdirSync(legacyDataDir);
-  if (!files.length) return;
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  const files = fs.readdirSync(legacyDataDir);
   for (const name of files) {
     const from = path.join(legacyDataDir, name);
     const to = path.join(DATA_DIR, name);
-    if (!fs.existsSync(to)) {
-      fs.copyFileSync(from, to);
-    }
+    if (fs.existsSync(to)) continue;
+    fs.renameSync(from, to);
   }
-  logger?.info?.({ legacyDataDir, DATA_DIR, files: files.length }, 'migrated legacy backend/backend/data files');
+  const left = fs.readdirSync(legacyDataDir);
+  if (left.length === 0) {
+    fs.rmdirSync(legacyDataDir);
+  }
+  logger?.info?.({ legacyDataDir, DATA_DIR, moved: files.length, remaining: left.length }, 'migrated legacy backend/backend/data files');
 }
 
 export function dataPath(...parts) {

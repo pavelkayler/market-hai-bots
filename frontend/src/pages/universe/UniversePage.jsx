@@ -11,6 +11,7 @@ export default function UniversePage() {
   const [selectedTierIndex, setSelectedTierIndex] = useState(1);
   const [state, setState] = useState(null);
   const [result, setResult] = useState(null);
+  const [activeSearchId, setActiveSearchId] = useState('');
 
   async function load() {
     const [stRes, outRes] = await Promise.all([
@@ -33,8 +34,19 @@ export default function UniversePage() {
     return () => { unsub(); ws.unsubscribeTopics(['universeSearch.*']); };
   }, [ws]);
 
+  useEffect(() => {
+    const nextSearchId = state?.searchId || '';
+    const finished = String(state?.phase || '').toUpperCase() === 'FINISHED';
+    if ((finished || (nextSearchId && nextSearchId !== activeSearchId))) {
+      setActiveSearchId(nextSearchId);
+      load();
+    }
+  }, [activeSearchId, state?.phase, state?.searchId]);
+
 
   async function startSearch() {
+    setResult(null);
+    setSelectedTierIndex(1);
     await fetch(`${API_BASE}/api/universe-search/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetSizeN }) });
     await load();
   }
