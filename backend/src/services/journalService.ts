@@ -9,7 +9,10 @@ export type JournalEvent =
   | 'ORDER_CANCELLED'
   | 'ORDER_EXPIRED'
   | 'POSITION_OPENED'
-  | 'POSITION_CLOSED';
+  | 'POSITION_CLOSED'
+  | 'BOT_PAUSE'
+  | 'BOT_RESUME'
+  | 'BOT_KILL';
 
 export type JournalEntry = {
   ts: number;
