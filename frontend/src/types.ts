@@ -107,6 +107,22 @@ export type ReplayState = {
   };
 };
 
+export type JournalEntry = {
+  ts: number;
+  mode: 'paper' | 'demo';
+  symbol: string;
+  event:
+    | 'SIGNAL'
+    | 'ORDER_PLACED'
+    | 'ORDER_FILLED'
+    | 'ORDER_CANCELLED'
+    | 'ORDER_EXPIRED'
+    | 'POSITION_OPENED'
+    | 'POSITION_CLOSED';
+  side: 'LONG' | 'SHORT' | null;
+  data: Record<string, unknown>;
+};
+
 export type WsEnvelope<T = unknown> = {
   type: string;
   ts: number;

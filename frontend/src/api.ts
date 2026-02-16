@@ -1,4 +1,4 @@
-import type { BotSettings, BotState, ReplaySpeed, ReplayState, UniverseState } from './types';
+import type { BotSettings, BotState, JournalEntry, ReplaySpeed, ReplayState, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -136,4 +136,23 @@ export async function getReplayState(): Promise<ReplayState> {
 
 export async function getReplayFiles(): Promise<{ ok: boolean; files: string[] }> {
   return request('/api/replay/files');
+}
+
+
+export async function getJournalTail(limit: number): Promise<{ ok: boolean; entries: JournalEntry[] }> {
+  return request(`/api/journal/tail?limit=${limit}`);
+}
+
+export async function clearJournal(): Promise<{ ok: boolean }> {
+  return request('/api/journal/clear', { method: 'POST', body: JSON.stringify({}) });
+}
+
+export async function downloadJournal(format: 'ndjson' | 'json' | 'csv'): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/api/journal/download?format=${format}`);
+  if (!response.ok) {
+    const body = (await response.json()) as { error?: string };
+    throw new ApiRequestError(body.error ?? `HTTP ${response.status}`, body.error);
+  }
+
+  return response.blob();
 }

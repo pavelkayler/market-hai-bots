@@ -11,6 +11,7 @@ import { MarketHub } from './market/marketHub.js';
 import type { TickerStream } from './market/tickerStream.js';
 import { ReplayService, type ReplaySpeed } from './replay/replayService.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
+import { JournalService, type JournalEntry } from './services/journalService.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
 import { SymbolUpdateBroadcaster } from './ws/symbolUpdateBroadcaster.js';
 
@@ -23,6 +24,7 @@ type BuildServerOptions = {
   now?: () => number;
   demoTradeClient?: IDemoTradeClient;
   wsClients?: Set<{ send: (payload: string) => unknown }>;
+  journalFilePath?: string;
 };
 
 const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
@@ -46,6 +48,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
   const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500);
   const snapshotStore = new FileSnapshotStore(options.runtimeSnapshotFilePath ?? path.resolve(process.cwd(), 'data/runtime.json'));
+  const journalService = new JournalService(options.journalFilePath ?? path.resolve(process.cwd(), 'data/journal.ndjson'));
 
   const broadcast = (type: string, payload: unknown): void => {
     const message = JSON.stringify({ type, ts: Date.now(), payload });
@@ -58,12 +61,78 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     now: options.now,
     emitSignal: (payload) => {
       broadcast('signal:new', payload);
+      const mode = botEngine.getState().config?.mode;
+      if (mode) {
+        void journalService.append({
+          ts: Date.now(),
+          mode,
+          symbol: payload.symbol,
+          event: 'SIGNAL',
+          side: payload.side,
+          data: {
+            markPrice: payload.markPrice,
+            oiValue: payload.oiValue,
+            priceDeltaPct: payload.priceDeltaPct,
+            oiDeltaPct: payload.oiDeltaPct
+          }
+        });
+      }
     },
     emitOrderUpdate: (payload) => {
       broadcast('order:update', payload);
+      const mode = botEngine.getState().config?.mode;
+      if (!mode) {
+        return;
+      }
+
+      const eventByStatus: Record<typeof payload.status, JournalEntry['event']> = {
+        PLACED: 'ORDER_PLACED',
+        FILLED: 'ORDER_FILLED',
+        CANCELLED: 'ORDER_CANCELLED',
+        EXPIRED: 'ORDER_EXPIRED'
+      };
+
+      void journalService.append({
+        ts: Date.now(),
+        mode,
+        symbol: payload.symbol,
+        event: eventByStatus[payload.status],
+        side: payload.order.side === 'Buy' ? 'LONG' : 'SHORT',
+        data: {
+          qty: payload.order.qty,
+          limitPrice: payload.order.limitPrice,
+          tpPrice: payload.order.tpPrice,
+          slPrice: payload.order.slPrice,
+          placedTs: payload.order.placedTs,
+          expiresTs: payload.order.expiresTs,
+          orderId: payload.order.orderId,
+          orderLinkId: payload.order.orderLinkId
+        }
+      });
     },
     emitPositionUpdate: (payload) => {
       broadcast('position:update', payload);
+      const mode = botEngine.getState().config?.mode;
+      if (!mode) {
+        return;
+      }
+
+      void journalService.append({
+        ts: Date.now(),
+        mode,
+        symbol: payload.symbol,
+        event: payload.status === 'OPEN' ? 'POSITION_OPENED' : 'POSITION_CLOSED',
+        side: payload.position.side,
+        data: {
+          qty: payload.position.qty,
+          entryPrice: payload.position.entryPrice,
+          tpPrice: payload.position.tpPrice,
+          slPrice: payload.position.slPrice,
+          openedTs: payload.position.openedTs,
+          exitPrice: payload.exitPrice,
+          pnlUSDT: payload.pnlUSDT
+        }
+      });
     },
     emitQueueUpdate: (payload) => {
       broadcast('queue:update', payload);
@@ -252,6 +321,60 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.get('/api/replay/files', async () => {
     return { ok: true, files: await replayService.listFiles() };
+  });
+
+  app.get('/api/journal/tail', async (request, reply) => {
+    const query = request.query as { limit?: string | number };
+    const parsedLimit = Number(query.limit ?? 200);
+    if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_LIMIT' });
+    }
+
+    const limit = Math.min(5000, Math.floor(parsedLimit));
+    const entries = await journalService.tail(limit);
+    return { ok: true, entries };
+  });
+
+  app.post('/api/journal/clear', async () => {
+    await journalService.clear();
+    return { ok: true };
+  });
+
+  app.get('/api/journal/download', async (request, reply) => {
+    const query = request.query as { format?: string };
+    const format = query.format ?? 'ndjson';
+    if (format !== 'ndjson' && format !== 'json' && format !== 'csv') {
+      return reply.code(400).send({ ok: false, error: 'INVALID_FORMAT' });
+    }
+
+    if (format === 'ndjson') {
+      const raw = await journalService.readRaw();
+      return reply.type('application/x-ndjson').send(raw);
+    }
+
+    const entries = await journalService.tail(Number.MAX_SAFE_INTEGER);
+    if (format === 'json') {
+      return reply.type('application/json').send(entries);
+    }
+
+    const header = 'ts,mode,symbol,event,side,qty,price,exitPrice,pnlUSDT,detailsJson';
+    const rows = entries.map((entry) => {
+      const qty = typeof entry.data.qty === 'number' ? entry.data.qty : '';
+      const price =
+        typeof entry.data.limitPrice === 'number'
+          ? entry.data.limitPrice
+          : typeof entry.data.entryPrice === 'number'
+            ? entry.data.entryPrice
+            : typeof entry.data.markPrice === 'number'
+              ? entry.data.markPrice
+              : '';
+      const exitPrice = typeof entry.data.exitPrice === 'number' ? entry.data.exitPrice : '';
+      const pnlUSDT = typeof entry.data.pnlUSDT === 'number' ? entry.data.pnlUSDT : '';
+      const detailsJson = JSON.stringify(entry.data).replaceAll('"', '""');
+      return `${entry.ts},${entry.mode},${entry.symbol},${entry.event},${entry.side ?? ''},${qty},${price},${exitPrice},${pnlUSDT},"${detailsJson}"`;
+    });
+
+    return reply.type('text/csv').send([header, ...rows].join('\n'));
   });
 
   app.post('/api/orders/cancel', async (request, reply) => {

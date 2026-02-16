@@ -4,10 +4,13 @@ import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Table } from 'rea
 import {
   ApiRequestError,
   cancelOrder,
+  clearJournal,
   clearUniverse,
   createUniverse,
+  downloadJournal,
   downloadUniverseJson,
   getBotState,
+  getJournalTail,
   getReplayFiles,
   getReplayState,
   getUniverse,
@@ -21,7 +24,7 @@ import {
   stopRecording,
   stopReplay
 } from '../api';
-import type { BotSettings, BotState, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
+import type { BotSettings, BotState, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
 
 type LogLine = {
   ts: number;
@@ -105,6 +108,8 @@ export function BotPage({
     progress: { read: 0, total: 0 }
   });
   const [replayFiles, setReplayFiles] = useState<string[]>([]);
+  const [journalLimit, setJournalLimit] = useState<number>(200);
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
 
   useEffect(() => {
     if (!botState.lastConfig) {
@@ -316,6 +321,70 @@ export function BotPage({
     } catch (err) {
       setError((err as Error).message);
     }
+  };
+
+
+  const refreshJournal = async (limit: number = journalLimit) => {
+    const response = await getJournalTail(limit);
+    setJournalEntries(response.entries);
+  };
+
+  useEffect(() => {
+    void refreshJournal();
+    const interval = window.setInterval(() => {
+      void refreshJournal();
+    }, 8000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [journalLimit]);
+
+  const handleClearJournal = async () => {
+    if (!window.confirm('Clear journal entries? This cannot be undone.')) {
+      return;
+    }
+
+    setError('');
+    try {
+      await clearJournal();
+      await refreshJournal();
+      setStatus('Journal cleared');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleDownloadJournal = async (format: 'ndjson' | 'json' | 'csv') => {
+    setError('');
+    try {
+      const blob = await downloadJournal(format);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `journal.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus(`Journal ${format.toUpperCase()} download started`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const formatJournalSummary = (entry: JournalEntry): string => {
+    const qty = typeof entry.data.qty === 'number' ? `qty ${entry.data.qty}` : null;
+    const price =
+      typeof entry.data.limitPrice === 'number'
+        ? `limit ${entry.data.limitPrice}`
+        : typeof entry.data.entryPrice === 'number'
+          ? `entry ${entry.data.entryPrice}`
+          : typeof entry.data.markPrice === 'number'
+            ? `mark ${entry.data.markPrice}`
+            : null;
+    const pnl = typeof entry.data.pnlUSDT === 'number' ? `pnl ${entry.data.pnlUSDT.toFixed(4)}` : null;
+    return [qty, price, pnl].filter(Boolean).join(', ') || '-';
   };
 
   const disableSettings = botState.running;
@@ -695,6 +764,73 @@ export function BotPage({
                 ) : null}
               </tbody>
             </Table>
+          </Card.Body>
+        </Card>
+      </Col>
+
+
+      <Col md={12}>
+        <Card>
+          <Card.Header>Journal</Card.Header>
+          <Card.Body>
+            <div className="d-flex flex-wrap gap-2 align-items-end mb-3">
+              <Form.Group>
+                <Form.Label>Limit</Form.Label>
+                <Form.Select value={journalLimit} onChange={(event) => setJournalLimit(Number(event.target.value))}>
+                  <option value={50}>50</option>
+                  <option value={200}>200</option>
+                  <option value={1000}>1000</option>
+                </Form.Select>
+              </Form.Group>
+              <Button variant="outline-primary" onClick={() => void refreshJournal()}>
+                Refresh
+              </Button>
+              <Button variant="outline-danger" onClick={() => void handleClearJournal()}>
+                Clear
+              </Button>
+              <Button variant="outline-secondary" onClick={() => void handleDownloadJournal('ndjson')}>
+                NDJSON
+              </Button>
+              <Button variant="outline-secondary" onClick={() => void handleDownloadJournal('json')}>
+                JSON
+              </Button>
+              <Button variant="outline-secondary" onClick={() => void handleDownloadJournal('csv')}>
+                CSV
+              </Button>
+            </div>
+            <div className="table-responsive">
+              <Table bordered striped size="sm">
+                <thead>
+                  <tr>
+                    <th>ts</th>
+                    <th>mode</th>
+                    <th>symbol</th>
+                    <th>event</th>
+                    <th>side</th>
+                    <th>summary</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {journalEntries.map((entry) => (
+                    <tr key={`${entry.ts}-${entry.symbol}-${entry.event}-${JSON.stringify(entry.data)}`}>
+                      <td>{new Date(entry.ts).toLocaleString()}</td>
+                      <td>{entry.mode}</td>
+                      <td>{entry.symbol}</td>
+                      <td>{entry.event}</td>
+                      <td>{entry.side ?? '-'}</td>
+                      <td>{formatJournalSummary(entry)}</td>
+                    </tr>
+                  ))}
+                  {journalEntries.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-center">
+                        No journal entries
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </Table>
+            </div>
           </Card.Body>
         </Card>
       </Col>
