@@ -52,12 +52,12 @@ export class UniverseService {
     private readonly universeFilePath = path.resolve(process.cwd(), 'data/universe.json')
   ) {}
 
-  async create(minVolPct: number): Promise<{ state: UniverseState; totalFetched: number; forcedActive: number }> {
-    const built = await this.buildFilteredUniverse(minVolPct);
+  async create(minVolPct: number, minTurnover: number = MIN_TURNOVER): Promise<{ state: UniverseState; totalFetched: number; forcedActive: number }> {
+    const built = await this.buildFilteredUniverse(minVolPct, minTurnover);
 
     const nextState: UniverseState = {
       createdAt: Date.now(),
-      filters: { minTurnover: MIN_TURNOVER, minVolPct },
+      filters: { minTurnover, minVolPct },
       symbols: built.entries,
       ready: true
     };
@@ -68,20 +68,21 @@ export class UniverseService {
     return { state: nextState, totalFetched: built.totalFetched, forcedActive: 0 };
   }
 
-  async refresh(minVolPct?: number): Promise<{ state: UniverseState; forcedActive: number } | null> {
+  async refresh(minVolPct?: number, minTurnover?: number): Promise<{ state: UniverseState; forcedActive: number } | null> {
     const active = this.state ?? (await this.loadFromDisk());
     const effectiveMinVolPct = minVolPct ?? active?.filters.minVolPct;
+    const effectiveMinTurnover = minTurnover ?? active?.filters.minTurnover;
 
-    if (effectiveMinVolPct === undefined) {
+    if (effectiveMinVolPct === undefined || effectiveMinTurnover === undefined) {
       return null;
     }
 
-    const built = await this.buildFilteredUniverse(effectiveMinVolPct);
+    const built = await this.buildFilteredUniverse(effectiveMinVolPct, effectiveMinTurnover);
     const forced = this.mergeForcedActive(built.entries, built.tickersBySymbol, built.instrumentBySymbol);
 
     const nextState: UniverseState = {
       createdAt: Date.now(),
-      filters: { minTurnover: MIN_TURNOVER, minVolPct: effectiveMinVolPct },
+      filters: { minTurnover: effectiveMinTurnover, minVolPct: effectiveMinVolPct },
       symbols: forced.entries,
       ready: true
     };
@@ -113,7 +114,7 @@ export class UniverseService {
     }
   }
 
-  private async buildFilteredUniverse(minVolPct: number): Promise<{
+  private async buildFilteredUniverse(minVolPct: number, minTurnover: number): Promise<{
     entries: UniverseEntry[];
     totalFetched: number;
     tickersBySymbol: Map<string, TickerLinear>;
@@ -145,7 +146,7 @@ export class UniverseService {
         continue;
       }
 
-      if (turnover24h >= MIN_TURNOVER && vol24hPct >= minVolPct) {
+      if (turnover24h >= minTurnover && vol24hPct >= minVolPct) {
         entries.push({
           symbol: instrument.symbol,
           turnover24h,
@@ -269,7 +270,7 @@ export class UniverseService {
     });
 
     const filters: UniverseFilters = {
-      minTurnover: MIN_TURNOVER,
+      minTurnover: isFiniteNumber(parsed.filters.minTurnover) ? parsed.filters.minTurnover : MIN_TURNOVER,
       minVolPct: parsed.filters.minVolPct
     };
 

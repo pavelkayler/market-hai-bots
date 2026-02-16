@@ -407,6 +407,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     };
   });
 
+  app.get('/api/bot/stats', async () => {
+    return { ok: true, stats: botEngine.getStats() };
+  });
+
+  app.post('/api/bot/stats/reset', async () => {
+    botEngine.resetStats();
+    return { ok: true };
+  });
+
   app.get('/api/doctor', async () => {
     const universe = await universeService.get();
     const replay = replayService.getState();
@@ -591,13 +600,17 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.post('/api/universe/create', async (request, reply) => {
-    const body = request.body as { minVolPct?: unknown };
+    const body = request.body as { minVolPct?: unknown; minTurnover?: unknown };
 
     if (typeof body?.minVolPct !== 'number' || !Number.isFinite(body.minVolPct)) {
       return reply.code(400).send({ ok: false, error: 'INVALID_MIN_VOL_PCT' });
     }
 
-    const result = await universeService.create(body.minVolPct);
+    if (body?.minTurnover !== undefined && (typeof body.minTurnover !== 'number' || !Number.isFinite(body.minTurnover))) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_MIN_TURNOVER' });
+    }
+
+    const result = await universeService.create(body.minVolPct, body.minTurnover);
     const symbols = result.state.symbols.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(result.state.symbols);
@@ -621,13 +634,17 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.post('/api/universe/refresh', async (request, reply) => {
-    const body = request.body as { minVolPct?: unknown } | undefined;
+    const body = request.body as { minVolPct?: unknown; minTurnover?: unknown } | undefined;
 
     if (body?.minVolPct !== undefined && (typeof body.minVolPct !== 'number' || !Number.isFinite(body.minVolPct))) {
       return reply.code(400).send({ ok: false, error: 'INVALID_MIN_VOL_PCT' });
     }
 
-    const result = await universeService.refresh(body?.minVolPct);
+    if (body?.minTurnover !== undefined && (typeof body.minTurnover !== 'number' || !Number.isFinite(body.minTurnover))) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_MIN_TURNOVER' });
+    }
+
+    const result = await universeService.refresh(body?.minVolPct, body?.minTurnover);
     if (!result) {
       return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }

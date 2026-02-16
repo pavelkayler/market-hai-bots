@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import type { BotConfig, DemoRuntimeState, SymbolBaseline, SymbolFsmState } from './botEngine.js';
+import type { BotConfig, BotStats, DemoRuntimeState, SymbolBaseline, SymbolFsmState } from './botEngine.js';
 import type { PaperPendingOrder, PaperPosition } from './paperTypes.js';
 
 export type RuntimeSnapshotSymbol = {
@@ -20,6 +20,7 @@ export type RuntimeSnapshot = {
   running: boolean;
   config: BotConfig | null;
   symbols: Record<string, RuntimeSnapshotSymbol>;
+  stats?: BotStats;
 };
 
 export interface SnapshotStore {

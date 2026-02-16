@@ -12,6 +12,7 @@ import {
   downloadProfiles,
   downloadUniverseJson,
   getBotState,
+  getBotStats,
   getJournalTail,
   getProfile,
   getProfiles,
@@ -20,6 +21,7 @@ import {
   getUniverse,
   pauseBot,
   refreshUniverse,
+  resetBotStats,
   resumeBot,
   saveProfile,
   setActiveProfile,
@@ -31,7 +33,7 @@ import {
   stopReplay,
   uploadProfiles
 } from '../api';
-import type { BotSettings, BotState, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
+import type { BotSettings, BotState, BotStats, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
 
 type LogLine = {
   ts: number;
@@ -137,6 +139,16 @@ export function BotPage({
   symbolUpdatesPerSecond
 }: Props) {
   const [minVolPct, setMinVolPct] = useState<number>(10);
+  const [minTurnover, setMinTurnover] = useState<number>(10_000_000);
+  const [botStats, setBotStats] = useState<BotStats>({
+    totalTrades: 0,
+    wins: 0,
+    losses: 0,
+    winratePct: 0,
+    pnlUSDT: 0,
+    avgWinUSDT: null,
+    avgLossUSDT: null
+  });
   const [settings, setSettings] = useState<BotSettings>(loadSettings());
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>('default');
@@ -251,13 +263,47 @@ export function BotPage({
     });
   }, [refreshProfiles]);
 
+  const refreshBotStats = useCallback(async () => {
+    try {
+      const response = await getBotStats();
+      setBotStats(response.stats);
+    } catch {
+      // no-op: stats panel remains best-effort
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshBotStats();
+  }, [refreshBotStats]);
+
+  useEffect(() => {
+    void refreshBotStats();
+  }, [refreshBotStats, botState.activeOrders, botState.openPositions]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void refreshBotStats();
+    }, 10000);
+
+    return () => window.clearInterval(interval);
+  }, [refreshBotStats]);
+
+  useEffect(() => {
+    if (!universeState.filters) {
+      return;
+    }
+
+    setMinVolPct(universeState.filters.minVolPct);
+    setMinTurnover(universeState.filters.minTurnover);
+  }, [universeState.filters]);
+
   const handleUniverseAction = async (action: 'create' | 'refresh' | 'get' | 'clear') => {
     setError('');
     try {
       if (action === 'create') {
-        await createUniverse(minVolPct);
+        await createUniverse(minVolPct, minTurnover);
       } else if (action === 'refresh') {
-        await refreshUniverse(minVolPct);
+        await refreshUniverse({ minVolPct, minTurnover });
       } else if (action === 'get') {
         const data = await getUniverse();
         setUniverseState(data);
@@ -557,6 +603,26 @@ export function BotPage({
     }
   };
 
+  const handleResetStats = async () => {
+    if (!window.confirm('Reset bot performance stats?')) {
+      return;
+    }
+
+    setError('');
+    try {
+      await resetBotStats();
+      await refreshBotStats();
+      setStatus('Bot results reset');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const formatPnl = (value: number): string => value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const winPct = botStats.totalTrades > 0 ? (botStats.wins / botStats.totalTrades) * 100 : 0;
+  const lossPct = botStats.totalTrades > 0 ? (botStats.losses / botStats.totalTrades) * 100 : 0;
+
   const formatJournalSummary = (entry: JournalEntry): string => {
     const qty = typeof entry.data.qty === 'number' ? `qty ${entry.data.qty}` : null;
     const price =
@@ -579,10 +645,16 @@ export function BotPage({
         <Card>
           <Card.Header>Universe</Card.Header>
           <Card.Body>
-            <Form.Group className="mb-3">
-              <Form.Label>minVolPct</Form.Label>
-              <Form.Control type="number" value={minVolPct} onChange={(event) => setMinVolPct(Number(event.target.value))} />
-            </Form.Group>
+            <Row className="g-2 mb-3">
+              <Col md={6}>
+                <Form.Label>minVolPct</Form.Label>
+                <Form.Control type="number" value={minVolPct} onChange={(event) => setMinVolPct(Number(event.target.value))} />
+              </Col>
+              <Col md={6}>
+                <Form.Label>minTurnover</Form.Label>
+                <Form.Control type="number" value={minTurnover} onChange={(event) => setMinTurnover(Number(event.target.value))} />
+              </Col>
+            </Row>
             <div className="d-flex gap-2 flex-wrap mb-3">
               <Button onClick={() => void handleUniverseAction('create')}>Create</Button>
               <Button variant="secondary" onClick={() => void handleUniverseAction('refresh')}>
@@ -598,7 +670,12 @@ export function BotPage({
             <div>
               <div>Ready: {String(universeState.ready)}</div>
               <div>Created At: {universeState.createdAt ? new Date(universeState.createdAt).toLocaleString() : '-'}</div>
-              <div>Filters: {universeState.filters ? JSON.stringify(universeState.filters) : '-'}</div>
+              <div>
+                Filters:{' '}
+                {universeState.filters
+                  ? `minTurnover ${universeState.filters.minTurnover.toLocaleString()}, minVolPct ${universeState.filters.minVolPct}`
+                  : '-'}
+              </div>
               <div>Symbols: {universeState.symbols?.length ?? 0}</div>
             </div>
 
@@ -680,6 +757,35 @@ export function BotPage({
                 </div>
               </div>
             </Collapse>
+          </Card.Body>
+        </Card>
+
+        <Card className="mt-3">
+          <Card.Header className="d-flex justify-content-between align-items-center">
+            <span>Results</span>
+            <div className="d-flex gap-2">
+              <Button size="sm" variant="outline-secondary" onClick={() => void refreshBotStats()}>
+                Refresh
+              </Button>
+              <Button size="sm" variant="outline-danger" onClick={() => void handleResetStats()}>
+                Reset
+              </Button>
+            </div>
+          </Card.Header>
+          <Card.Body>
+            <div>Total trades: {botStats.totalTrades}</div>
+            <div>Wins: {botStats.wins} ({winPct.toFixed(2)}%)</div>
+            <div>Losses: {botStats.losses} ({lossPct.toFixed(2)}%)</div>
+            <div>Winrate: {botStats.winratePct.toFixed(2)}%</div>
+            <div>PnL (USDT): {formatPnl(botStats.pnlUSDT)}</div>
+            <div>Avg win (USDT): {botStats.avgWinUSDT === null ? '-' : formatPnl(botStats.avgWinUSDT)}</div>
+            <div>Avg loss (USDT): {botStats.avgLossUSDT === null ? '-' : formatPnl(botStats.avgLossUSDT)}</div>
+            <div>
+              Last closed:{' '}
+              {botStats.lastClosed
+                ? `${new Date(botStats.lastClosed.ts).toLocaleString()} ${botStats.lastClosed.symbol} ${formatPnl(botStats.lastClosed.pnlUSDT)}`
+                : '-'}
+            </div>
           </Card.Body>
         </Card>
       </Col>
