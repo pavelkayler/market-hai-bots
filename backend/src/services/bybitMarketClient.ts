@@ -1,5 +1,7 @@
 import { request } from 'undici';
 
+import { parseInstrumentsInfo } from '../bybit/parsers.js';
+
 export type InstrumentLinear = {
   symbol: string;
   qtyStep: number | null;
@@ -61,25 +63,7 @@ export class BybitMarketClient implements IBybitMarketClient {
         throw new Error(`Bybit instruments failed: ${json.retCode} ${json.retMsg}`);
       }
 
-      const rows = json.result?.list ?? [];
-      for (const row of rows) {
-        if (!row || typeof row !== 'object') {
-          continue;
-        }
-
-        const symbol = typeof (row as { symbol?: unknown }).symbol === 'string' ? (row as { symbol: string }).symbol : null;
-        if (!symbol) {
-          continue;
-        }
-
-        const lotSizeFilter = (row as { lotSizeFilter?: Record<string, unknown> }).lotSizeFilter;
-        all.push({
-          symbol,
-          qtyStep: parseNumber(lotSizeFilter?.qtyStep),
-          minOrderQty: parseNumber(lotSizeFilter?.minOrderQty),
-          maxOrderQty: parseNumber(lotSizeFilter?.maxOrderQty)
-        });
-      }
+      all.push(...parseInstrumentsInfo(json));
 
       const nextCursor = json.result?.nextPageCursor ?? '';
       if (!nextCursor) {

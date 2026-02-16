@@ -1,0 +1,19 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "linear",
+    "list": [
+      {
+        "symbol": "BTCUSDT",
+        "lotSizeFilter": {
+          "qtyStep": "0.001",
+          "minOrderQty": "0.001",
+          "maxOrderQty": "100"
+        }
+      }
+    ],
+    "nextPageCursor": ""
+  },
+  "time": 1739942400123
+}

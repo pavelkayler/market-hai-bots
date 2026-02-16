@@ -26,3 +26,5 @@ The demo order-create request currently sends these attached TP/SL fields:
 - `stopLoss`
 - `tpTriggerBy` = `MarkPrice`
 - `slTriggerBy` = `MarkPrice`
+
+Parsing is locked by fixtures in `backend/test/fixtures/bybit` to prevent regressions.

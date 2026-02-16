@@ -1,0 +1,15 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "list": [
+      {
+        "symbol": "BTCUSDT",
+        "orderId": "8f6fcb45-0ae2-4cad-9b2e-df5b6e45318d",
+        "orderLinkId": "demo-order-001",
+        "orderStatus": "New"
+      }
+    ]
+  },
+  "time": 1739942400123
+}
