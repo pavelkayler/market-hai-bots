@@ -49,8 +49,8 @@ Response shape for `/api/bot/state`:
     "uptimeSec": 0,
     "version": "0.1.0",
     "universe": { "ready": false, "symbols": 0 },
-    "market": { "running": true, "subscribed": 0, "updatesPerSec": 0 },
-    "bot": { "running": false, "paused": false, "mode": null, "tf": null, "direction": null },
+    "market": { "running": true, "subscribed": 0, "updatesPerSec": 0, "tickHandlersMsAvg": 0, "wsClients": 0, "wsFramesPerSec": 0 },
+    "bot": { "running": false, "paused": false, "mode": null, "tf": null, "direction": null, "evalsPerSec": 0 },
     "replay": { "recording": false, "replaying": false, "fileName": null },
     "journal": { "enabled": true, "path": "backend/data/journal.ndjson", "sizeBytes": 0 },
     "demo": { "configured": false }
@@ -113,6 +113,7 @@ Journal entry schema:
 - `state`: `{ universeReady, running, mode, queueDepth }`
 - `universe:created` / `universe:refreshed`
 - `symbol:update`
+- `symbols:update`: `{ updates: Array<symbol:update payload> }`
 - `signal:new`
 - `order:update`
 - `position:update`

@@ -14,7 +14,7 @@ import { ReplayService, type ReplaySpeed } from './replay/replayService.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
 import { JournalService, type JournalEntry } from './services/journalService.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
-import { SymbolUpdateBroadcaster } from './ws/symbolUpdateBroadcaster.js';
+import { SymbolUpdateBroadcaster, type SymbolUpdateMode } from './ws/symbolUpdateBroadcaster.js';
 
 type BuildServerOptions = {
   marketClient?: IBybitMarketClient;
@@ -42,6 +42,12 @@ export function getMarketHub(app: FastifyInstance): MarketHub {
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: true });
   const startedAtMs = Date.now();
+  const perfWindowMs = 5000;
+  let perfWindowStartedAtMs = Date.now();
+  let tickHandlerTotalMs = 0;
+  let tickHandlerCount = 0;
+  let wsFramesSent = 0;
+  let evalRunCount = 0;
   const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
   const marketClient = options.marketClient ?? new BybitMarketClient();
@@ -49,7 +55,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const universeService = new UniverseService(marketClient, activeSymbolSet, app.log, options.universeFilePath);
   const wsClients = options.wsClients ?? new Set<{ send: (payload: string) => unknown }>();
   const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
-  const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500);
+  const rawMode = process.env.WS_SYMBOL_UPDATE_MODE;
+  const symbolUpdateMode: SymbolUpdateMode = rawMode === 'batch' || rawMode === 'both' || rawMode === 'single' ? rawMode : 'single';
+  const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500, {
+    mode: symbolUpdateMode,
+    onFrameSent: () => {
+      wsFramesSent += 1;
+    }
+  });
   const snapshotStore = new FileSnapshotStore(options.runtimeSnapshotFilePath ?? path.resolve(process.cwd(), 'data/runtime.json'));
   const journalPath = options.journalFilePath ?? path.resolve(process.cwd(), 'data/journal.ndjson');
   const journalService = new JournalService(journalPath);
@@ -83,7 +96,32 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const message = JSON.stringify({ type, ts: Date.now(), payload });
     for (const client of wsClients) {
       client.send(message);
+      wsFramesSent += 1;
     }
+  };
+
+  const rotatePerfWindow = (nowMs: number): void => {
+    if (nowMs - perfWindowStartedAtMs < perfWindowMs) {
+      return;
+    }
+
+    perfWindowStartedAtMs = nowMs;
+    tickHandlerTotalMs = 0;
+    tickHandlerCount = 0;
+    wsFramesSent = 0;
+    evalRunCount = 0;
+  };
+
+  const getPerfMetrics = () => {
+    const nowMs = Date.now();
+    rotatePerfWindow(nowMs);
+    const elapsedSec = Math.max((nowMs - perfWindowStartedAtMs) / 1000, 1);
+
+    return {
+      tickHandlersMsAvg: tickHandlerCount === 0 ? 0 : tickHandlerTotalMs / tickHandlerCount,
+      wsFramesPerSec: wsFramesSent / elapsedSec,
+      evalsPerSec: evalRunCount / elapsedSec
+    };
   };
 
   const botEngine = new BotEngine({
@@ -176,7 +214,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   };
 
   const processMarketStateUpdate = (symbol: string, state: { markPrice: number; openInterestValue: number; ts: number }): void => {
+    rotatePerfWindow(Date.now());
+    const startedAt = Date.now();
+    evalRunCount += 1;
     botEngine.onMarketUpdate(symbol, state);
+    tickHandlerTotalMs += Math.max(0, Date.now() - startedAt);
+    tickHandlerCount += 1;
     const symbolState = botEngine.getSymbolState(symbol);
     if (!symbolState) {
       return;
@@ -296,6 +339,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const universe = await universeService.get();
     const replay = replayService.getState();
     const botState = botEngine.getState();
+    const perfMetrics = getPerfMetrics();
     const journalSizeBytes = await getJournalSizeBytes();
 
     return {
@@ -310,14 +354,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       market: {
         running: marketHub.isRunning(),
         subscribed: marketHub.getSubscribedCount(),
-        updatesPerSec: Number(marketHub.getUpdatesPerSecond().toFixed(2))
+        updatesPerSec: Number(marketHub.getUpdatesPerSecond().toFixed(2)),
+        tickHandlersMsAvg: Number(perfMetrics.tickHandlersMsAvg.toFixed(2)),
+        wsClients: wsClients.size,
+        wsFramesPerSec: Number(perfMetrics.wsFramesPerSec.toFixed(2))
       },
       bot: {
         running: botState.running,
         paused: botState.paused,
         mode: botState.config?.mode ?? null,
         tf: botState.config?.tf ?? null,
-        direction: botState.config?.direction ?? null
+        direction: botState.config?.direction ?? null,
+        evalsPerSec: Number(perfMetrics.evalsPerSec.toFixed(2))
       },
       replay: {
         recording: replay.recording,
@@ -562,6 +610,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     botEngine.clearSnapshotState();
     symbolUpdateBroadcaster.setTrackedSymbols([]);
     symbolUpdateBroadcaster.reset();
+    rotatePerfWindow(Date.now());
     return { ok: true };
   });
 
@@ -585,6 +634,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           }
         })
       );
+      wsFramesSent += 1;
     });
   });
 

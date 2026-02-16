@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Table } from 'react-bootstrap';
 
 import {
@@ -44,6 +44,39 @@ type Props = {
 };
 
 const SETTINGS_KEY = 'bot.settings.v1';
+
+
+type ActiveSymbolRowProps = {
+  item: SymbolUpdatePayload;
+  onCancel: (symbol: string) => void;
+};
+
+const ActiveSymbolRow = memo(function ActiveSymbolRow({ item, onCancel }: ActiveSymbolRowProps) {
+  return (
+    <tr>
+      <td>{item.symbol}</td>
+      <td>{item.state}</td>
+      <td>{item.markPrice}</td>
+      <td>{item.openInterestValue}</td>
+      <td>{item.baseline ? `${item.baseline.basePrice} / ${item.baseline.baseOiValue}` : '-'}</td>
+      <td>
+        {item.pendingOrder
+          ? `${item.pendingOrder.side} @${item.pendingOrder.limitPrice}, qty ${item.pendingOrder.qty}, expires ${formatSecondsLeft(item.pendingOrder.expiresTs)}`
+          : '-'}
+      </td>
+      <td>
+        {item.position
+          ? `${item.position.side} entry ${item.position.entryPrice}, tp ${item.position.tpPrice}, sl ${item.position.slPrice}, qty ${item.position.qty}`
+          : '-'}
+      </td>
+      <td>
+        <Button size="sm" variant="outline-danger" disabled={!item.pendingOrder} onClick={() => onCancel(item.symbol)}>
+          Cancel
+        </Button>
+      </td>
+    </tr>
+  );
+});
 
 const defaultSettings: BotSettings = {
   mode: 'paper',
@@ -122,6 +155,13 @@ export function BotPage({
   const trackedSymbols = useMemo(() => {
     return Object.values(symbolMap).filter((item) => item.state !== 'IDLE' || item.pendingOrder || item.position);
   }, [symbolMap]);
+
+  const handleCancelOrder = useCallback(
+    (symbol: string) => {
+      void cancelOrder(symbol).then(() => syncRest());
+    },
+    [syncRest]
+  );
 
   const filteredUniverseSymbols = useMemo(() => {
     const symbols = [...(universeState.symbols ?? [])];
@@ -725,35 +765,7 @@ export function BotPage({
               </thead>
               <tbody>
                 {trackedSymbols.map((item) => (
-                  <tr key={item.symbol}>
-                    <td>{item.symbol}</td>
-                    <td>{item.state}</td>
-                    <td>{item.markPrice}</td>
-                    <td>{item.openInterestValue}</td>
-                    <td>{item.baseline ? `${item.baseline.basePrice} / ${item.baseline.baseOiValue}` : '-'}</td>
-                    <td>
-                      {item.pendingOrder
-                        ? `${item.pendingOrder.side} @${item.pendingOrder.limitPrice}, qty ${item.pendingOrder.qty}, expires ${formatSecondsLeft(item.pendingOrder.expiresTs)}`
-                        : '-'}
-                    </td>
-                    <td>
-                      {item.position
-                        ? `${item.position.side} entry ${item.position.entryPrice}, tp ${item.position.tpPrice}, sl ${item.position.slPrice}, qty ${item.position.qty}`
-                        : '-'}
-                    </td>
-                    <td>
-                      <Button
-                        size="sm"
-                        variant="outline-danger"
-                        disabled={!item.pendingOrder}
-                        onClick={() => {
-                          void cancelOrder(item.symbol).then(() => syncRest());
-                        }}
-                      >
-                        Cancel
-                      </Button>
-                    </td>
-                  </tr>
+                  <ActiveSymbolRow key={item.symbol} item={item} onCancel={handleCancelOrder} />
                 ))}
                 {trackedSymbols.length === 0 ? (
                   <tr>

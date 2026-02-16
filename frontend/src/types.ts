@@ -93,6 +93,10 @@ export type QueueUpdatePayload = {
   depth: number;
 };
 
+export type SymbolsUpdatePayload = {
+  updates: SymbolUpdatePayload[];
+};
+
 export type ReplaySpeed = '1x' | '5x' | '20x' | 'fast';
 
 export type ReplayState = {
@@ -135,8 +139,22 @@ export type DoctorResponse = {
   uptimeSec: number;
   version: string;
   universe: { ready: boolean; symbols: number };
-  market: { running: boolean; subscribed: number; updatesPerSec: number };
-  bot: { running: boolean; paused: boolean; mode: BotMode | null; tf: BotTf | null; direction: BotDirection | null };
+  market: {
+    running: boolean;
+    subscribed: number;
+    updatesPerSec: number;
+    tickHandlersMsAvg: number;
+    wsClients: number;
+    wsFramesPerSec: number;
+  };
+  bot: {
+    running: boolean;
+    paused: boolean;
+    mode: BotMode | null;
+    tf: BotTf | null;
+    direction: BotDirection | null;
+    evalsPerSec: number;
+  };
   replay: { recording: boolean; replaying: boolean; fileName: string | null };
   journal: { enabled: true; path: string; sizeBytes: number };
   demo: { configured: boolean };
