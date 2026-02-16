@@ -3,7 +3,7 @@ import { Alert, Badge, Container, Nav, Navbar } from 'react-bootstrap';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
 
 import { API_BASE, ApiRequestError, WS_URL, getBotState, getHealth, getUniverse, pauseBot, resumeBot, stopBot } from './api';
-import type { BotState, QueueUpdatePayload, SymbolUpdatePayload, UniverseState, WsEnvelope } from './types';
+import type { BotState, QueueUpdatePayload, SymbolUpdatePayload, SymbolsUpdatePayload, UniverseState, WsEnvelope } from './types';
 import { BotPage } from './pages/BotPage';
 import { HomePage } from './pages/HomePage';
 
@@ -148,6 +148,24 @@ export function App() {
           const payload = message.payload as SymbolUpdatePayload;
           symbolUpdatesInWindowRef.current += 1;
           setSymbolMap((prev) => ({ ...prev, [payload.symbol]: payload }));
+          return;
+        }
+
+        if (message.type === 'symbols:update') {
+          const payload = message.payload as SymbolsUpdatePayload;
+          symbolUpdatesInWindowRef.current += payload.updates.length;
+          setSymbolMap((prev) => {
+            if (payload.updates.length === 0) {
+              return prev;
+            }
+
+            const next = { ...prev };
+            for (const update of payload.updates) {
+              next[update.symbol] = update;
+            }
+
+            return next;
+          });
           return;
         }
 

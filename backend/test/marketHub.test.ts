@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MarketHub } from '../src/market/marketHub.js';
 import type { TickerStream, TickerUpdate } from '../src/market/tickerStream.js';
@@ -24,6 +24,11 @@ class FakeTickerStream implements TickerStream {
     this.handler?.(update);
   }
 }
+
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('MarketHub', () => {
   it('updates in-memory market state when ticker stream emits updates', async () => {
@@ -69,8 +74,7 @@ describe('SymbolUpdateBroadcaster', () => {
         ts: 999
       },
       'HOLDING_LONG',
-      { basePrice: 100, baseOiValue: 300000, baseTs: 500 }
-      ,
+      { basePrice: 100, baseOiValue: 300000, baseTs: 500 },
       null,
       null
     );
@@ -99,5 +103,46 @@ describe('SymbolUpdateBroadcaster', () => {
       pendingOrder: null,
       position: null
     });
+  });
+
+  it('batches symbol updates into one symbols:update event in batch mode', () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const clients = new Set([{ send }]);
+    const broadcaster = new SymbolUpdateBroadcaster(clients, 0, { mode: 'batch', batchWindowMs: 250, batchMaxSymbols: 50 });
+
+    broadcaster.broadcast('BTCUSDT', { markPrice: 100, openInterestValue: 200000, ts: 1 }, 'IDLE', null, null, null);
+    broadcaster.broadcast('ETHUSDT', { markPrice: 200, openInterestValue: 300000, ts: 1 }, 'IDLE', null, null, null);
+    broadcaster.broadcast('SOLUSDT', { markPrice: 20, openInterestValue: 400000, ts: 1 }, 'IDLE', null, null, null);
+
+    expect(send).toHaveBeenCalledTimes(0);
+    vi.advanceTimersByTime(250);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(send.mock.calls[0][0] as string) as { type: string; payload: { updates: Array<{ symbol: string }> } };
+    expect(payload.type).toBe('symbols:update');
+    expect(payload.payload.updates).toHaveLength(3);
+  });
+
+  it('enforces bounded batch buffer size', () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const clients = new Set([{ send }]);
+    const broadcaster = new SymbolUpdateBroadcaster(clients, 0, {
+      mode: 'batch',
+      batchWindowMs: 1_000,
+      batchMaxSymbols: 10,
+      maxBufferedSymbols: 3
+    });
+
+    for (const symbol of ['A', 'B', 'C', 'D', 'E']) {
+      broadcaster.broadcast(symbol, { markPrice: 1, openInterestValue: 1, ts: 1 }, 'IDLE', null, null, null);
+    }
+
+    broadcaster.reset();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(send.mock.calls[0][0] as string) as { payload: { updates: Array<{ symbol: string }> } };
+    expect(payload.payload.updates.length).toBeLessThanOrEqual(3);
   });
 });

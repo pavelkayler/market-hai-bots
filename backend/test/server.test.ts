@@ -167,7 +167,10 @@ describe('server routes', () => {
     const response = await app.inject({ method: 'GET', url: '/api/doctor' });
 
     expect(response.statusCode).toBe(200);
-    const body = response.json() as Record<string, unknown>;
+    const body = response.json() as Record<string, unknown> & {
+      market: { tickHandlersMsAvg: number; wsClients: number; wsFramesPerSec: number };
+      bot: { evalsPerSec: number };
+    };
     expect(body.ok).toBe(true);
     expect(body).toHaveProperty('serverTime');
     expect(body).toHaveProperty('uptimeSec');
@@ -178,6 +181,10 @@ describe('server routes', () => {
     expect(body).toHaveProperty('replay');
     expect(body).toHaveProperty('journal');
     expect(body).toHaveProperty('demo');
+    expect(body.market.tickHandlersMsAvg).toBeGreaterThanOrEqual(0);
+    expect(body.market.wsClients).toBeGreaterThanOrEqual(0);
+    expect(body.market.wsFramesPerSec).toBeGreaterThanOrEqual(0);
+    expect(body.bot.evalsPerSec).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(body)).not.toContain('DEMO_API_SECRET');
   });
 

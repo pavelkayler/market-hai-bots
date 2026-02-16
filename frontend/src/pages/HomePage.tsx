@@ -127,11 +127,15 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
               <ListGroup.Item>Market running: {String(doctor.market.running)}</ListGroup.Item>
               <ListGroup.Item>Market subscribed: {doctor.market.subscribed}</ListGroup.Item>
               <ListGroup.Item>Market updates/sec: {doctor.market.updatesPerSec}</ListGroup.Item>
+              <ListGroup.Item>Market tick handler avg (ms): {doctor.market.tickHandlersMsAvg}</ListGroup.Item>
+              <ListGroup.Item>WS clients: {doctor.market.wsClients}</ListGroup.Item>
+              <ListGroup.Item>WS frames/sec: {doctor.market.wsFramesPerSec}</ListGroup.Item>
               <ListGroup.Item>Bot running: {String(doctor.bot.running)}</ListGroup.Item>
               <ListGroup.Item>Bot paused: {String(doctor.bot.paused)}</ListGroup.Item>
               <ListGroup.Item>Bot mode: {doctor.bot.mode ?? '-'}</ListGroup.Item>
               <ListGroup.Item>Bot direction: {doctor.bot.direction ?? '-'}</ListGroup.Item>
               <ListGroup.Item>Bot tf: {doctor.bot.tf ?? '-'}</ListGroup.Item>
+              <ListGroup.Item>Bot evals/sec: {doctor.bot.evalsPerSec}</ListGroup.Item>
               <ListGroup.Item>Replay recording: {String(doctor.replay.recording)}</ListGroup.Item>
               <ListGroup.Item>Replay replaying: {String(doctor.replay.replaying)}</ListGroup.Item>
               <ListGroup.Item>Replay file: {doctor.replay.fileName ?? '-'}</ListGroup.Item>
