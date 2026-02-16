@@ -195,6 +195,58 @@ describe('BotEngine paper execution', () => {
     expect(orderUpdates.map((u) => u.status)).toEqual(['PLACED', 'EXPIRED']);
   });
 
+  it('does not open short entries when direction=long', () => {
+    const signals: SignalPayload[] = [];
+    const orderUpdates: OrderUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: (payload) => orderUpdates.push(payload),
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'long' });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 990, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98, openInterestValue: 980, ts: now });
+
+    expect(signals).toEqual([]);
+    expect(orderUpdates).toEqual([]);
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
+  });
+
+  it('does not open long entries when direction=short', () => {
+    const signals: SignalPayload[] = [];
+    const orderUpdates: OrderUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: (payload) => orderUpdates.push(payload),
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'short' });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+
+    expect(signals).toEqual([]);
+    expect(orderUpdates).toEqual([]);
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
+  });
+
   it('tracks bot stats for one winning and one losing close', () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const engine = new BotEngine({

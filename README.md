@@ -36,6 +36,8 @@ Use `GET /api/doctor` to validate local setup quickly:
 - `journal.sizeBytes=0`: no journal file yet (normal before first events) or journal path issue.
 
 ## Tuning workflow
+
+Подробные пояснения по параметрам: `docs/SETTINGS_GUIDE.md`.
 1. Create universe (`POST /api/universe/create`) to define a tradable symbol set for the session.
 2. Record ticks with replay recorder (`POST /api/replay/record/start`) while running your scenario.
 3. Replay fast (`POST /api/replay/start` with `speed=fast`) to iterate quickly on behavior.
