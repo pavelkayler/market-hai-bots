@@ -14,6 +14,9 @@ WS: `/ws`
 
 ### Bot
 - `POST /api/bot/start`
+  - Request body behavior:
+    - If request includes a `BotConfig`, that explicit config is used.
+    - If request body is `null`/omitted, backend loads config from current active run profile.
 - `POST /api/bot/stop`
 - `POST /api/bot/pause`
 - `POST /api/bot/resume`
@@ -37,6 +40,48 @@ Response shape for `/api/bot/state`:
 
 ### Orders
 - `POST /api/orders/cancel` `{ "symbol": "BTCUSDT" }`
+
+### Profiles
+- `GET /api/profiles`
+  - Response: `{ "ok": true, "activeProfile": "default", "names": ["default", "aggressive"] }`
+- `GET /api/profiles/:name`
+  - Success: `{ "ok": true, "name": "default", "config": BotConfig }`
+  - Not found: `{ "ok": false, "error": "NOT_FOUND" }`
+- `POST /api/profiles/:name`
+  - Body: `BotConfig` (creates or overwrites profile)
+  - Response: `{ "ok": true }`
+- `POST /api/profiles/:name/active`
+  - Sets active profile.
+  - Response: `{ "ok": true }`
+- `DELETE /api/profiles/:name`
+  - Deletes profile by name.
+  - Default profile is protected and returns `{ "ok": false, "error": "DEFAULT_PROFILE_LOCKED" }`.
+- `GET /api/profiles/download`
+  - Response content type: `application/json`
+  - Response body is raw profiles storage JSON:
+  ```json
+  {
+    "activeProfile": "default",
+    "profiles": {
+      "default": {
+        "mode": "paper",
+        "direction": "both",
+        "tf": 1,
+        "holdSeconds": 3,
+        "priceUpThrPct": 0.5,
+        "oiUpThrPct": 50,
+        "marginUSDT": 100,
+        "leverage": 10,
+        "tpRoiPct": 1,
+        "slRoiPct": 0.7
+      }
+    }
+  }
+  ```
+- `POST /api/profiles/upload`
+  - Body: raw JSON with same shape as `GET /api/profiles/download`.
+  - Merge behavior: imported profiles overwrite same-name profiles; unknown names are added.
+  - Response: `{ "ok": true }`
 
 
 ### Doctor

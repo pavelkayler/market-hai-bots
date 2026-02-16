@@ -70,6 +70,7 @@ const buildIsolatedServer = (options: Parameters<typeof buildServer>[0] = {}) =>
     universeFilePath: options.universeFilePath ?? path.join(os.tmpdir(), `universe-${suffix}.json`),
     runtimeSnapshotFilePath: options.runtimeSnapshotFilePath ?? path.join(os.tmpdir(), `runtime-${suffix}.json`),
     journalFilePath: options.journalFilePath ?? path.join(os.tmpdir(), `journal-${suffix}.ndjson`),
+    profileFilePath: options.profileFilePath ?? path.join(os.tmpdir(), `profiles-${suffix}.json`),
     ...options
   });
 };
@@ -87,6 +88,54 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true });
+  });
+
+  it('GET /api/profiles returns list with active profile', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/profiles' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      ok: true,
+      activeProfile: 'default',
+      names: ['default']
+    });
+  });
+
+  it('POST /api/profiles/:name/active sets active profile', async () => {
+    const config = {
+      mode: 'paper',
+      direction: 'both',
+      tf: 1,
+      holdSeconds: 3,
+      priceUpThrPct: 0.5,
+      oiUpThrPct: 50,
+      marginUSDT: 100,
+      leverage: 10,
+      tpRoiPct: 1,
+      slRoiPct: 0.7
+    };
+
+    const saveResponse = await app.inject({
+      method: 'POST',
+      url: '/api/profiles/test1',
+      payload: config
+    });
+    expect(saveResponse.statusCode).toBe(200);
+
+    const activeResponse = await app.inject({
+      method: 'POST',
+      url: '/api/profiles/test1/active',
+      payload: {}
+    });
+    expect(activeResponse.statusCode).toBe(200);
+    expect(activeResponse.json()).toEqual({ ok: true });
+
+    const listResponse = await app.inject({ method: 'GET', url: '/api/profiles' });
+    expect(listResponse.statusCode).toBe(200);
+    expect(listResponse.json()).toMatchObject({
+      ok: true,
+      activeProfile: 'test1'
+    });
   });
 
 

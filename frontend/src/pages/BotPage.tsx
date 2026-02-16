@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Table } from 'react-bootstrap';
 
 import {
@@ -7,22 +7,29 @@ import {
   clearJournal,
   clearUniverse,
   createUniverse,
+  deleteProfile,
   downloadJournal,
+  downloadProfiles,
   downloadUniverseJson,
   getBotState,
   getJournalTail,
+  getProfile,
+  getProfiles,
   getReplayFiles,
   getReplayState,
   getUniverse,
   pauseBot,
   refreshUniverse,
   resumeBot,
+  saveProfile,
+  setActiveProfile,
   startBot,
   startRecording,
   startReplay,
   stopBot,
   stopRecording,
-  stopReplay
+  stopReplay,
+  uploadProfiles
 } from '../api';
 import type { BotSettings, BotState, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
 
@@ -44,6 +51,7 @@ type Props = {
 };
 
 const SETTINGS_KEY = 'bot.settings.v1';
+const USE_ACTIVE_PROFILE_ON_START_KEY = 'bot.settings.useActiveProfileOnStart.v1';
 
 
 type ActiveSymbolRowProps = {
@@ -104,6 +112,14 @@ function loadSettings(): BotSettings {
   }
 }
 
+function loadUseActiveProfileOnStart(): boolean {
+  try {
+    return localStorage.getItem(USE_ACTIVE_PROFILE_ON_START_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 function formatSecondsLeft(expiresTs: number): string {
   const sec = Math.max(0, Math.floor((expiresTs - Date.now()) / 1000));
   return `${sec}s`;
@@ -122,6 +138,10 @@ export function BotPage({
 }: Props) {
   const [minVolPct, setMinVolPct] = useState<number>(10);
   const [settings, setSettings] = useState<BotSettings>(loadSettings());
+  const [profileNames, setProfileNames] = useState<string[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState<string>('default');
+  const [activeProfile, setActiveProfile] = useState<string>('default');
+  const [useActiveProfileOnStart, setUseActiveProfileOnStart] = useState<boolean>(loadUseActiveProfileOnStart());
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [showUniverseSymbols, setShowUniverseSymbols] = useState<boolean>(false);
@@ -143,6 +163,7 @@ export function BotPage({
   const [replayFiles, setReplayFiles] = useState<string[]>([]);
   const [journalLimit, setJournalLimit] = useState<number>(200);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const profileUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!botState.lastConfig) {
@@ -213,6 +234,23 @@ export function BotPage({
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
   };
 
+  useEffect(() => {
+    localStorage.setItem(USE_ACTIVE_PROFILE_ON_START_KEY, useActiveProfileOnStart ? '1' : '0');
+  }, [useActiveProfileOnStart]);
+
+  const refreshProfiles = useCallback(async () => {
+    const state = await getProfiles();
+    setProfileNames(state.names);
+    setSelectedProfile((current) => (state.names.includes(current) ? current : state.activeProfile));
+    setActiveProfile(state.activeProfile);
+  }, []);
+
+  useEffect(() => {
+    void refreshProfiles().catch(() => {
+      // no-op: profiles are optional for rendering
+    });
+  }, [refreshProfiles]);
+
   const handleUniverseAction = async (action: 'create' | 'refresh' | 'get' | 'clear') => {
     setError('');
     try {
@@ -239,12 +277,118 @@ export function BotPage({
   const handleStart = async () => {
     setError('');
     try {
-      await startBot(settings);
+      await startBot(useActiveProfileOnStart ? null : settings);
       const next = await getBotState();
       setBotState(next);
       setStatus('Bot started');
     } catch (err) {
       setError((err as Error).message);
+    }
+  };
+
+  const handleLoadProfile = async (name: string) => {
+    setError('');
+    try {
+      const response = await getProfile(name);
+      persistSettings(response.config);
+      setSelectedProfile(name);
+      setStatus(`Loaded profile: ${name}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleSaveProfile = async (name: string, withConfirm = false) => {
+    setError('');
+    try {
+      if (withConfirm && !window.confirm(`Overwrite profile "${name}"?`)) {
+        return;
+      }
+
+      await saveProfile(name, settings);
+      await refreshProfiles();
+      setSelectedProfile(name);
+      setStatus(`Saved profile: ${name}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleSaveAsProfile = async () => {
+    const name = window.prompt('Save profile as...', selectedProfile === 'default' ? '' : selectedProfile)?.trim();
+    if (!name) {
+      return;
+    }
+
+    const exists = profileNames.includes(name);
+    await handleSaveProfile(name, exists);
+  };
+
+  const handleSetActiveProfile = async () => {
+    setError('');
+    try {
+      await setActiveProfile(selectedProfile);
+      await refreshProfiles();
+      setStatus(`Active profile set: ${selectedProfile}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleDeleteProfile = async () => {
+    if (selectedProfile === 'default') {
+      alert('default profile cannot be deleted.');
+      return;
+    }
+
+    if (!window.confirm(`Delete profile "${selectedProfile}"?`)) {
+      return;
+    }
+
+    setError('');
+    try {
+      await deleteProfile(selectedProfile);
+      await refreshProfiles();
+      setStatus(`Deleted profile: ${selectedProfile}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleExportProfiles = async () => {
+    setError('');
+    try {
+      const blob = await downloadProfiles();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'profiles.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus('Profiles download started');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleImportProfilesFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setError('');
+    try {
+      const rawText = await file.text();
+      await uploadProfiles(JSON.parse(rawText));
+      await refreshProfiles();
+      setStatus('Profiles imported');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      event.target.value = '';
     }
   };
 
@@ -545,6 +689,52 @@ export function BotPage({
           <Card.Header>Settings</Card.Header>
           <Card.Body>
             {disableSettings ? <Alert variant="warning">Settings are locked while the bot is running.</Alert> : null}
+            <Card className="mb-3">
+              <Card.Header>Profiles</Card.Header>
+              <Card.Body>
+                <Row className="g-2 align-items-end">
+                  <Col md={4}>
+                    <Form.Label>Profile</Form.Label>
+                    <Form.Select value={selectedProfile} onChange={(event) => void handleLoadProfile(event.target.value)}>
+                      {profileNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name}{name === activeProfile ? ' (active)' : ''}
+                        </option>
+                      ))}
+                    </Form.Select>
+                  </Col>
+                  <Col md={8}>
+                    <div className="d-flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline-primary" onClick={() => void handleSaveAsProfile()} disabled={disableSettings}>
+                        Save As...
+                      </Button>
+                      <Button size="sm" variant="outline-primary" onClick={() => void handleSaveProfile(selectedProfile, true)} disabled={disableSettings}>
+                        Save
+                      </Button>
+                      <Button size="sm" variant="outline-danger" onClick={() => void handleDeleteProfile()}>
+                        Delete
+                      </Button>
+                      <Button size="sm" variant="outline-success" onClick={() => void handleSetActiveProfile()}>
+                        Set Active
+                      </Button>
+                      <Button size="sm" variant="outline-secondary" onClick={() => void handleExportProfiles()}>
+                        Export
+                      </Button>
+                      <Button size="sm" variant="outline-secondary" onClick={() => profileUploadInputRef.current?.click()}>
+                        Import
+                      </Button>
+                      <input
+                        ref={profileUploadInputRef}
+                        type="file"
+                        accept="application/json,.json"
+                        onChange={(event) => void handleImportProfilesFile(event)}
+                        style={{ display: 'none' }}
+                      />
+                    </div>
+                  </Col>
+                </Row>
+              </Card.Body>
+            </Card>
             <Row className="g-2">
               <Col>
                 <Form.Label>Mode</Form.Label>
@@ -627,6 +817,15 @@ export function BotPage({
                 Stop
               </Button>
             </div>
+            <Form.Check
+              className="mb-3"
+              type="checkbox"
+              id="use-active-profile-on-start"
+              label="Use active profile on start"
+              checked={useActiveProfileOnStart}
+              onChange={(event) => setUseActiveProfileOnStart(event.target.checked)}
+              disabled={botState.running}
+            />
             <Card className="mb-3">
               <Card.Header>Session</Card.Header>
               <Card.Body>

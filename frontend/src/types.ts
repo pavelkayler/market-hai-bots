@@ -17,6 +17,12 @@ export type BotSettings = {
 
 export type BotConfig = BotSettings;
 
+export type ProfilesState = {
+  ok: true;
+  activeProfile: string;
+  names: string[];
+};
+
 export type BotState = {
   running: boolean;
   paused: boolean;

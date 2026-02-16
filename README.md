@@ -22,6 +22,13 @@ Use `GET /api/doctor` to validate local setup quickly:
 - `demo.configured=false` with demo mode selected: add `DEMO_API_KEY` and `DEMO_API_SECRET`.
 - `journal.sizeBytes=0`: no journal file yet (normal before first events) or journal path issue.
 
+## Tuning workflow
+1. Create universe (`POST /api/universe/create`) to define a tradable symbol set for the session.
+2. Record ticks with replay recorder (`POST /api/replay/record/start`) while running your scenario.
+3. Replay fast (`POST /api/replay/start` with `speed=fast`) to iterate quickly on behavior.
+4. Adjust thresholds and risk params via run profiles (`/api/profiles/*`) and set active profile for repeatable starts.
+5. Check outcomes through journal export (`GET /api/journal/download`) and compare runs.
+
 ## Codex workflow
 Always instruct Codex to read:
 - docs/INVARIANTS.md
