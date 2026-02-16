@@ -63,24 +63,67 @@ type ActiveSymbolRowProps = {
   onCancel: (symbol: string) => void;
 };
 
+const STATE_LABELS: Record<SymbolUpdatePayload['state'], string> = {
+  IDLE: 'Idle',
+  HOLDING_LONG: 'Signal Holding (Long)',
+  HOLDING_SHORT: 'Signal Holding (Short)',
+  ENTRY_PENDING: 'Entry Pending',
+  POSITION_OPEN: 'Position Open'
+};
+
+function getPhaseLabel(state: SymbolUpdatePayload['state']): 'Signal' | 'Order' | 'Position' | '-' {
+  if (state === 'HOLDING_LONG' || state === 'HOLDING_SHORT') {
+    return 'Signal';
+  }
+  if (state === 'ENTRY_PENDING') {
+    return 'Order';
+  }
+  if (state === 'POSITION_OPEN') {
+    return 'Position';
+  }
+  return '-';
+}
+
+function formatSignalDetails(item: SymbolUpdatePayload): string {
+  if (!item.baseline) {
+    return '-';
+  }
+  const priceDeltaPct = ((item.markPrice - item.baseline.basePrice) / item.baseline.basePrice) * 100;
+  const oiDeltaPct = ((item.openInterestValue - item.baseline.baseOiValue) / item.baseline.baseOiValue) * 100;
+  return `baseline ${item.baseline.basePrice} / ${item.baseline.baseOiValue}, priceDeltaPct ${priceDeltaPct.toFixed(3)}%, oiDeltaPct ${oiDeltaPct.toFixed(3)}%, holdSeconds -`;
+}
+
+function formatOrderDetails(item: SymbolUpdatePayload): string {
+  if (!item.pendingOrder) {
+    return '-';
+  }
+  return `${item.pendingOrder.side} @${item.pendingOrder.limitPrice}, qty ${item.pendingOrder.qty}, expires ${formatSecondsLeft(item.pendingOrder.expiresTs)}`;
+}
+
+function formatPositionDetails(item: SymbolUpdatePayload): string {
+  if (!item.position) {
+    return '-';
+  }
+  const unrealized = typeof item.position.lastPnlUSDT === 'number' ? `, unrealized ${item.position.lastPnlUSDT.toFixed(4)}` : '';
+  return `${item.position.side} entry ${item.position.entryPrice}, tp ${item.position.tpPrice}, sl ${item.position.slPrice}, qty ${item.position.qty}${unrealized}`;
+}
+
 const ActiveSymbolRow = memo(function ActiveSymbolRow({ item, onCancel }: ActiveSymbolRowProps) {
+  const detail =
+    item.state === 'ENTRY_PENDING'
+      ? formatOrderDetails(item)
+      : item.state === 'POSITION_OPEN'
+        ? formatPositionDetails(item)
+        : formatSignalDetails(item);
+
   return (
     <tr>
       <td>{item.symbol}</td>
-      <td>{item.state}</td>
+      <td>{STATE_LABELS[item.state]}</td>
+      <td>{getPhaseLabel(item.state)}</td>
       <td>{item.markPrice}</td>
       <td>{item.openInterestValue}</td>
-      <td>{item.baseline ? `${item.baseline.basePrice} / ${item.baseline.baseOiValue}` : '-'}</td>
-      <td>
-        {item.pendingOrder
-          ? `${item.pendingOrder.side} @${item.pendingOrder.limitPrice}, qty ${item.pendingOrder.qty}, expires ${formatSecondsLeft(item.pendingOrder.expiresTs)}`
-          : '-'}
-      </td>
-      <td>
-        {item.position
-          ? `${item.position.side} entry ${item.position.entryPrice}, tp ${item.position.tpPrice}, sl ${item.position.slPrice}, qty ${item.position.qty}`
-          : '-'}
-      </td>
+      <td>{detail}</td>
       <td>
         <Button size="sm" variant="outline-danger" disabled={!item.pendingOrder} onClick={() => onCancel(item.symbol)}>
           Cancel
@@ -1008,6 +1051,9 @@ export function BotPage({
                   <option value="short">short</option>
                   <option value="both">both</option>
                 </Form.Select>
+                {settings.direction === 'both' ? (
+                  <Form.Text muted>Short has priority when both signals appear.</Form.Text>
+                ) : null}
               </Col>
               <Col>
                 <Form.Label>TF</Form.Label>
@@ -1210,11 +1256,10 @@ export function BotPage({
                 <tr>
                   <th>symbol</th>
                   <th>state</th>
+                  <th>phase</th>
                   <th>markPrice</th>
                   <th>openInterestValue</th>
-                  <th>baseline</th>
-                  <th>pendingOrder</th>
-                  <th>position</th>
+                  <th>details</th>
                   <th>action</th>
                 </tr>
               </thead>
@@ -1224,7 +1269,7 @@ export function BotPage({
                 ))}
                 {trackedSymbols.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="text-center">
+                    <td colSpan={7} className="text-center">
                       No active symbols
                     </td>
                   </tr>
