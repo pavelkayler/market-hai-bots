@@ -6,8 +6,11 @@ WS: `/ws`
 ## REST
 
 ### Universe
-- `POST /api/universe/create` `{ "minVolPct": 10 }`
-- `POST /api/universe/refresh` `{ "minVolPct": 12 }`
+- `POST /api/universe/create` `{ "minVolPct": 10, "minTurnover": 10000000 }`
+  - `minTurnover` is optional and defaults to `10000000` for backward compatibility.
+- `POST /api/universe/refresh` `{ "minVolPct"?: 12, "minTurnover"?: 10000000 }`
+  - Missing fields reuse currently stored universe filters.
+  - Returns `{ "ok": false, "error": "UNIVERSE_NOT_READY" }` when no universe is available yet.
 - `GET /api/universe`
 - `GET /api/universe/download` (returns the persisted `UniverseState` JSON directly)
 - `POST /api/universe/clear`
@@ -22,6 +25,10 @@ WS: `/ws`
 - `POST /api/bot/resume`
   - Returns `{ "ok": false, "error": "NO_SNAPSHOT" }` if no runtime snapshot exists.
 - `GET /api/bot/state`
+- `GET /api/bot/stats`
+  - Response: `{ "ok": true, "stats": BotStats }`
+- `POST /api/bot/stats/reset`
+  - Response: `{ "ok": true }`
 Response shape for `/api/bot/state`:
 ```json
 {
@@ -37,6 +44,21 @@ Response shape for `/api/bot/state`:
   "openPositions": 0
 }
 ```
+
+`BotStats` shape:
+```json
+{
+  "totalTrades": 0,
+  "wins": 0,
+  "losses": 0,
+  "winratePct": 0,
+  "pnlUSDT": 0,
+  "avgWinUSDT": null,
+  "avgLossUSDT": null,
+  "lastClosed": { "ts": 0, "symbol": "BTCUSDT", "pnlUSDT": 0 }
+}
+```
+
 
 ### Orders
 - `POST /api/orders/cancel` `{ "symbol": "BTCUSDT" }`

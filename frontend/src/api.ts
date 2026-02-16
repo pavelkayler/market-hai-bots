@@ -1,4 +1,4 @@
-import type { BotSettings, BotState, DoctorResponse, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, UniverseState } from './types';
+import type { BotSettings, BotState, BotStats, DoctorResponse, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -50,17 +50,17 @@ export async function getUniverse(): Promise<UniverseState> {
   return request('/api/universe');
 }
 
-export async function createUniverse(minVolPct: number): Promise<unknown> {
+export async function createUniverse(minVolPct: number, minTurnover: number): Promise<unknown> {
   return request('/api/universe/create', {
     method: 'POST',
-    body: JSON.stringify({ minVolPct })
+    body: JSON.stringify({ minVolPct, minTurnover })
   });
 }
 
-export async function refreshUniverse(minVolPct?: number): Promise<unknown> {
+export async function refreshUniverse(filters?: { minVolPct?: number; minTurnover?: number }): Promise<unknown> {
   return request('/api/universe/refresh', {
     method: 'POST',
-    body: JSON.stringify(minVolPct === undefined ? {} : { minVolPct })
+    body: JSON.stringify(filters ?? {})
   });
 }
 
@@ -70,6 +70,14 @@ export async function clearUniverse(): Promise<{ ok: boolean }> {
 
 export async function getBotState(): Promise<BotState> {
   return request('/api/bot/state');
+}
+
+export async function getBotStats(): Promise<{ ok: true; stats: BotStats }> {
+  return request('/api/bot/stats');
+}
+
+export async function resetBotStats(): Promise<{ ok: true }> {
+  return request('/api/bot/stats/reset', { method: 'POST', body: JSON.stringify({}) });
 }
 
 export async function startBot(settings?: BotSettings | null): Promise<unknown> {

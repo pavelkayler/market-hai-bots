@@ -37,6 +37,21 @@ export type BotState = {
   startedAt?: number | null;
 };
 
+export type BotStats = {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winratePct: number;
+  pnlUSDT: number;
+  avgWinUSDT: number | null;
+  avgLossUSDT: number | null;
+  lastClosed?: {
+    ts: number;
+    symbol: string;
+    pnlUSDT: number;
+  };
+};
+
 export type UniverseFilters = {
   minTurnover: number;
   minVolPct: number;

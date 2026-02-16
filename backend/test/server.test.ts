@@ -188,6 +188,27 @@ describe('server routes', () => {
   });
 
 
+  it('GET /api/bot/stats returns defaults and reset returns ok', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/bot/stats' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      ok: true,
+      stats: {
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        winratePct: 0,
+        pnlUSDT: 0,
+        avgWinUSDT: null,
+        avgLossUSDT: null
+      }
+    });
+
+    const resetResponse = await app.inject({ method: 'POST', url: '/api/bot/stats/reset', payload: {} });
+    expect(resetResponse.statusCode).toBe(200);
+    expect(resetResponse.json()).toEqual({ ok: true });
+  });
+
   it('POST /api/bot/start returns UNIVERSE_NOT_READY when universe does not exist', async () => {
     const response = await app.inject({
       method: 'POST',
@@ -360,15 +381,15 @@ describe('server routes', () => {
     const createResponse = await app.inject({
       method: 'POST',
       url: '/api/universe/create',
-      payload: { minVolPct: 5 }
+      payload: { minVolPct: 5, minTurnover: 20000000 }
     });
 
     expect(createResponse.statusCode).toBe(200);
     expect(createResponse.json()).toMatchObject({
       ok: true,
-      filters: { minTurnover: 10000000, minVolPct: 5 },
+      filters: { minTurnover: 20000000, minVolPct: 5 },
       totalFetched: 3,
-      passed: 1,
+      passed: 0,
       forcedActive: 0
     });
 
@@ -377,14 +398,14 @@ describe('server routes', () => {
       ready: boolean;
     };
     expect(fileContent.ready).toBe(true);
-    expect(fileContent.symbols.map((entry) => entry.symbol)).toEqual(['BTCUSDT']);
+    expect(fileContent.symbols.map((entry) => entry.symbol)).toEqual([]);
 
     const getResponse = await app.inject({ method: 'GET', url: '/api/universe' });
     expect(getResponse.statusCode).toBe(200);
     expect(getResponse.json()).toMatchObject({
       ok: true,
       ready: true,
-      filters: { minTurnover: 10000000, minVolPct: 5 }
+      filters: { minTurnover: 20000000, minVolPct: 5 }
     });
 
     const refreshResponse = await app.inject({
@@ -395,8 +416,8 @@ describe('server routes', () => {
     expect(refreshResponse.statusCode).toBe(200);
     expect(refreshResponse.json()).toMatchObject({
       ok: true,
-      filters: { minTurnover: 10000000, minVolPct: 5 },
-      passed: 2,
+      filters: { minTurnover: 20000000, minVolPct: 5 },
+      passed: 1,
       forcedActive: 1
     });
 
@@ -404,12 +425,26 @@ describe('server routes', () => {
     const refreshedState = refreshedStateResponse.json() as {
       symbols: Array<{ symbol: string; forcedActive: boolean }>;
     };
-    expect(refreshedState.symbols).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ symbol: 'BTCUSDT', forcedActive: false }),
-        expect.objectContaining({ symbol: 'ETHUSDT', forcedActive: true })
-      ])
-    );
+    expect(refreshedState.symbols).toEqual(expect.arrayContaining([expect.objectContaining({ symbol: 'ETHUSDT', forcedActive: true })]));
+
+    const refreshWithNewTurnover = await app.inject({
+      method: 'POST',
+      url: '/api/universe/refresh',
+      payload: { minTurnover: 10000000 }
+    });
+    expect(refreshWithNewTurnover.statusCode).toBe(200);
+    expect(refreshWithNewTurnover.json()).toMatchObject({
+      ok: true,
+      filters: { minTurnover: 10000000, minVolPct: 5 },
+      passed: 2,
+      forcedActive: 1
+    });
+
+    const refreshedWithNewTurnoverState = await app.inject({ method: 'GET', url: '/api/universe' });
+    expect(refreshedWithNewTurnoverState.json()).toMatchObject({
+      ok: true,
+      filters: { minTurnover: 10000000, minVolPct: 5 }
+    });
 
     const clearResponse = await app.inject({ method: 'POST', url: '/api/universe/clear' });
     expect(clearResponse.statusCode).toBe(200);

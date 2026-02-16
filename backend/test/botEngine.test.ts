@@ -191,6 +191,45 @@ describe('BotEngine paper execution', () => {
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
     expect(orderUpdates.map((u) => u.status)).toEqual(['PLACED', 'EXPIRED']);
   });
+
+  it('tracks bot stats for one winning and one losing close', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
+    engine.start(defaultConfig);
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now + 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1030, ts: now + 2 });
+
+    now += 60_000;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now + 1 });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now + 2 });
+
+    const stats = engine.getStats();
+    expect(stats.totalTrades).toBe(2);
+    expect(stats.wins).toBe(1);
+    expect(stats.losses).toBe(1);
+    expect(stats.winratePct).toBe(50);
+    expect(stats.pnlUSDT).toBeLessThan(0);
+  });
+
 });
 
 describe('BotEngine demo execution', () => {
@@ -507,6 +546,71 @@ describe('BotEngine snapshot + pause/resume', () => {
     const parsed = JSON.parse(raw) as { symbols: Record<string, { pendingOrder: unknown }> };
     expect(parsed.symbols.BTCUSDT.pendingOrder).toBeTruthy();
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('persists stats in snapshot and restores them', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'snapshot-stats-test-'));
+    const runtimePath = path.join(tempDir, 'data', 'runtime.json');
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+
+    const writer = new BotEngine({
+      now: () => now,
+      snapshotStore: new FileSnapshotStore(runtimePath),
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    writer.setUniverseSymbols(['BTCUSDT']);
+    writer.start(defaultConfig);
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now + 1 });
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1030, ts: now + 2 });
+
+    const reader = new BotEngine({
+      snapshotStore: new FileSnapshotStore(runtimePath),
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    const snapshot = new FileSnapshotStore(runtimePath).load();
+    expect(snapshot?.stats?.totalTrades).toBe(1);
+    expect(snapshot?.stats?.wins).toBe(1);
+
+    if (snapshot) {
+      reader.restoreFromSnapshot(snapshot);
+    }
+    expect(reader.getStats().totalTrades).toBe(1);
+    expect(reader.getStats().wins).toBe(1);
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('resetStats clears counters', () => {
+    const engine = new BotEngine({
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.resetStats();
+    expect(engine.getStats()).toMatchObject({
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      winratePct: 0,
+      pnlUSDT: 0,
+      avgWinUSDT: null,
+      avgLossUSDT: null
+    });
   });
 
   it('restores symbol runtime from loaded snapshot', () => {

@@ -86,6 +86,21 @@ export type PositionUpdatePayload = {
   pnlUSDT?: number;
 };
 
+export type BotStats = {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winratePct: number;
+  pnlUSDT: number;
+  avgWinUSDT: number | null;
+  avgLossUSDT: number | null;
+  lastClosed?: {
+    ts: number;
+    symbol: string;
+    pnlUSDT: number;
+  };
+};
+
 type BotEngineDeps = {
   now?: () => number;
   emitSignal: (payload: SignalPayload) => void;
@@ -157,6 +172,17 @@ export class BotEngine {
     activeOrders: 0,
     openPositions: 0
   };
+  private stats: BotStats = {
+    totalTrades: 0,
+    wins: 0,
+    losses: 0,
+    winratePct: 0,
+    pnlUSDT: 0,
+    avgWinUSDT: null,
+    avgLossUSDT: null
+  };
+  private winPnlSum = 0;
+  private lossPnlSum = 0;
 
   constructor(private readonly deps: BotEngineDeps) {
     this.now = deps.now ?? Date.now;
@@ -173,6 +199,25 @@ export class BotEngine {
 
   getRuntimeSymbols(): string[] {
     return Array.from(this.symbols.keys());
+  }
+
+  getStats(): BotStats {
+    return this.stats.lastClosed ? { ...this.stats, lastClosed: { ...this.stats.lastClosed } } : { ...this.stats };
+  }
+
+  resetStats(): void {
+    this.stats = {
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      winratePct: 0,
+      pnlUSDT: 0,
+      avgWinUSDT: null,
+      avgLossUSDT: null
+    };
+    this.winPnlSum = 0;
+    this.lossPnlSum = 0;
+    this.persistSnapshot();
   }
 
   setUniverseSymbols(symbols: string[]): void {
@@ -273,6 +318,21 @@ export class BotEngine {
       startedAt: null,
       config: snapshot.config
     };
+
+    if (snapshot.stats) {
+      this.stats = {
+        totalTrades: snapshot.stats.totalTrades,
+        wins: snapshot.stats.wins,
+        losses: snapshot.stats.losses,
+        winratePct: snapshot.stats.winratePct,
+        pnlUSDT: snapshot.stats.pnlUSDT,
+        avgWinUSDT: snapshot.stats.avgWinUSDT,
+        avgLossUSDT: snapshot.stats.avgLossUSDT,
+        ...(snapshot.stats.lastClosed ? { lastClosed: snapshot.stats.lastClosed } : {})
+      };
+      this.winPnlSum = snapshot.stats.wins * (snapshot.stats.avgWinUSDT ?? 0);
+      this.lossPnlSum = snapshot.stats.losses * (snapshot.stats.avgLossUSDT ?? 0);
+    }
 
     this.updateSummaryCounts();
     this.persistSnapshot();
@@ -663,6 +723,7 @@ export class BotEngine {
       exitPrice: marketState.markPrice,
       pnlUSDT: 0
     });
+    this.recordClosedTrade(symbolState.symbol, 0);
     this.updateSummaryCounts();
     this.persistSnapshot();
   }
@@ -751,6 +812,7 @@ export class BotEngine {
       exitPrice: marketState.markPrice,
       pnlUSDT
     });
+    this.recordClosedTrade(symbolState.symbol, pnlUSDT);
     this.updateSummaryCounts();
     this.persistSnapshot();
   }
@@ -831,8 +893,27 @@ export class BotEngine {
       paused: this.state.paused,
       running: this.state.running,
       config: this.state.config,
-      symbols: symbolSnapshots
+      symbols: symbolSnapshots,
+      stats: this.stats
     };
+  }
+
+  private recordClosedTrade(symbol: string, pnlUSDT: number): void {
+    this.stats.totalTrades += 1;
+    this.stats.pnlUSDT += pnlUSDT;
+    this.stats.lastClosed = { ts: this.now(), symbol, pnlUSDT };
+
+    if (pnlUSDT > 0) {
+      this.stats.wins += 1;
+      this.winPnlSum += pnlUSDT;
+    } else if (pnlUSDT < 0) {
+      this.stats.losses += 1;
+      this.lossPnlSum += pnlUSDT;
+    }
+
+    this.stats.winratePct = this.stats.totalTrades > 0 ? (this.stats.wins / this.stats.totalTrades) * 100 : 0;
+    this.stats.avgWinUSDT = this.stats.wins > 0 ? this.winPnlSum / this.stats.wins : null;
+    this.stats.avgLossUSDT = this.stats.losses > 0 ? this.lossPnlSum / this.stats.losses : null;
   }
 
   private roundQty(qty: number): number {

@@ -13,7 +13,7 @@ export type UniverseEntry = {
 export type UniverseState = {
   createdAt: number;
   filters: {
-    minTurnover: 10000000;
+    minTurnover: number;
     minVolPct: number;
   };
   symbols: UniverseEntry[];
