@@ -19,6 +19,7 @@ import {
   getReplayFiles,
   getReplayState,
   getUniverse,
+  killBot,
   pauseBot,
   refreshUniverse,
   resetBotStats,
@@ -98,7 +99,10 @@ const defaultSettings: BotSettings = {
   marginUSDT: 100,
   leverage: 10,
   tpRoiPct: 1,
-  slRoiPct: 0.7
+  slRoiPct: 0.7,
+  maxActiveSymbols: 5,
+  dailyLossLimitUSDT: 0,
+  maxConsecutiveLosses: 0
 };
 
 function loadSettings(): BotSettings {
@@ -147,7 +151,10 @@ export function BotPage({
     winratePct: 0,
     pnlUSDT: 0,
     avgWinUSDT: null,
-    avgLossUSDT: null
+    avgLossUSDT: null,
+    lossStreak: 0,
+    todayPnlUSDT: 0,
+    guardrailPauseReason: null
   });
   const [settings, setSettings] = useState<BotSettings>(loadSettings());
   const [profileNames, setProfileNames] = useState<string[]>([]);
@@ -457,6 +464,23 @@ export function BotPage({
       const next = await getBotState();
       setBotState(next);
       setStatus('Bot paused');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleKill = async () => {
+    if (!window.confirm('Cancel all pending orders and pause?')) {
+      return;
+    }
+
+    setError('');
+    try {
+      const result = await killBot();
+      const next = await getBotState();
+      setBotState(next);
+      await refreshBotStats();
+      setStatus(`KILL done: cancelled ${result.cancelled} pending orders`);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -778,6 +802,9 @@ export function BotPage({
             <div>Losses: {botStats.losses} ({lossPct.toFixed(2)}%)</div>
             <div>Winrate: {botStats.winratePct.toFixed(2)}%</div>
             <div>PnL (USDT): {formatPnl(botStats.pnlUSDT)}</div>
+            <div>Today PnL (USDT): {formatPnl(botStats.todayPnlUSDT)}</div>
+            <div>Loss streak: {botStats.lossStreak}</div>
+            <div>Guardrail pause reason: {botStats.guardrailPauseReason ?? '-'}</div>
             <div>Avg win (USDT): {botStats.avgWinUSDT === null ? '-' : formatPnl(botStats.avgWinUSDT)}</div>
             <div>Avg loss (USDT): {botStats.avgLossUSDT === null ? '-' : formatPnl(botStats.avgLossUSDT)}</div>
             <div>
@@ -887,7 +914,10 @@ export function BotPage({
                   ['marginUSDT', 'marginUSDT'],
                   ['leverage', 'leverage'],
                   ['tpRoiPct', 'tpRoiPct'],
-                  ['slRoiPct', 'slRoiPct']
+                  ['slRoiPct', 'slRoiPct'],
+                  ['maxActiveSymbols', 'maxActiveSymbols'],
+                  ['dailyLossLimitUSDT', 'dailyLossLimitUSDT'],
+                  ['maxConsecutiveLosses', 'maxConsecutiveLosses']
                 ] as const
               ).map(([label, key]) => (
                 <Col md={4} key={key}>
@@ -915,6 +945,9 @@ export function BotPage({
               </Button>
               <Button variant="warning" onClick={() => void handlePause()} disabled={!botState.running || botState.paused}>
                 Pause
+              </Button>
+              <Button variant="danger" onClick={() => void handleKill()}>
+                KILL
               </Button>
               <Button variant="info" onClick={() => void handleResume()} disabled={!botState.hasSnapshot && !botState.paused}>
                 Resume

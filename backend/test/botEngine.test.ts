@@ -18,7 +18,10 @@ const defaultConfig: BotConfig = {
   marginUSDT: 100,
   leverage: 2,
   tpRoiPct: 1,
-  slRoiPct: 1
+  slRoiPct: 1,
+  maxActiveSymbols: 5,
+  dailyLossLimitUSDT: 0,
+  maxConsecutiveLosses: 0
 };
 
 class FakeDemoTradeClient implements IDemoTradeClient {
@@ -228,6 +231,108 @@ describe('BotEngine paper execution', () => {
     expect(stats.losses).toBe(1);
     expect(stats.winratePct).toBe(50);
     expect(stats.pnlUSDT).toBeLessThan(0);
+  });
+
+
+  it('maxActiveSymbols prevents a second order when limit=1', () => {
+    const logs: string[] = [];
+    const orderUpdates: OrderUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: (payload) => orderUpdates.push(payload),
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      emitLog: (message) => logs.push(message)
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
+    engine.start({ ...defaultConfig, maxActiveSymbols: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+
+    expect(orderUpdates.filter((entry) => entry.status === 'PLACED')).toHaveLength(1);
+    expect(engine.getSymbolState('ETHUSDT')?.fsmState).toBe('IDLE');
+    expect(logs).toContain('Guardrail: maxActiveSymbols reached');
+  });
+
+  it('dailyLossLimit triggers pause after a losing close', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 1, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, dailyLossLimitUSDT: 0.1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+
+    expect(engine.getState()).toMatchObject({ paused: true, running: true });
+    expect(engine.getStats().guardrailPauseReason).toBe('DAILY_LOSS_LIMIT');
+  });
+
+  it('maxConsecutiveLosses triggers pause after N losses', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 1, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
+    engine.start({ ...defaultConfig, maxConsecutiveLosses: 2 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+
+    expect(engine.getState().paused).toBe(false);
+
+    now += 60_000;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    now += 10;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    now += 10;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+
+    expect(engine.getState()).toMatchObject({ paused: true, running: true });
+    expect(engine.getStats().lossStreak).toBe(2);
+    expect(engine.getStats().guardrailPauseReason).toBe('MAX_CONSECUTIVE_LOSSES');
   });
 
 });

@@ -23,6 +23,12 @@ WS: `/ws`
 - `POST /api/bot/stop`
 - `POST /api/bot/pause`
 - `POST /api/bot/resume`
+- `POST /api/bot/kill`
+  - Emergency pause + cancel all pending ENTRY orders across symbols.
+  - Does **not** close existing open positions.
+  - Response: `{ "ok": true, "cancelled": 2 }`
+- `GET /api/bot/guardrails`
+  - Response: `{ "ok": true, "guardrails": { "maxActiveSymbols": 5, "dailyLossLimitUSDT": 0, "maxConsecutiveLosses": 0 } }`
   - Returns `{ "ok": false, "error": "NO_SNAPSHOT" }` if no runtime snapshot exists.
 - `GET /api/bot/state`
 - `GET /api/bot/stats`
@@ -45,6 +51,11 @@ Response shape for `/api/bot/state`:
 }
 ```
 
+Guardrail behavior:
+- `maxActiveSymbols`: counts symbols currently in `ENTRY_PENDING` or `POSITION_OPEN`.
+- `dailyLossLimitUSDT`: if >0 and today's UTC realized PnL reaches `<= -limit`, bot is auto-paused (`paused=true`, `running` remains true).
+- `maxConsecutiveLosses`: if >0 and loss streak reaches the limit, bot is auto-paused.
+
 `BotStats` shape:
 ```json
 {
@@ -55,6 +66,9 @@ Response shape for `/api/bot/state`:
   "pnlUSDT": 0,
   "avgWinUSDT": null,
   "avgLossUSDT": null,
+  "lossStreak": 0,
+  "todayPnlUSDT": 0,
+  "guardrailPauseReason": null,
   "lastClosed": { "ts": 0, "symbol": "BTCUSDT", "pnlUSDT": 0 }
 }
 ```
@@ -95,7 +109,10 @@ Response shape for `/api/bot/state`:
         "marginUSDT": 100,
         "leverage": 10,
         "tpRoiPct": 1,
-        "slRoiPct": 0.7
+        "slRoiPct": 0.7,
+        "maxActiveSymbols": 5,
+        "dailyLossLimitUSDT": 0,
+        "maxConsecutiveLosses": 0
       }
     }
   }

@@ -17,7 +17,10 @@ const aggressiveConfig: BotConfig = {
   marginUSDT: 100,
   leverage: 20,
   tpRoiPct: 1.5,
-  slRoiPct: 0.8
+  slRoiPct: 0.8,
+  maxActiveSymbols: 5,
+  dailyLossLimitUSDT: 0,
+  maxConsecutiveLosses: 0
 };
 
 describe('ProfileService', () => {

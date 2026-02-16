@@ -407,6 +407,16 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     };
   });
 
+
+  app.post('/api/bot/kill', async () => {
+    const cancelled = await botEngine.killSwitch((symbol) => marketHub.getState(symbol));
+    return { ok: true, cancelled };
+  });
+
+  app.get('/api/bot/guardrails', async () => {
+    return { ok: true, guardrails: botEngine.getGuardrails() };
+  });
+
   app.get('/api/bot/stats', async () => {
     return { ok: true, stats: botEngine.getStats() };
   });

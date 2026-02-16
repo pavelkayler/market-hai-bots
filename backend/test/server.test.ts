@@ -168,6 +168,20 @@ describe('server routes', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+
+  it('GET /api/bot/guardrails returns defaults before start', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/bot/guardrails' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      ok: true,
+      guardrails: {
+        maxActiveSymbols: 5,
+        dailyLossLimitUSDT: 0,
+        maxConsecutiveLosses: 0
+      }
+    });
+  });
+
   it('GET /api/bot/state returns initial bot state', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
 
@@ -200,7 +214,10 @@ describe('server routes', () => {
         winratePct: 0,
         pnlUSDT: 0,
         avgWinUSDT: null,
-        avgLossUSDT: null
+        avgLossUSDT: null,
+        lossStreak: 0,
+        todayPnlUSDT: 0,
+        guardrailPauseReason: null
       }
     });
 
@@ -619,6 +636,66 @@ describe('server routes', () => {
 
     const botState = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(botState.json()).toMatchObject({ activeOrders: 0, openPositions: 0 });
+  });
+
+
+  it('/api/bot/kill cancels all pending orders and leaves positions intact', async () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const tickerStream = new FakeTickerStream();
+    app = buildIsolatedServer({
+      now: () => now,
+      tickerStream,
+      marketClient: new FakeMarketClient(
+        [
+          { symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 },
+          { symbol: 'ETHUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }
+        ],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }],
+          ['ETHUSDT', { symbol: 'ETHUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper',
+        direction: 'long',
+        tf: 1,
+        holdSeconds: 1,
+        priceUpThrPct: 1,
+        oiUpThrPct: 1,
+        marginUSDT: 100,
+        leverage: 2,
+        tpRoiPct: 1,
+        slRoiPct: 1
+      }
+    });
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 1000, ts: now });
+    tickerStream.emit({ symbol: 'ETHUSDT', markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
+    tickerStream.emit({ symbol: 'ETHUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1100;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
+    tickerStream.emit({ symbol: 'ETHUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
+
+    now += 10;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
+
+    const beforeKill = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(beforeKill.json()).toMatchObject({ activeOrders: 1, openPositions: 1 });
+
+    const killResponse = await app.inject({ method: 'POST', url: '/api/bot/kill', payload: {} });
+    expect(killResponse.statusCode).toBe(200);
+    expect(killResponse.json()).toEqual({ ok: true, cancelled: 1 });
+
+    const afterKill = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(afterKill.json()).toMatchObject({ paused: true, activeOrders: 0, openPositions: 1 });
   });
 
   it('GET /api/bot/state reflects demo queueDepth', async () => {

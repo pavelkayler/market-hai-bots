@@ -13,6 +13,9 @@ export type BotSettings = {
   leverage: number;
   tpRoiPct: number;
   slRoiPct: number;
+  maxActiveSymbols: number;
+  dailyLossLimitUSDT: number;
+  maxConsecutiveLosses: number;
 };
 
 export type BotConfig = BotSettings;
@@ -45,6 +48,9 @@ export type BotStats = {
   pnlUSDT: number;
   avgWinUSDT: number | null;
   avgLossUSDT: number | null;
+  lossStreak: number;
+  todayPnlUSDT: number;
+  guardrailPauseReason: string | null;
   lastClosed?: {
     ts: number;
     symbol: string;
