@@ -1,4 +1,4 @@
-import type { BotSettings, BotState, DoctorResponse, JournalEntry, ReplaySpeed, ReplayState, UniverseState } from './types';
+import type { BotSettings, BotState, DoctorResponse, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -72,8 +72,8 @@ export async function getBotState(): Promise<BotState> {
   return request('/api/bot/state');
 }
 
-export async function startBot(settings: BotSettings): Promise<unknown> {
-  return request('/api/bot/start', { method: 'POST', body: JSON.stringify(settings) });
+export async function startBot(settings?: BotSettings | null): Promise<unknown> {
+  return request('/api/bot/start', { method: 'POST', body: JSON.stringify(settings ?? null) });
 }
 
 export async function stopBot(): Promise<unknown> {
@@ -159,4 +159,48 @@ export async function downloadJournal(format: 'ndjson' | 'json' | 'csv'): Promis
 
 export async function getDoctor(): Promise<DoctorResponse> {
   return request('/api/doctor');
+}
+
+export async function getProfiles(): Promise<ProfilesState> {
+  return request('/api/profiles');
+}
+
+export async function getProfile(name: string): Promise<{ ok: true; name: string; config: BotSettings }> {
+  return request(`/api/profiles/${encodeURIComponent(name)}`);
+}
+
+export async function saveProfile(name: string, config: BotSettings): Promise<{ ok: boolean }> {
+  return request(`/api/profiles/${encodeURIComponent(name)}`, {
+    method: 'POST',
+    body: JSON.stringify(config)
+  });
+}
+
+export async function setActiveProfile(name: string): Promise<{ ok: boolean }> {
+  return request(`/api/profiles/${encodeURIComponent(name)}/active`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
+export async function deleteProfile(name: string): Promise<{ ok: boolean }> {
+  return request(`/api/profiles/${encodeURIComponent(name)}`, {
+    method: 'DELETE'
+  });
+}
+
+export async function downloadProfiles(): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/api/profiles/download`);
+  if (!response.ok) {
+    throw new ApiRequestError(`HTTP ${response.status}`);
+  }
+
+  return response.blob();
+}
+
+export async function uploadProfiles(rawJson: unknown): Promise<{ ok: boolean }> {
+  return request('/api/profiles/upload', {
+    method: 'POST',
+    body: JSON.stringify(rawJson)
+  });
 }

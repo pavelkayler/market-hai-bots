@@ -13,6 +13,7 @@ import type { TickerStream } from './market/tickerStream.js';
 import { ReplayService, type ReplaySpeed } from './replay/replayService.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
 import { JournalService, type JournalEntry } from './services/journalService.js';
+import { ProfileService } from './services/profileService.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
 import { SymbolUpdateBroadcaster, type SymbolUpdateMode } from './ws/symbolUpdateBroadcaster.js';
 
@@ -26,6 +27,7 @@ type BuildServerOptions = {
   demoTradeClient?: IDemoTradeClient;
   wsClients?: Set<{ send: (payload: string) => unknown }>;
   journalFilePath?: string;
+  profileFilePath?: string;
 };
 
 const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
@@ -66,6 +68,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const snapshotStore = new FileSnapshotStore(options.runtimeSnapshotFilePath ?? path.resolve(process.cwd(), 'data/runtime.json'));
   const journalPath = options.journalFilePath ?? path.resolve(process.cwd(), 'data/journal.ndjson');
   const journalService = new JournalService(journalPath);
+  const profileService = new ProfileService(options.profileFilePath ?? path.resolve(process.cwd(), 'data/profiles.json'));
 
   const isDemoConfigured = (): boolean => {
     const apiKey = (process.env.DEMO_API_KEY ?? '').trim();
@@ -265,6 +268,71 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return { ok: true };
   });
 
+  app.get('/api/profiles', async () => {
+    const result = await profileService.list();
+    return { ok: true, ...result };
+  });
+
+  app.get('/api/profiles/download', async (_request, reply) => {
+    const exported = await profileService.export();
+    reply.header('Content-Type', 'application/json');
+    return reply.send(exported);
+  });
+
+  app.post('/api/profiles/upload', async (request, reply) => {
+    try {
+      await profileService.import(request.body);
+      return { ok: true };
+    } catch {
+      return reply.code(400).send({ ok: false, error: 'INVALID_IMPORT' });
+    }
+  });
+
+  app.get('/api/profiles/:name', async (request, reply) => {
+    const name = (request.params as { name: string }).name;
+    const config = await profileService.get(name);
+    if (!config) {
+      return reply.code(404).send({ ok: false, error: 'NOT_FOUND' });
+    }
+
+    return { ok: true, name, config };
+  });
+
+  app.post('/api/profiles/:name', async (request, reply) => {
+    const name = (request.params as { name: string }).name;
+    const config = normalizeBotConfig((request.body as Record<string, unknown>) ?? {});
+    if (!config) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
+    }
+
+    await profileService.set(name, config);
+    return { ok: true };
+  });
+
+  app.post('/api/profiles/:name/active', async (request, reply) => {
+    const name = (request.params as { name: string }).name;
+    try {
+      await profileService.setActive(name);
+      return { ok: true };
+    } catch {
+      return reply.code(404).send({ ok: false, error: 'NOT_FOUND' });
+    }
+  });
+
+  app.delete('/api/profiles/:name', async (request, reply) => {
+    const name = (request.params as { name: string }).name;
+    try {
+      await profileService.delete(name);
+      return { ok: true };
+    } catch (error) {
+      if ((error as Error).message === 'DEFAULT_PROFILE_LOCKED') {
+        return reply.code(400).send({ ok: false, error: 'DEFAULT_PROFILE_LOCKED' });
+      }
+
+      return reply.code(404).send({ ok: false, error: 'NOT_FOUND' });
+    }
+  });
+
   app.post('/api/bot/start', async (request, reply) => {
     const universe = await universeService.get();
     if (!universe?.ready || universe.symbols.length === 0) {
@@ -275,7 +343,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.code(400).send({ ok: false, error: 'MARKET_HUB_NOT_RUNNING' });
     }
 
-    const config = normalizeBotConfig((request.body as Record<string, unknown>) ?? {});
+    const requestBody = request.body as Record<string, unknown> | null | undefined;
+    const shouldUseActiveProfile = requestBody == null || requestBody.mode === undefined;
+    const config = shouldUseActiveProfile
+      ? await profileService.get((await profileService.list()).activeProfile)
+      : normalizeBotConfig(requestBody);
     if (!config) {
       return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
     }
