@@ -22,6 +22,9 @@ export type BotConfig = {
   leverage: number;
   tpRoiPct: number;
   slRoiPct: number;
+  maxActiveSymbols: number;
+  dailyLossLimitUSDT: number;
+  maxConsecutiveLosses: number;
 };
 
 export type BotState = {
@@ -94,6 +97,9 @@ export type BotStats = {
   pnlUSDT: number;
   avgWinUSDT: number | null;
   avgLossUSDT: number | null;
+  lossStreak: number;
+  todayPnlUSDT: number;
+  guardrailPauseReason: string | null;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -114,6 +120,7 @@ type BotEngineDeps = {
 
 const DEFAULT_HOLD_SECONDS = 3;
 const DEFAULT_OI_UP_THR_PCT = 50;
+const DEFAULT_MAX_ACTIVE_SYMBOLS = 5;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
 export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | null => {
@@ -135,6 +142,14 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
 
   const holdSeconds = typeof raw.holdSeconds === 'number' && Number.isFinite(raw.holdSeconds) ? raw.holdSeconds : DEFAULT_HOLD_SECONDS;
   const oiUpThrPct = typeof raw.oiUpThrPct === 'number' && Number.isFinite(raw.oiUpThrPct) ? raw.oiUpThrPct : DEFAULT_OI_UP_THR_PCT;
+  const maxActiveSymbols =
+    typeof raw.maxActiveSymbols === 'number' && Number.isFinite(raw.maxActiveSymbols) ? Math.max(1, Math.floor(raw.maxActiveSymbols)) : DEFAULT_MAX_ACTIVE_SYMBOLS;
+  const dailyLossLimitUSDT =
+    typeof raw.dailyLossLimitUSDT === 'number' && Number.isFinite(raw.dailyLossLimitUSDT) ? Math.max(0, raw.dailyLossLimitUSDT) : 0;
+  const maxConsecutiveLosses =
+    typeof raw.maxConsecutiveLosses === 'number' && Number.isFinite(raw.maxConsecutiveLosses)
+      ? Math.max(0, Math.floor(raw.maxConsecutiveLosses))
+      : 0;
 
   const numericFields = ['priceUpThrPct', 'marginUSDT', 'leverage', 'tpRoiPct', 'slRoiPct'] as const;
   for (const key of numericFields) {
@@ -153,7 +168,10 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     marginUSDT: raw.marginUSDT as number,
     leverage: raw.leverage as number,
     tpRoiPct: raw.tpRoiPct as number,
-    slRoiPct: raw.slRoiPct as number
+    slRoiPct: raw.slRoiPct as number,
+    maxActiveSymbols,
+    dailyLossLimitUSDT,
+    maxConsecutiveLosses
   };
 };
 
@@ -179,10 +197,14 @@ export class BotEngine {
     winratePct: 0,
     pnlUSDT: 0,
     avgWinUSDT: null,
-    avgLossUSDT: null
+    avgLossUSDT: null,
+    lossStreak: 0,
+    todayPnlUSDT: 0,
+    guardrailPauseReason: null
   };
   private winPnlSum = 0;
   private lossPnlSum = 0;
+  private todayPnlDayKey: string | null = null;
 
   constructor(private readonly deps: BotEngineDeps) {
     this.now = deps.now ?? Date.now;
@@ -213,11 +235,32 @@ export class BotEngine {
       winratePct: 0,
       pnlUSDT: 0,
       avgWinUSDT: null,
-      avgLossUSDT: null
+      avgLossUSDT: null,
+      lossStreak: 0,
+      todayPnlUSDT: 0,
+      guardrailPauseReason: null
     };
     this.winPnlSum = 0;
     this.lossPnlSum = 0;
+    this.todayPnlDayKey = null;
     this.persistSnapshot();
+  }
+
+  getGuardrails(): Pick<BotConfig, 'maxActiveSymbols' | 'dailyLossLimitUSDT' | 'maxConsecutiveLosses'> {
+    const config = this.state.config;
+    if (!config) {
+      return {
+        maxActiveSymbols: DEFAULT_MAX_ACTIVE_SYMBOLS,
+        dailyLossLimitUSDT: 0,
+        maxConsecutiveLosses: 0
+      };
+    }
+
+    return {
+      maxActiveSymbols: config.maxActiveSymbols,
+      dailyLossLimitUSDT: config.dailyLossLimitUSDT,
+      maxConsecutiveLosses: config.maxConsecutiveLosses
+    };
   }
 
   setUniverseSymbols(symbols: string[]): void {
@@ -328,10 +371,14 @@ export class BotEngine {
         pnlUSDT: snapshot.stats.pnlUSDT,
         avgWinUSDT: snapshot.stats.avgWinUSDT,
         avgLossUSDT: snapshot.stats.avgLossUSDT,
+        lossStreak: snapshot.stats.lossStreak ?? 0,
+        todayPnlUSDT: snapshot.stats.todayPnlUSDT ?? 0,
+        guardrailPauseReason: snapshot.stats.guardrailPauseReason ?? null,
         ...(snapshot.stats.lastClosed ? { lastClosed: snapshot.stats.lastClosed } : {})
       };
       this.winPnlSum = snapshot.stats.wins * (snapshot.stats.avgWinUSDT ?? 0);
       this.lossPnlSum = snapshot.stats.losses * (snapshot.stats.avgLossUSDT ?? 0);
+      this.todayPnlDayKey = new Date(this.now()).toISOString().slice(0, 10);
     }
 
     this.updateSummaryCounts();
@@ -368,27 +415,33 @@ export class BotEngine {
       return false;
     }
 
-    const cancelledOrder = symbolState.pendingOrder;
-    if (this.state.config?.mode === 'demo') {
-      const removed = this.demoQueue.removePendingJob(symbol);
-      if (!removed && cancelledOrder.sentToExchange && this.deps.demoTradeClient) {
-        await this.deps.demoTradeClient.cancelOrder({
-          symbol,
-          orderId: cancelledOrder.orderId,
-          orderLinkId: cancelledOrder.orderLinkId
-        });
+    await this.cancelSymbolPendingOrder(symbolState, marketState, 'CANCELLED');
+    return true;
+  }
+
+  async killSwitch(getMarketState: (symbol: string) => MarketState | undefined): Promise<number> {
+    let cancelled = 0;
+    this.pauseWithGuardrail('KILL_SWITCH');
+
+    for (const symbolState of this.symbols.values()) {
+      if (symbolState.fsmState !== 'ENTRY_PENDING' || !symbolState.pendingOrder) {
+        continue;
       }
+
+      const marketState =
+        getMarketState(symbolState.symbol) ?? {
+          markPrice: symbolState.pendingOrder.limitPrice,
+          openInterestValue: symbolState.baseline?.baseOiValue ?? 0,
+          ts: this.now()
+        };
+
+      await this.cancelSymbolPendingOrder(symbolState, marketState, 'CANCELLED');
+      cancelled += 1;
     }
 
-    symbolState.pendingOrder = null;
-    symbolState.demo = null;
-    symbolState.fsmState = 'IDLE';
-    symbolState.holdStartTs = null;
-    this.resetBaseline(symbolState, marketState);
-    this.deps.emitOrderUpdate({ symbol, status: 'CANCELLED', order: cancelledOrder });
     this.updateSummaryCounts();
     this.persistSnapshot();
-    return true;
+    return cancelled;
   }
 
   async pollDemoOrders(allMarketStates: Record<string, MarketState>): Promise<void> {
@@ -516,6 +569,14 @@ export class BotEngine {
     if (qty === null || qty <= 0) {
       this.resetToIdle(symbolState);
       this.deps.emitLog?.(`Skipped ${symbolState.symbol}: qty below minOrderQty or invalid after lot-size normalization.`);
+      this.updateSummaryCounts();
+      this.persistSnapshot();
+      return;
+    }
+
+    if (this.getActiveSymbolsCount() >= this.state.config.maxActiveSymbols) {
+      this.resetToIdle(symbolState);
+      this.deps.emitLog?.('Guardrail: maxActiveSymbols reached');
       this.updateSummaryCounts();
       this.persistSnapshot();
       return;
@@ -847,6 +908,17 @@ export class BotEngine {
     };
   }
 
+  private getActiveSymbolsCount(): number {
+    let count = 0;
+    for (const symbolState of this.symbols.values()) {
+      if (symbolState.fsmState === 'ENTRY_PENDING' || symbolState.fsmState === 'POSITION_OPEN') {
+        count += 1;
+      }
+    }
+
+    return count;
+  }
+
   private persistSnapshot(): void {
     if (!this.deps.snapshotStore) {
       return;
@@ -899,21 +971,90 @@ export class BotEngine {
   }
 
   private recordClosedTrade(symbol: string, pnlUSDT: number): void {
+    this.rotateDailyPnlBucket();
     this.stats.totalTrades += 1;
     this.stats.pnlUSDT += pnlUSDT;
+    this.stats.todayPnlUSDT += pnlUSDT;
     this.stats.lastClosed = { ts: this.now(), symbol, pnlUSDT };
 
     if (pnlUSDT > 0) {
       this.stats.wins += 1;
       this.winPnlSum += pnlUSDT;
+      this.stats.lossStreak = 0;
     } else if (pnlUSDT < 0) {
       this.stats.losses += 1;
       this.lossPnlSum += pnlUSDT;
+      this.stats.lossStreak += 1;
     }
 
     this.stats.winratePct = this.stats.totalTrades > 0 ? (this.stats.wins / this.stats.totalTrades) * 100 : 0;
     this.stats.avgWinUSDT = this.stats.wins > 0 ? this.winPnlSum / this.stats.wins : null;
     this.stats.avgLossUSDT = this.stats.losses > 0 ? this.lossPnlSum / this.stats.losses : null;
+
+    const config = this.state.config;
+    if (!config) {
+      return;
+    }
+
+    if (config.dailyLossLimitUSDT > 0 && this.stats.todayPnlUSDT <= -config.dailyLossLimitUSDT) {
+      this.pauseWithGuardrail('DAILY_LOSS_LIMIT');
+      return;
+    }
+
+    if (config.maxConsecutiveLosses > 0 && this.stats.lossStreak >= config.maxConsecutiveLosses) {
+      this.pauseWithGuardrail('MAX_CONSECUTIVE_LOSSES');
+    }
+  }
+
+  private rotateDailyPnlBucket(): void {
+    const dayKey = new Date(this.now()).toISOString().slice(0, 10);
+    if (this.todayPnlDayKey === dayKey) {
+      return;
+    }
+
+    this.todayPnlDayKey = dayKey;
+    this.stats.todayPnlUSDT = 0;
+  }
+
+  private pauseWithGuardrail(reason: string): void {
+    this.state = {
+      ...this.state,
+      paused: true,
+      running: this.state.running
+    };
+    this.stats.guardrailPauseReason = reason;
+    this.deps.emitLog?.(`Guardrail pause: ${reason}`);
+  }
+
+  private async cancelSymbolPendingOrder(
+    symbolState: SymbolRuntimeState,
+    marketState: MarketState,
+    status: 'CANCELLED' | 'EXPIRED'
+  ): Promise<void> {
+    if (!symbolState.pendingOrder) {
+      return;
+    }
+
+    const cancelledOrder = symbolState.pendingOrder;
+    if (this.state.config?.mode === 'demo' && status === 'CANCELLED') {
+      const removed = this.demoQueue.removePendingJob(symbolState.symbol);
+      if (!removed && cancelledOrder.sentToExchange && this.deps.demoTradeClient) {
+        await this.deps.demoTradeClient.cancelOrder({
+          symbol: symbolState.symbol,
+          orderId: cancelledOrder.orderId,
+          orderLinkId: cancelledOrder.orderLinkId
+        });
+      }
+    }
+
+    symbolState.pendingOrder = null;
+    symbolState.demo = null;
+    symbolState.fsmState = 'IDLE';
+    symbolState.holdStartTs = null;
+    this.resetBaseline(symbolState, marketState);
+    this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status, order: cancelledOrder });
+    this.updateSummaryCounts();
+    this.persistSnapshot();
   }
 
   private roundQty(qty: number): number {

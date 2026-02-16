@@ -76,6 +76,15 @@ export async function getBotStats(): Promise<{ ok: true; stats: BotStats }> {
   return request('/api/bot/stats');
 }
 
+
+export async function killBot(): Promise<{ ok: true; cancelled: number }> {
+  return request('/api/bot/kill', { method: 'POST', body: JSON.stringify({}) });
+}
+
+export async function getBotGuardrails(): Promise<{ ok: true; guardrails: Pick<BotSettings, 'maxActiveSymbols' | 'dailyLossLimitUSDT' | 'maxConsecutiveLosses'> }> {
+  return request('/api/bot/guardrails');
+}
+
 export async function resetBotStats(): Promise<{ ok: true }> {
   return request('/api/bot/stats/reset', { method: 'POST', body: JSON.stringify({}) });
 }

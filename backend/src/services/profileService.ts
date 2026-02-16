@@ -20,7 +20,10 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   marginUSDT: 100,
   leverage: 10,
   tpRoiPct: 1,
-  slRoiPct: 0.7
+  slRoiPct: 0.7,
+  maxActiveSymbols: 5,
+  dailyLossLimitUSDT: 0,
+  maxConsecutiveLosses: 0
 };
 
 const DEFAULT_PROFILES_FILE: ProfilesFile = {
