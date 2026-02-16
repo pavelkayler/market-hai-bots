@@ -69,6 +69,7 @@ const buildIsolatedServer = (options: Parameters<typeof buildServer>[0] = {}) =>
   return buildServer({
     universeFilePath: options.universeFilePath ?? path.join(os.tmpdir(), `universe-${suffix}.json`),
     runtimeSnapshotFilePath: options.runtimeSnapshotFilePath ?? path.join(os.tmpdir(), `runtime-${suffix}.json`),
+    journalFilePath: options.journalFilePath ?? path.join(os.tmpdir(), `journal-${suffix}.ndjson`),
     ...options
   });
 };
@@ -86,6 +87,36 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true });
+  });
+
+
+  it('GET /api/journal/download?format=csv returns header and rows', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'journal-route-test-'));
+    const journalFilePath = path.join(tempDir, 'journal.ndjson');
+    await app.close();
+    app = buildIsolatedServer({ journalFilePath });
+
+    await writeFile(
+      journalFilePath,
+      `${JSON.stringify({
+        ts: 1,
+        mode: 'paper',
+        symbol: 'BTCUSDT',
+        event: 'ORDER_PLACED',
+        side: 'LONG',
+        data: { qty: 1.5, limitPrice: 100 }
+      })}\n`,
+      'utf-8'
+    );
+
+    const response = await app.inject({ method: 'GET', url: '/api/journal/download?format=csv' });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.body;
+    expect(body).toContain('ts,mode,symbol,event,side,qty,price,exitPrice,pnlUSDT,detailsJson');
+    expect(body).toContain('BTCUSDT,ORDER_PLACED,LONG,1.5,100');
+
+    await rm(tempDir, { recursive: true, force: true });
   });
 
   it('GET /api/bot/state returns initial bot state', async () => {

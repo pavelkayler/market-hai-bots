@@ -38,6 +38,29 @@ Response shape for `/api/bot/state`:
 ### Orders
 - `POST /api/orders/cancel` `{ "symbol": "BTCUSDT" }`
 
+
+### Journal
+- `GET /api/journal/tail?limit=200`
+  - Response: `{ "ok": true, "entries": [JournalEntry] }`
+- `POST /api/journal/clear`
+  - Response: `{ "ok": true }`
+- `GET /api/journal/download?format=ndjson|json|csv`
+  - `ndjson`: raw append-only file payload.
+  - `json`: JSON array of journal entries.
+  - `csv`: text/csv with columns `ts,mode,symbol,event,side,qty,price,exitPrice,pnlUSDT,detailsJson`.
+
+Journal entry schema:
+```json
+{
+  "ts": 0,
+  "mode": "paper",
+  "symbol": "BTCUSDT",
+  "event": "ORDER_PLACED",
+  "side": "LONG",
+  "data": {}
+}
+```
+
 ### Replay / local recording
 - `POST /api/replay/record/start` `{ "topN": 20, "fileName": "session-2026-02-15.ndjson" }`
   - Response: `{ "ok": true, "path": "backend/data/replay/<fileName>", "startedAt": 0 }`
