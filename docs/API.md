@@ -39,6 +39,25 @@ Response shape for `/api/bot/state`:
 - `POST /api/orders/cancel` `{ "symbol": "BTCUSDT" }`
 
 
+### Doctor
+- `GET /api/doctor`
+  - Response:
+  ```json
+  {
+    "ok": true,
+    "serverTime": 0,
+    "uptimeSec": 0,
+    "version": "0.1.0",
+    "universe": { "ready": false, "symbols": 0 },
+    "market": { "running": true, "subscribed": 0, "updatesPerSec": 0 },
+    "bot": { "running": false, "paused": false, "mode": null, "tf": null, "direction": null },
+    "replay": { "recording": false, "replaying": false, "fileName": null },
+    "journal": { "enabled": true, "path": "backend/data/journal.ndjson", "sizeBytes": 0 },
+    "demo": { "configured": false }
+  }
+  ```
+
+
 ### Journal
 - `GET /api/journal/tail?limit=200`
   - Response: `{ "ok": true, "entries": [JournalEntry] }`
@@ -99,3 +118,7 @@ Journal entry schema:
 - `position:update`
 - `queue:update`
 - `log` (client keeps last 5)
+
+## Error codes
+- `DEMO_NOT_CONFIGURED`
+  - Returned by `POST /api/bot/start` when `mode=demo` is requested without both `DEMO_API_KEY` and `DEMO_API_SECRET` configured.

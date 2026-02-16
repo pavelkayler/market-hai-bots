@@ -2,9 +2,23 @@ import { buildServer } from './server.js';
 
 const app = buildServer();
 
+const isDemoConfigured = (): boolean => {
+  const apiKey = (process.env.DEMO_API_KEY ?? '').trim();
+  const apiSecret = (process.env.DEMO_API_SECRET ?? '').trim();
+  return apiKey.length > 0 && apiSecret.length > 0;
+};
+
 const start = async (): Promise<void> => {
   try {
     await app.ready();
+    app.log.info(
+      {
+        demoConfigured: isDemoConfigured(),
+        bybitRestBaseUrl: process.env.BYBIT_REST ?? 'https://api.bybit.com',
+        bybitDemoRestBaseUrl: process.env.BYBIT_DEMO_REST ?? 'https://api-demo.bybit.com'
+      },
+      'Startup config'
+    );
     await app.listen({ host: '0.0.0.0', port: 8080 });
   } catch (error) {
     app.log.error(error);

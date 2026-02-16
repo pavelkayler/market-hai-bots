@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
 
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
@@ -40,6 +41,8 @@ export function getMarketHub(app: FastifyInstance): MarketHub {
 
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: true });
+  const startedAtMs = Date.now();
+  const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
   const marketClient = options.marketClient ?? new BybitMarketClient();
   const activeSymbolSet = options.activeSymbolSet ?? new ActiveSymbolSet();
@@ -48,7 +51,33 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
   const symbolUpdateBroadcaster = new SymbolUpdateBroadcaster(wsClients, 500);
   const snapshotStore = new FileSnapshotStore(options.runtimeSnapshotFilePath ?? path.resolve(process.cwd(), 'data/runtime.json'));
-  const journalService = new JournalService(options.journalFilePath ?? path.resolve(process.cwd(), 'data/journal.ndjson'));
+  const journalPath = options.journalFilePath ?? path.resolve(process.cwd(), 'data/journal.ndjson');
+  const journalService = new JournalService(journalPath);
+
+  const isDemoConfigured = (): boolean => {
+    const apiKey = (process.env.DEMO_API_KEY ?? '').trim();
+    const apiSecret = (process.env.DEMO_API_SECRET ?? '').trim();
+    return apiKey.length > 0 && apiSecret.length > 0;
+  };
+
+  const getVersion = async (): Promise<string> => {
+    try {
+      const raw = await readFile(packageJsonPath, 'utf-8');
+      const parsed = JSON.parse(raw) as { version?: unknown };
+      return typeof parsed.version === 'string' ? parsed.version : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  };
+
+  const getJournalSizeBytes = async (): Promise<number> => {
+    try {
+      const details = await stat(journalPath);
+      return details.size;
+    } catch {
+      return 0;
+    }
+  };
 
   const broadcast = (type: string, payload: unknown): void => {
     const message = JSON.stringify({ type, ts: Date.now(), payload });
@@ -208,6 +237,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
     }
 
+    if (config.mode === 'demo' && !isDemoConfigured()) {
+      return reply
+        .code(400)
+        .send({ ok: false, error: { code: 'DEMO_NOT_CONFIGURED', message: 'Demo mode requires DEMO_API_KEY and DEMO_API_SECRET.' } });
+    }
+
     botEngine.setUniverseEntries(universe.symbols);
     botEngine.start(config);
 
@@ -254,6 +289,49 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       activeOrders: state.activeOrders,
       openPositions: state.openPositions,
       startedAt: state.startedAt
+    };
+  });
+
+  app.get('/api/doctor', async () => {
+    const universe = await universeService.get();
+    const replay = replayService.getState();
+    const botState = botEngine.getState();
+    const journalSizeBytes = await getJournalSizeBytes();
+
+    return {
+      ok: true,
+      serverTime: Date.now(),
+      uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
+      version: await getVersion(),
+      universe: {
+        ready: !!universe?.ready,
+        symbols: universe?.symbols.length ?? 0
+      },
+      market: {
+        running: marketHub.isRunning(),
+        subscribed: marketHub.getSubscribedCount(),
+        updatesPerSec: Number(marketHub.getUpdatesPerSecond().toFixed(2))
+      },
+      bot: {
+        running: botState.running,
+        paused: botState.paused,
+        mode: botState.config?.mode ?? null,
+        tf: botState.config?.tf ?? null,
+        direction: botState.config?.direction ?? null
+      },
+      replay: {
+        recording: replay.recording,
+        replaying: replay.replaying,
+        fileName: replay.fileName
+      },
+      journal: {
+        enabled: true,
+        path: journalPath,
+        sizeBytes: journalSizeBytes
+      },
+      demo: {
+        configured: isDemoConfigured()
+      }
     };
   });
 

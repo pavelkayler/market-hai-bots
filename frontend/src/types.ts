@@ -128,3 +128,16 @@ export type WsEnvelope<T = unknown> = {
   ts: number;
   payload: T;
 };
+
+export type DoctorResponse = {
+  ok: true;
+  serverTime: number;
+  uptimeSec: number;
+  version: string;
+  universe: { ready: boolean; symbols: number };
+  market: { running: boolean; subscribed: number; updatesPerSec: number };
+  bot: { running: boolean; paused: boolean; mode: BotMode | null; tf: BotTf | null; direction: BotDirection | null };
+  replay: { recording: boolean; replaying: boolean; fileName: string | null };
+  journal: { enabled: true; path: string; sizeBytes: number };
+  demo: { configured: boolean };
+};
