@@ -1,6 +1,8 @@
 import { request } from 'undici';
 
 import { buildBybitV5Headers } from './bybitSigner.js';
+import { parseOpenOrders, parsePositions } from './parsers.js';
+import type { DemoOpenOrder, DemoPosition } from './parsers.js';
 
 export type DemoCreateOrderParams = {
   symbol: string;
@@ -17,32 +19,7 @@ export type DemoCreateOrderResult = {
   orderLinkId: string;
 };
 
-export type DemoOpenOrder = {
-  orderId?: string;
-  orderLinkId?: string;
-  orderStatus?: string;
-  symbol?: string;
-};
-
-export type DemoPosition = {
-  symbol: string;
-  size: number;
-  entryPrice: number | null;
-  side: string | null;
-  positionIdx: number | null;
-  leverage?: number | null;
-  unrealisedPnl?: number | null;
-};
-
-type DemoPositionListEntry = {
-  positionIdx?: number;
-  symbol?: string;
-  side?: string;
-  size?: string;
-  avgPrice?: string;
-  leverage?: string;
-  unrealisedPnl?: string;
-};
+export type { DemoOpenOrder, DemoPosition };
 
 export interface IDemoTradeClient {
   createLimitOrderWithTpSl(params: DemoCreateOrderParams): Promise<DemoCreateOrderResult>;
@@ -57,7 +34,7 @@ type BybitV5Response = {
   result?: {
     orderId?: string;
     orderLinkId?: string;
-    list?: Array<DemoOpenOrder | DemoPositionListEntry>;
+    list?: unknown[];
   };
 };
 
@@ -131,7 +108,7 @@ export class DemoTradeClient implements IDemoTradeClient {
       throw new Error(`Demo open orders failed: ${json.retCode} ${json.retMsg}`);
     }
 
-    return (json.result?.list ?? []) as DemoOpenOrder[];
+    return parseOpenOrders(json);
   }
 
   async getPosition(symbol: string): Promise<DemoPosition | null> {
@@ -152,20 +129,7 @@ export class DemoTradeClient implements IDemoTradeClient {
       throw new Error(`Demo position list failed: ${json.retCode} ${json.retMsg}`);
     }
 
-    const position = (json.result?.list ?? []).find((entry) => entry.symbol === symbol) as DemoPositionListEntry | undefined;
-    if (!position) {
-      return null;
-    }
-
-    return {
-      symbol,
-      size: Number(position.size ?? '0'),
-      entryPrice: position.avgPrice ? Number(position.avgPrice) : null,
-      side: position.side ?? null,
-      positionIdx: typeof position.positionIdx === 'number' ? position.positionIdx : null,
-      leverage: position.leverage ? Number(position.leverage) : null,
-      unrealisedPnl: position.unrealisedPnl ? Number(position.unrealisedPnl) : null
-    };
+    return parsePositions(json).find((entry) => entry.symbol === symbol) ?? null;
   }
 
   private async post(path: string, body: string): Promise<BybitV5Response> {

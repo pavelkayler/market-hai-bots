@@ -1,59 +1,11 @@
 import WebSocket from 'ws';
 
+import { parseWsTickerEvent } from '../bybit/parsers.js';
 import type { TickerStream, TickerUpdate } from './tickerStream.js';
 
 const BYBIT_PUBLIC_LINEAR_WS_URL = 'wss://stream.bybit.com/v5/public/linear';
 
-const parseFiniteNumber = (value: unknown): number | null => {
-  const parsed = typeof value === 'string' ? Number(value) : typeof value === 'number' ? value : NaN;
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
-const parseTickerUpdate = (message: unknown): TickerUpdate | null => {
-  if (!message || typeof message !== 'object') {
-    return null;
-  }
-
-  const packet = message as {
-    topic?: unknown;
-    data?: unknown;
-    ts?: unknown;
-  };
-
-  if (typeof packet.topic !== 'string' || !packet.topic.startsWith('tickers.')) {
-    return null;
-  }
-
-  const rawData = Array.isArray(packet.data) ? packet.data[0] : packet.data;
-  if (!rawData || typeof rawData !== 'object') {
-    return null;
-  }
-
-  const data = rawData as {
-    symbol?: unknown;
-    markPrice?: unknown;
-    openInterestValue?: unknown;
-  };
-
-  if (typeof data.symbol !== 'string') {
-    return null;
-  }
-
-  const markPrice = parseFiniteNumber(data.markPrice);
-  const openInterestValue = parseFiniteNumber(data.openInterestValue);
-  const ts = parseFiniteNumber(packet.ts);
-
-  if (markPrice === null || openInterestValue === null || ts === null) {
-    return null;
-  }
-
-  return {
-    symbol: data.symbol,
-    markPrice,
-    openInterestValue,
-    ts
-  };
-};
+const parseTickerUpdate = (message: unknown): TickerUpdate | null => parseWsTickerEvent(message);
 
 export class RealBybitWsTickerStream implements TickerStream {
   private socket: WebSocket | null = null;

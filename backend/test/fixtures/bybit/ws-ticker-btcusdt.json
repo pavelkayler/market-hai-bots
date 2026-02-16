@@ -1,0 +1,10 @@
+{
+  "topic": "tickers.BTCUSDT",
+  "type": "snapshot",
+  "ts": 1739942400123,
+  "data": {
+    "symbol": "BTCUSDT",
+    "markPrice": "65000.5",
+    "openInterestValue": "123456789.01"
+  }
+}
