@@ -1,5 +1,7 @@
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+
+import JSZip from 'jszip';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -168,6 +170,66 @@ describe('server routes', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+
+
+  it('GET /api/journal/tail returns last N entries', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'journal-tail-route-test-'));
+    const journalFilePath = path.join(tempDir, 'journal.ndjson');
+    await app.close();
+    app = buildIsolatedServer({ journalFilePath });
+
+    await writeFile(
+      journalFilePath,
+      [
+        { ts: 1, mode: 'paper', symbol: 'BTCUSDT', event: 'SIGNAL', side: 'LONG', data: {} },
+        { ts: 2, mode: 'paper', symbol: 'ETHUSDT', event: 'ORDER_PLACED', side: 'SHORT', data: {} },
+        { ts: 3, mode: 'paper', symbol: 'SOLUSDT', event: 'POSITION_OPENED', side: 'LONG', data: {} }
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n') + '\n',
+      'utf-8'
+    );
+
+    const response = await app.inject({ method: 'GET', url: '/api/journal/tail?limit=2' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      ok: true,
+      entries: [
+        { ts: 2, mode: 'paper', symbol: 'ETHUSDT', event: 'ORDER_PLACED', side: 'SHORT', data: {} },
+        { ts: 3, mode: 'paper', symbol: 'SOLUSDT', event: 'POSITION_OPENED', side: 'LONG', data: {} }
+      ]
+    });
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('GET /api/export/pack returns zip containing expected files', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'export-pack-route-test-'));
+    const universeFilePath = path.join(tempDir, 'universe.json');
+    const runtimeSnapshotFilePath = path.join(tempDir, 'runtime.json');
+    const profileFilePath = path.join(tempDir, 'profiles.json');
+    const journalFilePath = path.join(tempDir, 'journal.ndjson');
+
+    await writeFile(universeFilePath, '{"ready":true}', 'utf-8');
+    await writeFile(runtimeSnapshotFilePath, '{"running":false}', 'utf-8');
+    await writeFile(profileFilePath, '{"activeProfile":"default"}', 'utf-8');
+    await writeFile(journalFilePath, '{"ts":1}\n', 'utf-8');
+
+    await app.close();
+    app = buildIsolatedServer({ universeFilePath, runtimeSnapshotFilePath, profileFilePath, journalFilePath });
+
+    const response = await app.inject({ method: 'GET', url: '/api/export/pack' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('application/zip');
+
+    const zip = await JSZip.loadAsync(response.rawPayload);
+    const names = Object.keys(zip.files).sort();
+    expect(names).toEqual(['journal.ndjson', 'meta.json', 'profiles.json', 'runtime.json', 'universe.json']);
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
 
   it('GET /api/bot/guardrails returns defaults before start', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/bot/guardrails' });

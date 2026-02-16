@@ -8,6 +8,7 @@ import {
   clearUniverse,
   createUniverse,
   deleteProfile,
+  downloadExportPack,
   downloadJournal,
   downloadProfiles,
   downloadUniverseJson,
@@ -182,6 +183,8 @@ export function BotPage({
   const [replayFiles, setReplayFiles] = useState<string[]>([]);
   const [journalLimit, setJournalLimit] = useState<number>(200);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [dashboardEntries, setDashboardEntries] = useState<JournalEntry[]>([]);
+  const [dashboardFetchedAt, setDashboardFetchedAt] = useState<number | null>(null);
   const profileUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -583,16 +586,30 @@ export function BotPage({
     setJournalEntries(response.entries);
   };
 
+  const refreshDashboardEvents = useCallback(async () => {
+    const response = await getJournalTail(20);
+    setDashboardEntries(response.entries);
+    setDashboardFetchedAt(Date.now());
+  }, []);
+
   useEffect(() => {
     void refreshJournal();
+  }, [journalLimit]);
+
+  useEffect(() => {
+    void refreshDashboardEvents();
+    if (!botState.running) {
+      return;
+    }
+
     const interval = window.setInterval(() => {
-      void refreshJournal();
-    }, 8000);
+      void refreshDashboardEvents();
+    }, 12000);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [journalLimit]);
+  }, [botState.running, refreshDashboardEvents]);
 
   const handleClearJournal = async () => {
     if (!window.confirm('Clear journal entries? This cannot be undone.')) {
@@ -627,6 +644,24 @@ export function BotPage({
     }
   };
 
+  const handleDownloadExportPack = async () => {
+    setError('');
+    try {
+      const blob = await downloadExportPack();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `export-pack-${new Date().toISOString().replaceAll(':', '-')}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus('Export pack download started');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const handleResetStats = async () => {
     if (!window.confirm('Reset bot performance stats?')) {
       return;
@@ -646,6 +681,8 @@ export function BotPage({
 
   const winPct = botStats.totalTrades > 0 ? (botStats.wins / botStats.totalTrades) * 100 : 0;
   const lossPct = botStats.totalTrades > 0 ? (botStats.losses / botStats.totalTrades) * 100 : 0;
+  const dashboardEvents = dashboardEntries.slice(-10).reverse();
+  const dashboardLatencyMs = dashboardFetchedAt ? Math.max(0, Date.now() - dashboardFetchedAt) : null;
 
   const formatJournalSummary = (entry: JournalEntry): string => {
     const qty = typeof entry.data.qty === 'number' ? `qty ${entry.data.qty}` : null;
@@ -665,6 +702,86 @@ export function BotPage({
 
   return (
     <Row className="g-3">
+      <Col md={12}>
+        <Card>
+          <Card.Header>Dashboard</Card.Header>
+          <Card.Body>
+            <Row className="g-3">
+              <Col md={3}>
+                <div><strong>Trades:</strong> {botStats.totalTrades}</div>
+                <div><strong>Winrate:</strong> {botStats.winratePct.toFixed(1)}%</div>
+                <div><strong>PnL:</strong> {formatPnl(botStats.pnlUSDT)} USDT</div>
+                <div><strong>Today:</strong> {formatPnl(botStats.todayPnlUSDT)} USDT</div>
+                <div><strong>Loss streak:</strong> {botStats.lossStreak}</div>
+                <div><strong>Guardrail:</strong> {botStats.guardrailPauseReason ?? '-'}</div>
+              </Col>
+              <Col md={3}>
+                <div><strong>Bot:</strong> {botState.running ? (botState.paused ? 'paused' : 'running') : 'stopped'}</div>
+                <div><strong>Mode:</strong> {botState.mode ?? '-'}</div>
+                <div><strong>TF:</strong> {botState.tf ?? '-'}</div>
+                <div><strong>Direction:</strong> {botState.direction ?? '-'}</div>
+              </Col>
+              <Col md={3}>
+                <div><strong>Queue depth:</strong> {botState.queueDepth}</div>
+                <div><strong>Active orders:</strong> {botState.activeOrders}</div>
+                <div><strong>Open positions:</strong> {botState.openPositions}</div>
+              </Col>
+              <Col md={3}>
+                <div><strong>Symbol updates/s:</strong> {symbolUpdatesPerSecond.toFixed(2)}</div>
+                <div><strong>Journal age:</strong> {dashboardLatencyMs === null ? '-' : `${dashboardLatencyMs}ms`}</div>
+                <div><strong>Last event:</strong> {dashboardEntries.length === 0 ? '-' : new Date(dashboardEntries[dashboardEntries.length - 1].ts).toLocaleTimeString()}</div>
+              </Col>
+            </Row>
+
+            <div className="d-flex flex-wrap gap-2 mt-3">
+              <Button variant="outline-primary" onClick={() => void refreshDashboardEvents()}>
+                Refresh
+              </Button>
+              <Button variant="outline-secondary" onClick={() => void handleDownloadJournal('csv')}>
+                Download CSV
+              </Button>
+              <Button variant="outline-secondary" onClick={() => void handleDownloadJournal('ndjson')}>
+                Download NDJSON
+              </Button>
+              <Button variant="outline-success" onClick={() => void handleDownloadExportPack()}>
+                Download Export Pack
+              </Button>
+            </div>
+
+            <div className="mt-3">
+              <strong>Last events</strong>
+              <Table bordered striped size="sm" className="mt-2 mb-0">
+                <thead>
+                  <tr>
+                    <th>ts</th>
+                    <th>event</th>
+                    <th>symbol</th>
+                    <th>side</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboardEvents.map((entry) => (
+                    <tr key={`dash-${entry.ts}-${entry.symbol}-${entry.event}`}>
+                      <td>{new Date(entry.ts).toLocaleTimeString()}</td>
+                      <td>{entry.event}</td>
+                      <td>{entry.symbol}</td>
+                      <td>{entry.side ?? '-'}</td>
+                    </tr>
+                  ))}
+                  {dashboardEvents.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="text-center">
+                        No recent events
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </Table>
+            </div>
+          </Card.Body>
+        </Card>
+      </Col>
+
       <Col md={6}>
         <Card>
           <Card.Header>Universe</Card.Header>

@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
 
+import JSZip from 'jszip';
+
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -93,6 +95,22 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     } catch {
       return 0;
     }
+  };
+
+  const appendOpsJournalEvent = async (event: JournalEntry['event']): Promise<void> => {
+    const mode = botEngine.getState().config?.mode;
+    if (!mode) {
+      return;
+    }
+
+    await journalService.append({
+      ts: Date.now(),
+      mode,
+      symbol: 'SYSTEM',
+      event,
+      side: null,
+      data: {}
+    });
   };
 
   const broadcast = (type: string, payload: unknown): void => {
@@ -371,6 +389,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/bot/pause', async () => {
     botEngine.pause();
+    await appendOpsJournalEvent('BOT_PAUSE');
     return { ok: true, ...botEngine.getState() };
   });
 
@@ -387,6 +406,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     botEngine.resume(true);
+    await appendOpsJournalEvent('BOT_RESUME');
     return { ok: true, ...botEngine.getState() };
   });
 
@@ -410,6 +430,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/bot/kill', async () => {
     const cancelled = await botEngine.killSwitch((symbol) => marketHub.getState(symbol));
+    await appendOpsJournalEvent('BOT_KILL');
     return { ok: true, cancelled };
   });
 
@@ -592,6 +613,47 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     });
 
     return reply.type('text/csv').send([header, ...rows].join('\n'));
+  });
+
+  app.get('/api/export/pack', async (request, reply) => {
+    const zip = new JSZip();
+    const missingFiles: string[] = [];
+
+    const readOrEmpty = async (filePath: string): Promise<string> => {
+      try {
+        return await readFile(filePath, 'utf-8');
+      } catch {
+        missingFiles.push(path.basename(filePath));
+        return '';
+      }
+    };
+
+    const universePath = options.universeFilePath ?? path.resolve(process.cwd(), 'data/universe.json');
+    const runtimePath = options.runtimeSnapshotFilePath ?? path.resolve(process.cwd(), 'data/runtime.json');
+    const profilesPath = options.profileFilePath ?? path.resolve(process.cwd(), 'data/profiles.json');
+
+    zip.file('universe.json', await readOrEmpty(universePath));
+    zip.file('profiles.json', await readOrEmpty(profilesPath));
+    zip.file('runtime.json', await readOrEmpty(runtimePath));
+    zip.file('journal.ndjson', await readOrEmpty(journalPath));
+
+    zip.file(
+      'meta.json',
+      JSON.stringify(
+        {
+          ts: Date.now(),
+          version: await getVersion(),
+          missing: missingFiles
+        },
+        null,
+        2
+      )
+    );
+
+    const payload = await zip.generateAsync({ type: 'nodebuffer' });
+    reply.header('Content-Type', 'application/zip');
+    reply.header('Content-Disposition', `attachment; filename=export-pack-${Date.now()}.zip`);
+    return reply.send(payload);
   });
 
   app.post('/api/orders/cancel', async (request, reply) => {

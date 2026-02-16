@@ -149,7 +149,10 @@ export type JournalEntry = {
     | 'ORDER_CANCELLED'
     | 'ORDER_EXPIRED'
     | 'POSITION_OPENED'
-    | 'POSITION_CLOSED';
+    | 'POSITION_CLOSED'
+    | 'BOT_PAUSE'
+    | 'BOT_RESUME'
+    | 'BOT_KILL';
   side: 'LONG' | 'SHORT' | null;
   data: Record<string, unknown>;
 };

@@ -15,6 +15,19 @@ Backend must run on http://localhost:8080
    - `DEMO_API_SECRET=...`
 3. Keep `BYBIT_DEMO_REST=https://api-demo.bybit.com` for demo REST trading.
 
+
+## Data files & export pack
+Runtime data is stored under `backend/data/*`:
+- `backend/data/universe.json`
+- `backend/data/profiles.json`
+- `backend/data/runtime.json`
+- `backend/data/journal.ndjson`
+- `backend/data/replay/*.ndjson`
+
+For debugging/sharing, download a single bundle via `GET /api/export/pack`.
+The ZIP includes `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`, and `meta.json`.
+If any source file is missing, an empty placeholder is included and listed in `meta.json.missing`.
+
 ## Troubleshooting with Doctor
 Use `GET /api/doctor` to validate local setup quickly:
 - `universe.ready=false`: create universe first (`POST /api/universe/create`).

@@ -164,6 +164,21 @@ Journal entry schema:
 }
 ```
 
+Journal ops events:
+- `BOT_PAUSE`
+- `BOT_RESUME`
+- `BOT_KILL`
+
+### Export
+- `GET /api/export/pack`
+  - Returns `application/zip` containing:
+    - `universe.json`
+    - `profiles.json`
+    - `runtime.json`
+    - `journal.ndjson`
+    - `meta.json` (`{ ts, version, missing[] }`)
+  - Missing files are included as empty placeholders and listed in `meta.json.missing`.
+
 ### Replay / local recording
 - `POST /api/replay/record/start` `{ "topN": 20, "fileName": "session-2026-02-15.ndjson" }`
   - Response: `{ "ok": true, "path": "backend/data/replay/<fileName>", "startedAt": 0 }`

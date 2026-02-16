@@ -174,6 +174,17 @@ export async function downloadJournal(format: 'ndjson' | 'json' | 'csv'): Promis
   return response.blob();
 }
 
+
+export async function downloadExportPack(): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/api/export/pack`);
+  if (!response.ok) {
+    const body = (await response.json()) as { error?: string };
+    throw new ApiRequestError(body.error ?? `HTTP ${response.status}`, body.error);
+  }
+
+  return response.blob();
+}
+
 export async function getDoctor(): Promise<DoctorResponse> {
   return request('/api/doctor');
 }
