@@ -1,4 +1,4 @@
-import type { BotSettings, BotState, JournalEntry, ReplaySpeed, ReplayState, UniverseState } from './types';
+import type { BotSettings, BotState, DoctorResponse, JournalEntry, ReplaySpeed, ReplayState, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -155,4 +155,8 @@ export async function downloadJournal(format: 'ndjson' | 'json' | 'csv'): Promis
   }
 
   return response.blob();
+}
+
+export async function getDoctor(): Promise<DoctorResponse> {
+  return request('/api/doctor');
 }

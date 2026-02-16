@@ -14,6 +14,8 @@ type MarketHubOptions = {
 
 export class MarketHub {
   private readonly states = new Map<string, MarketState>();
+  private readonly subscribedSymbols = new Set<string>();
+  private readonly updateTimestampsMs: number[] = [];
   private readonly stateUpdateListeners = new Set<(symbol: string, state: MarketState) => void>();
   private running = false;
   private readonly tickerStream: TickerStream;
@@ -46,6 +48,11 @@ export class MarketHub {
 
   async setUniverseSymbols(symbols: string[]): Promise<void> {
     const activeSymbols = new Set(symbols);
+    this.subscribedSymbols.clear();
+    for (const symbol of activeSymbols) {
+      this.subscribedSymbols.add(symbol);
+    }
+
     for (const symbol of this.states.keys()) {
       if (!activeSymbols.has(symbol)) {
         this.states.delete(symbol);
@@ -68,6 +75,16 @@ export class MarketHub {
     return Object.fromEntries(this.states.entries());
   }
 
+  getSubscribedCount(): number {
+    return this.subscribedSymbols.size;
+  }
+
+  getUpdatesPerSecond(windowMs = 5000): number {
+    const nowMs = Date.now();
+    this.pruneOldUpdates(nowMs, windowMs);
+    return this.updateTimestampsMs.length / (windowMs / 1000);
+  }
+
   onStateUpdate(handler: (symbol: string, state: MarketState) => void): () => void {
     this.stateUpdateListeners.add(handler);
     return () => {
@@ -76,6 +93,9 @@ export class MarketHub {
   }
 
   private handleTickerUpdate(update: TickerUpdate): void {
+    this.updateTimestampsMs.push(Date.now());
+    this.pruneOldUpdates(Date.now(), 5000);
+
     const nextState: MarketState = {
       markPrice: update.markPrice,
       openInterestValue: update.openInterestValue,
@@ -86,6 +106,13 @@ export class MarketHub {
     this.onMarketStateUpdate?.(update.symbol, nextState);
     for (const listener of this.stateUpdateListeners) {
       listener(update.symbol, nextState);
+    }
+  }
+
+  private pruneOldUpdates(nowMs: number, windowMs: number): void {
+    const minTs = nowMs - windowMs;
+    while (this.updateTimestampsMs.length > 0 && this.updateTimestampsMs[0] < minTs) {
+      this.updateTimestampsMs.shift();
     }
   }
 }

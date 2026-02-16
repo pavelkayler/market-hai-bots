@@ -162,6 +162,93 @@ describe('server routes', () => {
   });
 
 
+
+  it('GET /api/doctor returns diagnostics shape without secrets', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/doctor' });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body).toHaveProperty('serverTime');
+    expect(body).toHaveProperty('uptimeSec');
+    expect(body).toHaveProperty('version');
+    expect(body).toHaveProperty('universe');
+    expect(body).toHaveProperty('market');
+    expect(body).toHaveProperty('bot');
+    expect(body).toHaveProperty('replay');
+    expect(body).toHaveProperty('journal');
+    expect(body).toHaveProperty('demo');
+    expect(JSON.stringify(body)).not.toContain('DEMO_API_SECRET');
+  });
+
+  it('POST /api/bot/start returns DEMO_NOT_CONFIGURED for demo mode without env keys', async () => {
+    const prevKey = process.env.DEMO_API_KEY;
+    const prevSecret = process.env.DEMO_API_SECRET;
+    delete process.env.DEMO_API_KEY;
+    delete process.env.DEMO_API_SECRET;
+
+    try {
+      app = buildIsolatedServer({
+        marketClient: new FakeMarketClient(
+          [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+          new Map([
+            [
+              'BTCUSDT',
+              {
+                symbol: 'BTCUSDT',
+                turnover24h: 12000000,
+                highPrice24h: 110,
+                lowPrice24h: 100,
+                markPrice: 100,
+                openInterestValue: 100000
+              }
+            ]
+          ])
+        )
+      });
+
+      await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/bot/start',
+        payload: {
+          mode: 'demo',
+          direction: 'long',
+          tf: 1,
+          holdSeconds: 1,
+          priceUpThrPct: 1,
+          oiUpThrPct: 1,
+          marginUSDT: 100,
+          leverage: 2,
+          tpRoiPct: 1,
+          slRoiPct: 1
+        }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        ok: false,
+        error: {
+          code: 'DEMO_NOT_CONFIGURED',
+          message: 'Demo mode requires DEMO_API_KEY and DEMO_API_SECRET.'
+        }
+      });
+    } finally {
+      if (prevKey === undefined) {
+        delete process.env.DEMO_API_KEY;
+      } else {
+        process.env.DEMO_API_KEY = prevKey;
+      }
+
+      if (prevSecret === undefined) {
+        delete process.env.DEMO_API_SECRET;
+      } else {
+        process.env.DEMO_API_SECRET = prevSecret;
+      }
+    }
+  });
+
   it('universe create/get/refresh/clear persists and reloads state', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-test-'));
     const universeFilePath = path.join(tempDir, 'data', 'universe.json');
@@ -444,9 +531,15 @@ describe('server routes', () => {
   });
 
   it('GET /api/bot/state reflects demo queueDepth', async () => {
-    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
-    const tickerStream = new FakeTickerStream();
-    app = buildIsolatedServer({
+    const prevKey = process.env.DEMO_API_KEY;
+    const prevSecret = process.env.DEMO_API_SECRET;
+    process.env.DEMO_API_KEY = 'demo-key';
+    process.env.DEMO_API_SECRET = 'demo-secret';
+
+    try {
+      let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+      const tickerStream = new FakeTickerStream();
+      app = buildIsolatedServer({
       now: () => now,
       tickerStream,
       demoTradeClient: new BlockingDemoTradeClient(),
@@ -492,9 +585,22 @@ describe('server routes', () => {
     now += 1100;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
 
-    const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
-    expect(response.statusCode).toBe(200);
-    expect((response.json() as { queueDepth: number }).queueDepth).toBeGreaterThan(0);
+      const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
+      expect(response.statusCode).toBe(200);
+      expect((response.json() as { queueDepth: number }).queueDepth).toBeGreaterThan(0);
+    } finally {
+      if (prevKey === undefined) {
+        delete process.env.DEMO_API_KEY;
+      } else {
+        process.env.DEMO_API_KEY = prevKey;
+      }
+
+      if (prevSecret === undefined) {
+        delete process.env.DEMO_API_SECRET;
+      } else {
+        process.env.DEMO_API_SECRET = prevSecret;
+      }
+    }
   });
 
 
