@@ -35,8 +35,9 @@ export class ActiveSymbolSet {
 
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
-const VOLATILITY_DEFINITION = '24h range % = (high24h-low24h)/low24h*100' as const;
-const TURNOVER_DEFINITION = '24h turnover in USDT from Bybit ticker (turnover24h or turnover24hValue)' as const;
+const VOLATILITY_DEFINITION = 'vol24hRangePct = (high24h-low24h)/low24h*100 (guard: low24h > 0); this is a 24h range metric, not intra-candle volatility.' as const;
+const TURNOVER_DEFINITION = 'turnover24hUSDT = 24h turnover in USDT from Bybit ticker (turnover24h or turnover24hValue).' as const;
+const METRIC_DEFINITION = `${TURNOVER_DEFINITION} ${VOLATILITY_DEFINITION}` as const;
 
 const computeVol24hRangePct = (highPrice24h: number, lowPrice24h: number): number | null => {
   if (lowPrice24h <= 0) {
@@ -64,10 +65,7 @@ export class UniverseService {
     const nextState: UniverseState = {
       createdAt: Date.now(),
       filters: { minTurnover, minVolPct },
-      metricDefinition: {
-        volDefinition: VOLATILITY_DEFINITION,
-        turnoverDefinition: TURNOVER_DEFINITION
-      },
+      metricDefinition: METRIC_DEFINITION,
       symbols: built.entries,
       ready: true,
       totalSymbols: built.totalFetched,
@@ -99,10 +97,7 @@ export class UniverseService {
     const nextState: UniverseState = {
       createdAt: Date.now(),
       filters: { minTurnover: effectiveMinTurnover, minVolPct: effectiveMinVolPct },
-      metricDefinition: {
-        volDefinition: VOLATILITY_DEFINITION,
-        turnoverDefinition: TURNOVER_DEFINITION
-      },
+      metricDefinition: METRIC_DEFINITION,
       symbols: forced.entries,
       ready: true,
       totalSymbols: built.totalFetched,
@@ -381,11 +376,13 @@ export class UniverseService {
       createdAt: parsed.createdAt,
       ready: parsed.ready,
       filters,
-      metricDefinition: {
-        volDefinition: typeof parsed.metricDefinition?.volDefinition === 'string' ? parsed.metricDefinition.volDefinition : VOLATILITY_DEFINITION,
-        turnoverDefinition:
-          typeof parsed.metricDefinition?.turnoverDefinition === 'string' ? parsed.metricDefinition.turnoverDefinition : TURNOVER_DEFINITION
-      },
+      metricDefinition:
+        typeof parsed.metricDefinition === 'string'
+          ? parsed.metricDefinition
+          : typeof (parsed.metricDefinition as { turnoverDefinition?: unknown; volDefinition?: unknown } | undefined)?.turnoverDefinition === 'string' ||
+              typeof (parsed.metricDefinition as { turnoverDefinition?: unknown; volDefinition?: unknown } | undefined)?.volDefinition === 'string'
+            ? `${typeof (parsed.metricDefinition as { turnoverDefinition?: unknown }).turnoverDefinition === 'string' ? (parsed.metricDefinition as { turnoverDefinition: string }).turnoverDefinition : TURNOVER_DEFINITION} ${typeof (parsed.metricDefinition as { volDefinition?: unknown }).volDefinition === 'string' ? (parsed.metricDefinition as { volDefinition: string }).volDefinition : VOLATILITY_DEFINITION}`
+            : `${TURNOVER_DEFINITION} ${VOLATILITY_DEFINITION}`,
       symbols: symbols.map((entry) => ({
         ...entry,
         turnover24hUSDT: entry.turnover24hUSDT ?? entry.turnover24h,

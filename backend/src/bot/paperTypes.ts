@@ -3,6 +3,9 @@ export type PaperPendingOrder = {
   side: 'Buy' | 'Sell';
   limitPrice: number;
   qty: number;
+  markAtSignal?: number;
+  entryOffsetPct?: number;
+  spreadBpsAtEntry?: number | null;
   placedTs: number;
   expiresTs: number;
   tpPrice?: number;
@@ -16,6 +19,11 @@ export type PaperPosition = {
   symbol: string;
   side: 'LONG' | 'SHORT';
   entryPrice: number;
+  markAtSignal?: number;
+  entryLimit?: number;
+  entryOffsetPct?: number;
+  entrySlippageBpsApplied?: number;
+  spreadBpsAtEntry?: number | null;
   qty: number;
   tpPrice: number;
   slPrice: number;
@@ -32,5 +40,8 @@ export type PaperPosition = {
   exitFeeUSDT?: number;
   entryFeeRate?: number;
   exitFeeRate?: number;
+  exitSlippageBpsApplied?: number;
+  spreadBpsAtExit?: number | null;
+  slippageUSDT?: number | null;
   lastPnlUSDT?: number;
 };

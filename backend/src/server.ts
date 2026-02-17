@@ -261,7 +261,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           entryFeeUSDT: payload.entryFeeUSDT,
           exitFeeUSDT: payload.exitFeeUSDT,
           entryFeeRate: payload.entryFeeRate,
-          exitFeeRate: payload.exitFeeRate
+          exitFeeRate: payload.exitFeeRate,
+          entry: payload.entry,
+          exit: payload.exit,
+          impact: payload.impact
         }
       });
     },

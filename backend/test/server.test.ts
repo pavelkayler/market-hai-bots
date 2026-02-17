@@ -294,7 +294,15 @@ describe('server routes', () => {
         bothHadBothCount: 0,
         bothChosenLongCount: 0,
         bothChosenShortCount: 0,
-        bothTieBreakMode: 'shortPriority'
+        bothTieBreakMode: 'shortPriority',
+        totalFeesUSDT: 0,
+        totalSlippageUSDT: 0,
+        avgSpreadBpsEntry: null,
+        avgSpreadBpsExit: null,
+        expectancyUSDT: null,
+        profitFactor: null,
+        avgFeePerTradeUSDT: null,
+        avgNetPerTradeUSDT: null
       }
     });
 
@@ -651,6 +659,7 @@ describe('server routes', () => {
     expect(createResponse.json()).toMatchObject({
       ok: true,
       filters: { minTurnover: 20000000, minVolPct: 5 },
+      metricDefinition: expect.any(String),
       totalFetched: 3,
       passed: 0,
       forcedActive: 0
@@ -668,7 +677,8 @@ describe('server routes', () => {
     expect(getResponse.json()).toMatchObject({
       ok: true,
       ready: true,
-      filters: { minTurnover: 20000000, minVolPct: 5 }
+      filters: { minTurnover: 20000000, minVolPct: 5 },
+      metricDefinition: expect.any(String)
     });
 
     const refreshResponse = await app.inject({
@@ -774,6 +784,7 @@ describe('server routes', () => {
       ready: true,
       contractFilter: 'USDT_LINEAR_PERPETUAL_ONLY',
       filters: { minVolPct: 5, minTurnover: 10000000 },
+      metricDefinition: expect.any(String),
       symbols: [expect.objectContaining({ symbol: 'BTCUSDT' })]
     });
 

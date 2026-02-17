@@ -5,7 +5,7 @@ Percent convention: **`3` means 3%** (not `0.03`).
 ## Definitions (operator quick reference)
 
 - **Percent inputs**: unless explicitly marked otherwise, `3` means **3%**, not `0.03`.
-- **Universe volatility (`vol24hRangePct`)**: `((high24h - low24h) / low24h) * 100` from **24h ticker** data. It is not 1m candle volatility.
+- **What volatility means here (`vol24hRangePct`)**: `((high24h - low24h) / low24h) * 100` from **24h ticker** data. It is not 1m candle volatility.
 - **ROI% to price move**: `roiPct / leverage / 100`.
   - Example: `tpRoiPct=3`, `leverage=10` → price move target is `0.3%`.
 - **Net PnL**: `grossPnl - fees` (entry fee + exit fee).
@@ -19,11 +19,11 @@ Universe uses only **24h ticker metrics**:
 - `minVolPct` compares against `vol24hRangePct` where:
   - `vol24hRangePct = (highPrice24h - lowPrice24h) / lowPrice24h * 100`
 
-Important: last price change (for example `+0.31%`) is **not** volatility for Universe filtering.
+Important: top-bar last price change (for example CoinGlass `+0.31%`) is candle/change momentum, **not** this 24h range metric.
 
 Example:
-- `highPrice24h=0.213`, `lowPrice24h=0.193`
-- `vol24hRangePct = (0.213-0.193)/0.193*100 = 10.36%`
+- `highPrice24h=0.21324`, `lowPrice24h=0.19316`
+- `vol24hRangePct = (0.21324-0.19316)/0.19316*100 ≈ 10.39%`
 - so `minVolPct=10` passes, `minVolPct=12` fails.
 
 
