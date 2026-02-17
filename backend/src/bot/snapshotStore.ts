@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import type { BotConfig, BotStats, DemoRuntimeState, SymbolBaseline, SymbolFsmState } from './botEngine.js';
+import type { BotConfig, BotStats, DemoRuntimeState, EntryReason, SymbolBaseline, SymbolFsmState } from './botEngine.js';
 import type { PaperPendingOrder, PaperPosition } from './paperTypes.js';
 
 export type RuntimeSnapshotSymbol = {
@@ -33,6 +33,10 @@ export type RuntimeSnapshotSymbol = {
     continuationWindowEndBucketStart?: number;
   } | null;
   lastNoEntryReasons?: Array<{ code: string; message: string; value?: number; threshold?: number }>;
+  entryReason?: EntryReason | null;
+  lastPriceDeltaPct?: number | null;
+  lastOiDeltaPct?: number | null;
+  lastSignalCount24h?: number;
 };
 
 export type RuntimeSnapshot = {

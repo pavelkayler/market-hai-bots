@@ -31,7 +31,8 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
     todayPnlUSDT: 0,
     guardrailPauseReason: null,
     long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
-    short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 }
+    short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
+    reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
   });
 
   const selectedMode = botState.mode ?? botState.lastConfig?.mode ?? null;
@@ -167,6 +168,8 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
           <hr />
           <div><strong>LONG</strong> — Trades: {botStats.long.trades}, Winrate: {botStats.long.winratePct.toFixed(2)}%, PnL (USDT): {botStats.long.pnlUSDT.toFixed(2)}</div>
           <div><strong>SHORT</strong> — Trades: {botStats.short.trades}, Winrate: {botStats.short.winratePct.toFixed(2)}%, PnL (USDT): {botStats.short.pnlUSDT.toFixed(2)}</div>
+          <div><strong>Entry reasons</strong> — Long continuation: {botStats.reasonCounts.LONG_CONTINUATION}, Short continuation: {botStats.reasonCounts.SHORT_CONTINUATION}, Short divergence: {botStats.reasonCounts.SHORT_DIVERGENCE}</div>
+
         </Card.Body>
       </Card>
 

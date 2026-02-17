@@ -194,7 +194,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
             markPrice: payload.markPrice,
             oiValue: payload.oiValue,
             priceDeltaPct: payload.priceDeltaPct,
-            oiDeltaPct: payload.oiDeltaPct
+            oiDeltaPct: payload.oiDeltaPct,
+            entryReason: payload.entryReason
           }
         });
       }
@@ -297,7 +298,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       symbolState.pendingOrder,
       symbolState.position,
       botEngine.getOiCandleSnapshot(symbol),
-      symbolState.lastNoEntryReasons
+      symbolState.lastNoEntryReasons,
+      {
+        entryReason: symbolState.entryReason,
+        priceDeltaPct: symbolState.lastPriceDeltaPct,
+        oiDeltaPct: symbolState.lastOiDeltaPct,
+        signalCount24h: symbolState.lastSignalCount24h,
+        signalCounterThreshold: botEngine.getState().config?.signalCounterThreshold
+      }
     );
   };
 

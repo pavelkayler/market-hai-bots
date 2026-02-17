@@ -138,3 +138,49 @@ Given `entry=100`, `qty=1`, `tp=101`, `sl=99`, `maker=0.02%`, `taker=0.055%`:
 - Loss net: `-1.07445`
 
 With these settings, a 50% winrate is still net negative because the loss magnitude and fees outweigh the average win.
+
+## Phases (operator semantics)
+
+- **Signal phase** (`HOLDING_LONG`, `HOLDING_SHORT`, `ARMED_LONG`, `ARMED_SHORT`):
+  signal confirmation is accumulating and/or waiting continuation; **no order exists** and **no position exists**.
+- **Order phase** (`ENTRY_PENDING`):
+  entry order exists (paper pending order or demo queued/sent order); position is still closed.
+- **Position phase** (`POSITION_OPEN`):
+  entry is filled and the position is live; TP/SL are active.
+
+State invariants enforced by engine runtime checks:
+- Signal phase => `pendingOrder == null` and `position == null`
+- Order phase => `pendingOrder != null` and `position == null`
+- Position phase => `position != null`
+
+If an invariant is violated, v1 safe fallback is applied: symbol is logged and reset to `IDLE` (server keeps running).
+
+## Operator QA checklist (Task 31)
+
+1. **Universe**
+   - Create with `minTurnover` and `minVolPct`.
+   - Download `universe.json`.
+   - Open **Universe Symbols**: verify search/sort/pagination and copy symbols.
+   - Verify contract-filter counts are consistent (`symbols` vs `filteredOut`).
+2. **Bot lifecycle**
+   - Start in paper mode and confirm state becomes running.
+   - Pause and verify `paused=true` plus snapshot availability.
+   - Resume and verify state restoration (including universe/runtime context).
+   - Kill and verify pending orders are cancelled, `BOT_KILL` is journaled, and demo open-position monitoring remains active.
+   - Stop and verify `running=false`.
+3. **Orders / Positions / Phase table**
+   - Trigger a confirmed signal and verify `ENTRY_PENDING` appears with entry reason label.
+   - Verify signal-phase rows show baseline/current mark+OI and deltas.
+   - Verify order-phase rows show side/limit/qty/expires/status (queued/sent).
+   - Verify fill transitions to `POSITION_OPEN` with entry/tp/sl/qty.
+   - Verify close returns symbol to `IDLE` and `lastClosed` includes net + fees fields.
+4. **Replay**
+   - Start/stop recording and verify NDJSON file creation.
+   - Start/stop replay and verify live feed is disabled then restored while state updates continue.
+5. **Export pack**
+   - Call `GET /api/export/pack` and verify zip contains:
+     `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`, `meta.json`.
+   - Verify `meta.json` includes version + timestamp + notes placeholder.
+6. **Reset all tables**
+   - Run only while bot is stopped.
+   - Verify runtime/stats/universe/journal/exclusions are reset while profiles are preserved.

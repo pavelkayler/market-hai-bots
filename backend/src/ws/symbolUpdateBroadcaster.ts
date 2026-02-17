@@ -1,4 +1,4 @@
-import type { NoEntryReason, SymbolBaseline, SymbolFsmState } from '../bot/botEngine.js';
+import type { EntryReason, NoEntryReason, SymbolBaseline, SymbolFsmState } from '../bot/botEngine.js';
 import type { PaperPendingOrder, PaperPosition } from '../bot/paperTypes.js';
 import type { MarketState } from '../market/marketHub.js';
 
@@ -17,6 +17,11 @@ type SymbolBroadcastPayload = {
   pendingOrder: PaperPendingOrder | null;
   position: PaperPosition | null;
   topReasons?: NoEntryReason[];
+  entryReason?: EntryReason | null;
+  priceDeltaPct?: number | null;
+  oiDeltaPct?: number | null;
+  signalCount24h?: number;
+  signalCounterThreshold?: number;
 };
 
 export type SymbolUpdateMode = 'single' | 'batch' | 'both';
@@ -96,7 +101,14 @@ export class SymbolUpdateBroadcaster {
       oiCandleDeltaValue: null,
       oiCandleDeltaPct: null
     },
-    topReasons: NoEntryReason[] = []
+    topReasons: NoEntryReason[] = [],
+    signalDiagnostics: {
+      entryReason?: EntryReason | null;
+      priceDeltaPct?: number | null;
+      oiDeltaPct?: number | null;
+      signalCount24h?: number;
+      signalCounterThreshold?: number;
+    } = {}
   ): void {
     const now = Date.now();
     const lastSentAt = this.lastSentAtBySymbol.get(symbol) ?? 0;
@@ -118,7 +130,12 @@ export class SymbolUpdateBroadcaster {
       baseline,
       pendingOrder,
       position,
-      ...(topReasons.length > 0 ? { topReasons } : {})
+      ...(topReasons.length > 0 ? { topReasons } : {}),
+      ...(signalDiagnostics.entryReason !== undefined ? { entryReason: signalDiagnostics.entryReason } : {}),
+      ...(signalDiagnostics.priceDeltaPct !== undefined ? { priceDeltaPct: signalDiagnostics.priceDeltaPct } : {}),
+      ...(signalDiagnostics.oiDeltaPct !== undefined ? { oiDeltaPct: signalDiagnostics.oiDeltaPct } : {}),
+      ...(signalDiagnostics.signalCount24h !== undefined ? { signalCount24h: signalDiagnostics.signalCount24h } : {}),
+      ...(signalDiagnostics.signalCounterThreshold !== undefined ? { signalCounterThreshold: signalDiagnostics.signalCounterThreshold } : {})
     };
 
     if (this.mode === 'single' || this.mode === 'both') {

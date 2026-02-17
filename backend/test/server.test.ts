@@ -286,7 +286,8 @@ describe('server routes', () => {
         todayPnlUSDT: 0,
         guardrailPauseReason: null,
         long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
-        short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 }
+        short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
+        reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
       }
     });
 
