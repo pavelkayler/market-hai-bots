@@ -27,25 +27,36 @@ Use `docs/QA_CHECKLIST.md` for manual steps and record results in `docs/QA_REPOR
 - Both: `npm run dev`
 
 ### Minimal operator flow
-1. **Universe create**
-   - Set `minVolPct`/`minTurnover`, click Create.
+1. **Open Bot page tabs**
+   - `/bot` opens on the **Dashboard** tab by default (operator view: stats, lifecycle, logs, controls).
+   - Open the **Settings** tab for all configuration work (profiles + full settings + universe build controls).
+2. **Universe create**
+   - In **Settings** tab, set `minVolPct`/`minTurnover`, click Create.
    - Verify one of:
     - `READY · Universe ready (N symbols)`
     - `BUILT_EMPTY · Built empty (0 symbols passed filters).`
     - `UPSTREAM_ERROR · Upstream error (last build failed)` with last-good universe still downloadable.
-2. **Start bot and validate lifecycle**
+3. **Start bot and validate lifecycle**
    - Start in paper mode.
    - Confirm signal gating -> `ENTRY_PENDING` -> `POSITION_OPEN` -> `POSITION_CLOSED` journal/stat updates.
-3. **Pause/Resume/Kill**
+4. **Pause/Resume/Kill**
    - Pause sets `paused=true` and snapshot.
    - Resume requires snapshot + ready universe.
    - Kill cancels pending entries; does not force-close open positions.
-4. **Export pack**
+5. **Export pack**
    - Click Export Pack; button is disabled while exporting.
    - Validate zip: `meta.json` always present; optional files included only when present.
-5. **Reset all**
+6. **Reset all**
    - Allowed only when bot is stopped.
    - Clears runtime tables (stats/journal/runtime/universe/exclusions/replay) and preserves profiles.
+
+
+
+### Tab behavior and safety lock
+- **Dashboard tab** is operator-first and does not show configuration inputs, profile CRUD, or universe build/create controls.
+- **Settings tab** contains Profiles, full strategy/risk settings, and Universe controls/diagnostics/tables.
+- When bot is running, the lock banner (**"Settings are locked while the bot is running."**) appears inside **Settings** and settings inputs remain disabled.
+- Operator actions (Pause/Resume/KILL/Stop/Export/Reset) remain available from **Dashboard** while running.
 
 ## Universe filters (24h metrics, v1)
 

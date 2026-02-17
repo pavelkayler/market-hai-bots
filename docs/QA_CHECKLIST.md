@@ -24,8 +24,23 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 
 ---
 
-## A) Universe create/get/refresh states
-1. Open Bot page → Universe card.
+## A) Bot page tabs and content separation
+1. Open `/bot`.
+   - Expected: default selected tab is **Dashboard**.
+   - Expected: no configuration form inputs, no profile CRUD buttons, and no Universe create/refresh/get/clear controls are visible on Dashboard.
+2. Open **Settings** tab.
+   - Expected: Profiles controls (select/save/save-as/delete/set-active/import/export), full settings panel, and Universe controls/diagnostics/symbol table are present.
+3. Start bot (paper or replay), then open **Settings** tab.
+   - Expected: lock banner is shown only in Settings and settings inputs are disabled (values still visible).
+4. While running, switch back to **Dashboard**.
+   - Expected: operator actions and live runtime panels remain available and updating.
+5. Reload page after selecting each tab once.
+   - Expected: selected tab restores from localStorage; default remains Dashboard if localStorage key is absent.
+6. Switch tabs repeatedly while running.
+   - Expected: no WS reconnect loop caused purely by tab switching.
+
+## B) Universe create/get/refresh states
+1. Open Bot page → **Settings** tab → Universe card.
 2. Enter `minVolPct` and optional `minTurnover`, click **Create**.
    - On a live network with valid connectivity/credentials and typical thresholds, expect **READY · Universe ready (N symbols)** with `N > 0`.
    - If it is empty, expect **BUILT_EMPTY · Built empty (0 symbols passed filters).** and ordered buckets: `contractFilterExcluded`, `thresholdFiltered`, `tickerMissing`, `dataUnavailable`, `excluded`.
@@ -35,7 +50,6 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - Expect file download succeeds when a universe has been persisted (including built-empty).
 5. Build an intentionally strict universe (very high filters), click **Create**.
    - Expect **Built empty (0 symbols passed filters).**
-   - Expect active filters + contract rule text and ordered bucket counters (above).
 6. Simulate upstream failure (`UNIVERSE_FORCE_UPSTREAM_ERROR=1`) then click **Refresh**.
    - Expect HTTP 502 surfaced as **UPSTREAM_ERROR · Upstream error (last build failed)** UI.
    - Expect text: **Last good universe is kept; download uses last good.**
@@ -43,14 +57,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 7. Remove `UNIVERSE_FORCE_UPSTREAM_ERROR` and click **Refresh** again.
    - Expect return to ready or built-empty success state.
 
-8. Fixture/mocked run: moderate thresholds with valid perps.
-   - Expect **Ready (N symbols)** with `N > 0` and diagnostics totals showing `validTotal > 0`.
-9. Fixture/mocked run: ticker-missing dataset.
-   - Expect **BUILT_EMPTY** with `diagnostics.excluded.tickerMissing > 0` and `filteredOut.dataUnavailable > 0`.
-10. Fixture/mocked run: all-non-perp dataset.
-   - Expect **Built empty** with contract-filter buckets (`expiring/nonLinear/nonPerp`) > 0 and clear empty-state reason.
-
-## B) Start → signal gating → order → position → close
+## C) Start → signal gating → order → position → close
 1. Ensure universe exists, configure paper settings, click **Start**.
    - Expect bot state shows `running=true`.
 2. Wait for a qualifying signal.
@@ -62,7 +69,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 5. Confirm close (TP/SL/manual scenario).
    - Expect `POSITION_CLOSED` journal entry and stats update (net PnL includes fees).
 
-## C) Pause / Resume / Kill behavior
+## D) Pause / Resume / Kill behavior
 1. Click **Pause** while running.
    - Expect `paused=true`, snapshot available (`hasSnapshot=true`), and success alert.
 2. Click **Resume**.
@@ -70,7 +77,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 3. Click **Kill**.
    - Expect pending entries canceled; open positions are not force-closed.
 
-## D) Ops journaling + export pack
+## E) Ops journaling + export pack
 1. Execute lifecycle ops in order: Pause → Resume → Kill → Stop → Reset All.
 2. Open Journal tail.
    - Expect SYSTEM entries for `BOT_PAUSE`, `BOT_RESUME`, `BOT_KILL`, `SYSTEM_RESET_ALL`.
@@ -86,7 +93,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - Expect `createdAt`, `appVersion`, `notes[]`, `paths`, and optional `counts`.
    - If files are missing, expect diagnostics in `notes[]` (partial export semantics).
 
-## E) Reset all (STOP-only)
+## F) Reset all (STOP-only)
 1. With bot running, click **Reset All**.
    - Expect failure (`BOT_RUNNING` / UI error); no reset performed.
 2. Stop bot, click **Reset All** again.
