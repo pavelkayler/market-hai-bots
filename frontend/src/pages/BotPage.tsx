@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Table } from 'react-bootstrap';
 
 import {
@@ -40,6 +40,8 @@ import {
   uploadProfiles
 } from '../api';
 import type { BotPerSymbolStats, BotSettings, BotState, BotStats, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
+import { useSort } from '../hooks/useSort';
+import type { SortState } from '../utils/sort';
 import { formatDuration } from '../utils/time';
 
 type LogLine = {
@@ -72,81 +74,31 @@ type PerSymbolRow = BotPerSymbolStats & {
 
 const USE_ACTIVE_PROFILE_ON_START_KEY = 'bot.settings.useActiveProfileOnStart.v1';
 
-
-type ActiveSymbolRowProps = {
-  item: SymbolUpdatePayload;
-  onCancel: (symbol: string) => void;
+type ColumnDef<T> = {
+  label: string;
+  sortKey: string;
+  accessor: (row: T) => unknown;
+  align?: 'start' | 'end' | 'center';
 };
 
-const STATE_LABELS: Record<SymbolUpdatePayload['state'], string> = {
-  IDLE: 'Idle',
-  HOLDING_LONG: 'Signal Holding (Long)',
-  HOLDING_SHORT: 'Signal Holding (Short)',
-  ENTRY_PENDING: 'Entry Pending',
-  POSITION_OPEN: 'Position Open'
+type SortableHeaderProps<T> = {
+  column: ColumnDef<T>;
+  sortState: SortState<T>;
+  onSort: (key: string) => void;
 };
 
-function getPhaseLabel(state: SymbolUpdatePayload['state']): 'Signal' | 'Order' | 'Position' | '-' {
-  if (state === 'HOLDING_LONG' || state === 'HOLDING_SHORT') {
-    return 'Signal';
-  }
-  if (state === 'ENTRY_PENDING') {
-    return 'Order';
-  }
-  if (state === 'POSITION_OPEN') {
-    return 'Position';
-  }
-  return '-';
-}
-
-function formatSignalDetails(item: SymbolUpdatePayload): string {
-  if (!item.baseline) {
-    return '-';
-  }
-  const priceDeltaPct = ((item.markPrice - item.baseline.basePrice) / item.baseline.basePrice) * 100;
-  const oiDeltaPct = ((item.openInterestValue - item.baseline.baseOiValue) / item.baseline.baseOiValue) * 100;
-  return `baseline ${item.baseline.basePrice} / ${item.baseline.baseOiValue}, priceDeltaPct ${priceDeltaPct.toFixed(3)}%, oiDeltaPct ${oiDeltaPct.toFixed(3)}%, holdSeconds -`;
-}
-
-function formatOrderDetails(item: SymbolUpdatePayload): string {
-  if (!item.pendingOrder) {
-    return '-';
-  }
-  return `${item.pendingOrder.side} @${item.pendingOrder.limitPrice}, qty ${item.pendingOrder.qty}, expires ${formatSecondsLeft(item.pendingOrder.expiresTs)}`;
-}
-
-function formatPositionDetails(item: SymbolUpdatePayload): string {
-  if (!item.position) {
-    return '-';
-  }
-  const unrealized = typeof item.position.lastPnlUSDT === 'number' ? `, unrealized ${item.position.lastPnlUSDT.toFixed(4)}` : '';
-  return `${item.position.side} entry ${item.position.entryPrice}, tp ${item.position.tpPrice}, sl ${item.position.slPrice}, qty ${item.position.qty}${unrealized}`;
-}
-
-const ActiveSymbolRow = memo(function ActiveSymbolRow({ item, onCancel }: ActiveSymbolRowProps) {
-  const detail =
-    item.state === 'ENTRY_PENDING'
-      ? formatOrderDetails(item)
-      : item.state === 'POSITION_OPEN'
-        ? formatPositionDetails(item)
-        : formatSignalDetails(item);
-
+function SortableHeader<T>({ column, sortState, onSort }: SortableHeaderProps<T>) {
+  const isActive = sortState?.key === column.sortKey;
+  const indicator = isActive ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
+  const className = column.align === 'end' ? 'text-end' : column.align === 'center' ? 'text-center' : undefined;
   return (
-    <tr>
-      <td>{item.symbol}</td>
-      <td>{STATE_LABELS[item.state]}</td>
-      <td>{getPhaseLabel(item.state)}</td>
-      <td>{item.markPrice}</td>
-      <td>{item.openInterestValue}</td>
-      <td>{detail}</td>
-      <td>
-        <Button size="sm" variant="outline-danger" disabled={!item.pendingOrder} onClick={() => onCancel(item.symbol)}>
-          Cancel
-        </Button>
-      </td>
-    </tr>
+    <th role="button" className={className} style={{ cursor: 'pointer' }} onClick={() => onSort(column.sortKey)}>
+      {column.label}
+      {indicator}
+    </th>
   );
-});
+}
+
 
 const EMPTY_BOT_STATS: BotStats = {
   totalTrades: 0,
@@ -203,40 +155,6 @@ function loadUseActiveProfileOnStart(): boolean {
   }
 }
 
-function formatSecondsLeft(expiresTs: number): string {
-  const sec = Math.max(0, Math.floor((expiresTs - Date.now()) / 1000));
-  return `${sec}s`;
-}
-
-type SortDirection = 'asc' | 'desc';
-
-type SortConfig<T> = {
-  key: keyof T;
-  direction: SortDirection;
-};
-
-function stableSortBy<T>(items: T[], getValue: (item: T) => string | number | null | undefined, direction: SortDirection): T[] {
-  return items
-    .map((item, index) => ({ item, index, value: getValue(item) }))
-    .sort((a, b) => {
-      const av = a.value;
-      const bv = b.value;
-      let cmp = 0;
-      if (typeof av === 'number' && typeof bv === 'number') {
-        cmp = av - bv;
-      } else {
-        cmp = String(av ?? '').localeCompare(String(bv ?? ''), undefined, { numeric: true, sensitivity: 'base' });
-      }
-
-      if (cmp === 0) {
-        return a.index - b.index;
-      }
-
-      return direction === 'asc' ? cmp : -cmp;
-    })
-    .map((entry) => entry.item);
-}
-
 export function BotPage({
   botState,
   setBotState,
@@ -260,9 +178,7 @@ export function BotPage({
   const [error, setError] = useState<string>('');
   const [showUniverseSymbols, setShowUniverseSymbols] = useState<boolean>(false);
   const [universeSearch, setUniverseSearch] = useState<string>('');
-  const [universeSort, setUniverseSort] = useState<'turnover' | 'symbol'>('turnover');
   const [excludedSymbols, setExcludedSymbols] = useState<string[]>([]);
-  const [perSymbolSort, setPerSymbolSort] = useState<SortConfig<PerSymbolRow>>({ key: 'symbol', direction: 'asc' });
   const [universePage, setUniversePage] = useState<number>(1);
   const [recordTopN, setRecordTopN] = useState<number>(20);
   const [recordFileName, setRecordFileName] = useState<string>(`session-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.ndjson`);
@@ -305,26 +221,39 @@ export function BotPage({
   const filteredUniverseSymbols = useMemo(() => {
     const symbols = [...(universeState.symbols ?? [])];
     const query = universeSearch.trim().toLowerCase();
-    const searched = query.length === 0 ? symbols : symbols.filter((entry) => entry.symbol.toLowerCase().includes(query));
+    return query.length === 0 ? symbols : symbols.filter((entry) => entry.symbol.toLowerCase().includes(query));
+  }, [universeSearch, universeState.symbols]);
 
-    if (universeSort === 'symbol') {
-      return searched.sort((a, b) => a.symbol.localeCompare(b.symbol));
-    }
+  const universeColumns: ColumnDef<(typeof filteredUniverseSymbols)[number]>[] = useMemo(
+    () => [
+      { label: 'symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
+      { label: 'turnover24h', sortKey: 'turnover24h', accessor: (row) => row.turnover24h, align: 'end' },
+      { label: 'vol24hPct', sortKey: 'vol24hPct', accessor: (row) => row.vol24hPct, align: 'end' },
+      { label: 'forcedActive', sortKey: 'forcedActive', accessor: (row) => (row.forcedActive ? 1 : 0), align: 'center' }
+    ],
+    []
+  );
 
-    return searched.sort((a, b) => b.turnover24h - a.turnover24h);
-  }, [universeSearch, universeSort, universeState.symbols]);
+  const {
+    sortState: universeSortState,
+    sortedRows: sortedUniverseSymbols,
+    setSortKey: setUniverseSortKey
+  } = useSort(filteredUniverseSymbols, { key: 'turnover24h', dir: 'desc' }, {
+    tableId: 'universe-symbols',
+    getSortValue: (row, key) => universeColumns.find((column) => column.sortKey === key)?.accessor(row)
+  });
 
   const pageSize = 50;
-  const universePageCount = Math.max(1, Math.ceil(filteredUniverseSymbols.length / pageSize));
+  const universePageCount = Math.max(1, Math.ceil(sortedUniverseSymbols.length / pageSize));
   const currentUniversePage = Math.min(universePage, universePageCount);
   const paginatedUniverseSymbols = useMemo(() => {
     const start = (currentUniversePage - 1) * pageSize;
-    return filteredUniverseSymbols.slice(start, start + pageSize);
-  }, [currentUniversePage, filteredUniverseSymbols]);
+    return sortedUniverseSymbols.slice(start, start + pageSize);
+  }, [currentUniversePage, sortedUniverseSymbols]);
 
   useEffect(() => {
     setUniversePage(1);
-  }, [universeSearch, universeSort, universeState.symbols]);
+  }, [sortedUniverseSymbols, universeSearch]);
 
   useEffect(() => {
     const refreshReplayState = async () => {
@@ -828,7 +757,6 @@ export function BotPage({
 
   const winPct = botStats.totalTrades > 0 ? (botStats.wins / botStats.totalTrades) * 100 : 0;
   const lossPct = botStats.totalTrades > 0 ? (botStats.losses / botStats.totalTrades) * 100 : 0;
-  const dashboardEvents = dashboardEntries.slice(-10).reverse();
   const dashboardLatencyMs = dashboardFetchedAt ? Math.max(0, Date.now() - dashboardFetchedAt) : null;
 
   const formatJournalSummary = (entry: JournalEntry): string => {
@@ -846,8 +774,25 @@ export function BotPage({
   };
 
 
+  const dashboardTailEntries = useMemo(() => dashboardEntries.slice(-20), [dashboardEntries]);
+  const dashboardColumns: ColumnDef<JournalEntry>[] = useMemo(
+    () => [
+      { label: 'ts', sortKey: 'ts', accessor: (row) => row.ts },
+      { label: 'event', sortKey: 'event', accessor: (row) => row.event },
+      { label: 'symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
+      { label: 'side', sortKey: 'side', accessor: (row) => row.side ?? '' }
+    ],
+    []
+  );
+  const { sortState: dashboardSortState, sortedRows: sortedDashboardRows, setSortKey: setDashboardSortKey } = useSort(
+    dashboardTailEntries,
+    { key: 'ts', dir: 'desc' },
+    { tableId: 'dashboard-events', getSortValue: (row, key) => dashboardColumns.find((column) => column.sortKey === key)?.accessor(row) }
+  );
+  const dashboardEvents = sortedDashboardRows.slice(0, 10);
+
   const perSymbolRows = useMemo(() => {
-    const rows: PerSymbolRow[] = (botStats.perSymbol ?? []).map((entry) => {
+    return (botStats.perSymbol ?? []).map((entry) => {
       const live = symbolMap[entry.symbol];
       return {
         ...entry,
@@ -859,16 +804,87 @@ export function BotPage({
         excluded: excludedSymbols.includes(entry.symbol)
       };
     });
+  }, [botStats.perSymbol, excludedSymbols, symbolMap]);
 
-    return stableSortBy(rows, (item) => item[perSymbolSort.key] as string | number | null | undefined, perSymbolSort.direction);
-  }, [botStats.perSymbol, excludedSymbols, perSymbolSort.direction, perSymbolSort.key, symbolMap]);
+  const perSymbolColumns: ColumnDef<PerSymbolRow>[] = useMemo(
+    () => [
+      { label: 'Symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
+      { label: 'Trades', sortKey: 'trades', accessor: (row) => row.trades, align: 'end' },
+      { label: 'Wins', sortKey: 'wins', accessor: (row) => row.wins, align: 'end' },
+      { label: 'Losses', sortKey: 'losses', accessor: (row) => row.losses, align: 'end' },
+      { label: 'Winrate %', sortKey: 'winratePct', accessor: (row) => row.winratePct, align: 'end' },
+      { label: 'PnL USDT', sortKey: 'pnlUSDT', accessor: (row) => row.pnlUSDT, align: 'end' },
+      { label: 'Long', sortKey: 'longTrades', accessor: (row) => row.longTrades, align: 'end' },
+      { label: 'Short', sortKey: 'shortTrades', accessor: (row) => row.shortTrades, align: 'end' },
+      { label: 'Price', sortKey: 'markPrice', accessor: (row) => row.markPrice, align: 'end' },
+      { label: 'OI candle', sortKey: 'oiCandleValue', accessor: (row) => row.oiCandleValue, align: 'end' },
+      { label: 'OI Δ', sortKey: 'oiCandleDeltaValue', accessor: (row) => row.oiCandleDeltaValue, align: 'end' },
+      { label: 'OI Δ %', sortKey: 'oiCandleDeltaPct', accessor: (row) => row.oiCandleDeltaPct, align: 'end' },
+      { label: 'Last close', sortKey: 'lastClosedTs', accessor: (row) => row.lastClosedTs ?? null, align: 'end' }
+    ],
+    []
+  );
+  const { sortState: perSymbolSortState, sortedRows: sortedPerSymbolRows, setSortKey: setPerSymbolSortKey } = useSort(
+    perSymbolRows,
+    { key: 'pnlUSDT', dir: 'desc' },
+    { tableId: 'per-symbol-performance', getSortValue: (row, key) => perSymbolColumns.find((column) => column.sortKey === key)?.accessor(row) }
+  );
 
-  const setPerSymbolSortKey = (key: keyof PerSymbolRow) => {
-    setPerSymbolSort((prev) => ({
-      key,
-      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
-    }));
-  };
+  const orderRows = useMemo(() => trackedSymbols.filter((item) => item.pendingOrder), [trackedSymbols]);
+  const orderColumns: ColumnDef<SymbolUpdatePayload>[] = useMemo(
+    () => [
+      { label: 'Symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
+      { label: 'Side', sortKey: 'side', accessor: (row) => row.pendingOrder?.side ?? '' },
+      { label: 'Status', sortKey: 'status', accessor: () => 'ENTRY_PENDING' },
+      { label: 'Qty', sortKey: 'qty', accessor: (row) => row.pendingOrder?.qty ?? null, align: 'end' },
+      { label: 'Limit', sortKey: 'limitPrice', accessor: (row) => row.pendingOrder?.limitPrice ?? null, align: 'end' },
+      { label: 'TP', sortKey: 'tpPrice', accessor: (row) => row.position?.tpPrice ?? null, align: 'end' },
+      { label: 'SL', sortKey: 'slPrice', accessor: (row) => row.position?.slPrice ?? null, align: 'end' },
+      { label: 'Created', sortKey: 'createdTs', accessor: (row) => row.pendingOrder?.createdTs ?? null, align: 'end' },
+      { label: 'Expires', sortKey: 'expiresTs', accessor: (row) => row.pendingOrder?.expiresTs ?? null, align: 'end' }
+    ],
+    []
+  );
+  const { sortState: orderSortState, sortedRows: sortedOrderRows, setSortKey: setOrderSortKey } = useSort(orderRows, { key: 'createdTs', dir: 'desc' }, {
+    tableId: 'orders',
+    getSortValue: (row, key) => orderColumns.find((column) => column.sortKey === key)?.accessor(row)
+  });
+
+  const positionRows = useMemo(() => trackedSymbols.filter((item) => item.position), [trackedSymbols]);
+  const positionColumns: ColumnDef<SymbolUpdatePayload>[] = useMemo(
+    () => [
+      { label: 'Symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
+      { label: 'Side', sortKey: 'side', accessor: (row) => row.position?.side ?? '' },
+      { label: 'Qty', sortKey: 'qty', accessor: (row) => row.position?.qty ?? null, align: 'end' },
+      { label: 'Entry', sortKey: 'entryPrice', accessor: (row) => row.position?.entryPrice ?? null, align: 'end' },
+      { label: 'TP', sortKey: 'tpPrice', accessor: (row) => row.position?.tpPrice ?? null, align: 'end' },
+      { label: 'SL', sortKey: 'slPrice', accessor: (row) => row.position?.slPrice ?? null, align: 'end' },
+      { label: 'UnrealizedPnL', sortKey: 'unrealized', accessor: (row) => row.position?.lastPnlUSDT ?? null, align: 'end' },
+      { label: 'Open time', sortKey: 'openedTs', accessor: (row) => row.position?.openedTs ?? null, align: 'end' }
+    ],
+    []
+  );
+  const { sortState: positionSortState, sortedRows: sortedPositionRows, setSortKey: setPositionSortKey } = useSort(
+    positionRows,
+    { key: 'openedTs', dir: 'desc' },
+    { tableId: 'positions', getSortValue: (row, key) => positionColumns.find((column) => column.sortKey === key)?.accessor(row) }
+  );
+
+  const journalColumns: ColumnDef<JournalEntry>[] = useMemo(
+    () => [
+      { label: 'ts', sortKey: 'ts', accessor: (row) => row.ts },
+      { label: 'mode', sortKey: 'mode', accessor: (row) => row.mode },
+      { label: 'symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
+      { label: 'event', sortKey: 'event', accessor: (row) => row.event },
+      { label: 'side', sortKey: 'side', accessor: (row) => row.side ?? '' }
+    ],
+    []
+  );
+  const { sortState: journalSortState, sortedRows: sortedJournalEntries, setSortKey: setJournalSortKey } = useSort(
+    journalEntries,
+    { key: 'ts', dir: 'desc' },
+    { tableId: 'journal', getSortValue: (row, key) => journalColumns.find((column) => column.sortKey === key)?.accessor(row) }
+  );
 
   const handleToggleExclude = async (symbol: string, excluded: boolean) => {
     if (botState.running) {
@@ -944,10 +960,9 @@ export function BotPage({
               <Table bordered striped size="sm" className="mt-2 mb-0">
                 <thead>
                   <tr>
-                    <th>ts</th>
-                    <th>event</th>
-                    <th>symbol</th>
-                    <th>side</th>
+                    {dashboardColumns.map((column) => (
+                      <SortableHeader key={column.sortKey} column={column} sortState={dashboardSortState} onSort={setDashboardSortKey} />
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -1035,46 +1050,36 @@ export function BotPage({
               <div className="mt-3">
                 {!universeState.ready ? <Alert variant="warning">Universe is not ready. Create it first.</Alert> : null}
                 <Row className="g-2 mb-2">
-                  <Col md={8}>
+                  <Col md={12}>
                     <Form.Control
                       placeholder="Search symbol"
                       value={universeSearch}
                       onChange={(event) => setUniverseSearch(event.target.value)}
                     />
                   </Col>
-                  <Col md={4}>
-                    <Form.Select
-                      value={universeSort}
-                      onChange={(event) => setUniverseSort(event.target.value as 'turnover' | 'symbol')}
-                    >
-                      <option value="turnover">Sort: turnover24h desc</option>
-                      <option value="symbol">Sort: symbol A-Z</option>
-                    </Form.Select>
-                  </Col>
                 </Row>
                 <Table bordered striped size="sm" className="mb-2">
                   <thead>
                     <tr>
-                      <th>symbol</th>
-                      <th>turnover24h</th>
-                      <th>vol24hPct</th>
-                      <th>forcedActive</th>
+                      {universeColumns.map((column) => (
+                        <SortableHeader key={column.sortKey} column={column} sortState={universeSortState} onSort={setUniverseSortKey} />
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
                     {paginatedUniverseSymbols.map((entry) => (
                       <tr key={entry.symbol}>
                         <td>{entry.symbol}</td>
-                        <td>{entry.turnover24h.toLocaleString()}</td>
-                        <td>{entry.vol24hPct.toFixed(2)}%</td>
-                        <td>{entry.forcedActive ? <Badge bg="warning" text="dark">forced</Badge> : <Badge bg="secondary">no</Badge>}</td>
+                        <td className="text-end">{entry.turnover24h.toLocaleString()}</td>
+                        <td className="text-end">{entry.vol24hPct.toFixed(2)}%</td>
+                        <td className="text-center">{entry.forcedActive ? <Badge bg="warning" text="dark">forced</Badge> : <Badge bg="secondary">no</Badge>}</td>
                       </tr>
                     ))}
                   </tbody>
                 </Table>
                 <div className="d-flex align-items-center justify-content-between">
                   <small>
-                    Page {currentUniversePage}/{universePageCount} ({filteredUniverseSymbols.length} symbols)
+                    Page {currentUniversePage}/{universePageCount} ({sortedUniverseSymbols.length} symbols)
                   </small>
                   <div className="d-flex gap-2">
                     <Button
@@ -1145,20 +1150,13 @@ export function BotPage({
               <thead>
                 <tr>
                   <th>Exclude</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('symbol')}>Symbol</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('trades')}>Trades</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('winratePct')}>Winrate %</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('pnlUSDT')}>PnL USDT</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('longTrades')}>Long</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('shortTrades')}>Short</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('markPrice')}>Price</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('oiCandleValue')}>OI candle</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('oiCandleDeltaValue')}>OI Δ</th>
-                  <th role="button" onClick={() => setPerSymbolSortKey('lastClosedTs')}>Last closed</th>
+                  {perSymbolColumns.map((column) => (
+                    <SortableHeader key={column.sortKey} column={column} sortState={perSymbolSortState} onSort={setPerSymbolSortKey} />
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {perSymbolRows.map((row) => (
+                {sortedPerSymbolRows.map((row) => (
                   <tr key={row.symbol}>
                     <td>
                       <Button
@@ -1171,20 +1169,23 @@ export function BotPage({
                       </Button>
                     </td>
                     <td>{row.symbol} {row.excluded ? <Badge bg="secondary">excluded</Badge> : null}</td>
-                    <td>{row.trades}</td>
-                    <td>{row.winratePct.toFixed(2)}%</td>
-                    <td>{formatPnl(row.pnlUSDT)}</td>
-                    <td>{row.longTrades} ({row.longTrades > 0 ? ((row.longWins / row.longTrades) * 100).toFixed(1) : '0.0'}%)</td>
-                    <td>{row.shortTrades} ({row.shortTrades > 0 ? ((row.shortWins / row.shortTrades) * 100).toFixed(1) : '0.0'}%)</td>
-                    <td>{row.markPrice === null ? '-' : `${row.markPrice} (BT)`}</td>
-                    <td>{row.oiCandleValue === null ? '-' : row.oiCandleValue.toFixed(2)}</td>
-                    <td>{row.oiCandleDeltaValue === null ? '-' : `${row.oiCandleDeltaValue.toFixed(2)} (${row.oiCandleDeltaPct?.toFixed(2) ?? '-'}%)`}</td>
-                    <td>{row.lastClosedTs ? new Date(row.lastClosedTs).toLocaleTimeString() : '-'}</td>
+                    <td className="text-end">{row.trades}</td>
+                    <td className="text-end">{row.wins}</td>
+                    <td className="text-end">{row.losses}</td>
+                    <td className="text-end">{row.winratePct.toFixed(2)}%</td>
+                    <td className="text-end">{formatPnl(row.pnlUSDT)}</td>
+                    <td className="text-end">{row.longTrades} ({row.longTrades > 0 ? ((row.longWins / row.longTrades) * 100).toFixed(1) : '0.0'}%)</td>
+                    <td className="text-end">{row.shortTrades} ({row.shortTrades > 0 ? ((row.shortWins / row.shortTrades) * 100).toFixed(1) : '0.0'}%)</td>
+                    <td className="text-end">{row.markPrice === null ? '-' : `${row.markPrice} (BT)`}</td>
+                    <td className="text-end">{row.oiCandleValue === null ? '-' : row.oiCandleValue.toFixed(2)}</td>
+                    <td className="text-end">{row.oiCandleDeltaValue === null ? '-' : row.oiCandleDeltaValue.toFixed(2)}</td>
+                    <td className="text-end">{row.oiCandleDeltaPct === null ? '-' : `${row.oiCandleDeltaPct.toFixed(2)}%`}</td>
+                    <td className="text-end">{row.lastClosedTs ? new Date(row.lastClosedTs).toLocaleTimeString() : '-'}</td>
                   </tr>
                 ))}
-                {perSymbolRows.length === 0 ? (
+                {sortedPerSymbolRows.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="text-center">No closed trades yet</td>
+                    <td colSpan={14} className="text-center">No closed trades yet</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -1490,29 +1491,73 @@ export function BotPage({
 
       <Col md={12}>
         <Card>
-          <Card.Header>Orders / Positions</Card.Header>
+          <Card.Header>Orders</Card.Header>
           <Card.Body className="table-responsive">
-            <Table bordered striped size="sm">
+            <Table bordered striped size="sm" className="mb-0">
               <thead>
                 <tr>
-                  <th>symbol</th>
-                  <th>state</th>
-                  <th>phase</th>
-                  <th>markPrice</th>
-                  <th>openInterestValue</th>
-                  <th>details</th>
-                  <th>action</th>
+                  {orderColumns.map((column) => (
+                    <SortableHeader key={column.sortKey} column={column} sortState={orderSortState} onSort={setOrderSortKey} />
+                  ))}
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {trackedSymbols.map((item) => (
-                  <ActiveSymbolRow key={item.symbol} item={item} onCancel={handleCancelOrder} />
-                ))}
-                {trackedSymbols.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="text-center">
-                      No active symbols
+                {sortedOrderRows.map((item) => (
+                  <tr key={`order-${item.symbol}`}>
+                    <td>{item.symbol}</td>
+                    <td>{item.pendingOrder?.side ?? '-'}</td>
+                    <td>ENTRY_PENDING</td>
+                    <td className="text-end">{item.pendingOrder?.qty ?? '-'}</td>
+                    <td className="text-end">{item.pendingOrder?.limitPrice ?? '-'}</td>
+                    <td className="text-end">{item.position?.tpPrice ?? '-'}</td>
+                    <td className="text-end">{item.position?.slPrice ?? '-'}</td>
+                    <td className="text-end">{item.pendingOrder?.createdTs ? new Date(item.pendingOrder.createdTs).toLocaleTimeString() : '-'}</td>
+                    <td className="text-end">{item.pendingOrder?.expiresTs ? new Date(item.pendingOrder.expiresTs).toLocaleTimeString() : '-'}</td>
+                    <td>
+                      <Button size="sm" variant="outline-danger" disabled={!item.pendingOrder} onClick={() => handleCancelOrder(item.symbol)}>
+                        Cancel
+                      </Button>
                     </td>
+                  </tr>
+                ))}
+                {sortedOrderRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="text-center">No active orders</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </Table>
+          </Card.Body>
+        </Card>
+
+        <Card className="mt-3">
+          <Card.Header>Positions</Card.Header>
+          <Card.Body className="table-responsive">
+            <Table bordered striped size="sm" className="mb-0">
+              <thead>
+                <tr>
+                  {positionColumns.map((column) => (
+                    <SortableHeader key={column.sortKey} column={column} sortState={positionSortState} onSort={setPositionSortKey} />
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedPositionRows.map((item) => (
+                  <tr key={`position-${item.symbol}`}>
+                    <td>{item.symbol}</td>
+                    <td>{item.position?.side ?? '-'}</td>
+                    <td className="text-end">{item.position?.qty ?? '-'}</td>
+                    <td className="text-end">{item.position?.entryPrice ?? '-'}</td>
+                    <td className="text-end">{item.position?.tpPrice ?? '-'}</td>
+                    <td className="text-end">{item.position?.slPrice ?? '-'}</td>
+                    <td className="text-end">{item.position?.lastPnlUSDT === undefined ? '-' : item.position.lastPnlUSDT.toFixed(4)}</td>
+                    <td className="text-end">{item.position?.openedTs ? new Date(item.position.openedTs).toLocaleTimeString() : '-'}</td>
+                  </tr>
+                ))}
+                {sortedPositionRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="text-center">No open positions</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -1555,16 +1600,14 @@ export function BotPage({
               <Table bordered striped size="sm">
                 <thead>
                   <tr>
-                    <th>ts</th>
-                    <th>mode</th>
-                    <th>symbol</th>
-                    <th>event</th>
-                    <th>side</th>
+                    {journalColumns.map((column) => (
+                      <SortableHeader key={column.sortKey} column={column} sortState={journalSortState} onSort={setJournalSortKey} />
+                    ))}
                     <th>summary</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {journalEntries.map((entry) => (
+                  {sortedJournalEntries.map((entry) => (
                     <tr key={`${entry.ts}-${entry.symbol}-${entry.event}-${JSON.stringify(entry.data)}`}>
                       <td>{new Date(entry.ts).toLocaleString()}</td>
                       <td>{entry.mode}</td>
@@ -1574,7 +1617,7 @@ export function BotPage({
                       <td>{formatJournalSummary(entry)}</td>
                     </tr>
                   ))}
-                  {journalEntries.length === 0 ? (
+                  {sortedJournalEntries.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="text-center">
                         No journal entries
