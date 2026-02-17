@@ -17,7 +17,9 @@ import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMark
 import { JournalService, type JournalEntry } from './services/journalService.js';
 import { ProfileService } from './services/profileService.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
+import { UniverseExclusionsService } from './services/universeExclusionsService.js';
 import { SymbolUpdateBroadcaster, type SymbolUpdateMode } from './ws/symbolUpdateBroadcaster.js';
+import type { UniverseEntry } from './types/universe.js';
 
 type BuildServerOptions = {
   marketClient?: IBybitMarketClient;
@@ -30,6 +32,7 @@ type BuildServerOptions = {
   wsClients?: Set<{ send: (payload: string) => unknown }>;
   journalFilePath?: string;
   profileFilePath?: string;
+  universeExclusionsFilePath?: string;
 };
 
 const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
@@ -57,6 +60,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const marketClient = options.marketClient ?? new BybitMarketClient();
   const activeSymbolSet = options.activeSymbolSet ?? new ActiveSymbolSet();
   const universeService = new UniverseService(marketClient, activeSymbolSet, app.log, options.universeFilePath);
+  const universeExclusionsService = new UniverseExclusionsService(options.universeExclusionsFilePath ?? path.resolve(process.cwd(), 'data/universe_exclusions.json'));
   const wsClients = options.wsClients ?? new Set<{ send: (payload: string) => unknown }>();
   const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
   const rawMode = process.env.WS_SYMBOL_UPDATE_MODE;
@@ -119,6 +123,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       client.send(message);
       wsFramesSent += 1;
     }
+  };
+
+
+  const getEffectiveUniverseEntries = async (entries: UniverseEntry[]): Promise<UniverseEntry[]> => {
+    const exclusions = await universeExclusionsService.get();
+    const excludedSet = new Set(exclusions.excluded);
+    return entries.filter((entry) => !excludedSet.has(entry.symbol));
   };
 
   const buildBroadcastBotState = () => {
@@ -270,7 +281,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     broadcastBotState();
 
-    symbolUpdateBroadcaster.broadcast(symbol, state, symbolState.fsmState, symbolState.baseline, symbolState.pendingOrder, symbolState.position);
+    symbolUpdateBroadcaster.broadcast(
+      symbol,
+      state,
+      symbolState.fsmState,
+      symbolState.baseline,
+      symbolState.pendingOrder,
+      symbolState.position,
+      botEngine.getOiCandleSnapshot(symbol)
+    );
   };
 
   const marketHub = new MarketHub({
@@ -400,7 +419,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         .send({ ok: false, error: { code: 'DEMO_NOT_CONFIGURED', message: 'Demo mode requires DEMO_API_KEY and DEMO_API_SECRET.' } });
     }
 
-    botEngine.setUniverseEntries(universe.symbols);
+    const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
+    botEngine.setUniverseEntries(effectiveEntries);
     botEngine.start(config);
     broadcastBotState();
 
@@ -427,7 +447,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const universe = await universeService.get();
-    const canRun = !!universe?.ready && universe.symbols.length > 0 && marketHub.isRunning();
+    const effectiveEntries = universe?.ready ? await getEffectiveUniverseEntries(universe.symbols) : [];
+    const canRun = effectiveEntries.length > 0 && marketHub.isRunning();
     if (!canRun) {
       return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }
@@ -699,9 +720,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const result = await universeService.create(body.minVolPct, body.minTurnover);
-    const symbols = result.state.symbols.map((entry) => entry.symbol);
+    await universeExclusionsService.clear();
+    const effectiveEntries = await getEffectiveUniverseEntries(result.state.symbols);
+    const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
-    botEngine.setUniverseEntries(result.state.symbols);
+    botEngine.setUniverseEntries(effectiveEntries);
     symbolUpdateBroadcaster.setTrackedSymbols(symbols);
     const response = {
       ok: true,
@@ -739,9 +762,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }
 
-    const symbols = result.state.symbols.map((entry) => entry.symbol);
+    const effectiveEntries = await getEffectiveUniverseEntries(result.state.symbols);
+    const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
-    botEngine.setUniverseEntries(result.state.symbols);
+    botEngine.setUniverseEntries(effectiveEntries);
     symbolUpdateBroadcaster.setTrackedSymbols(symbols);
 
     const response = {
@@ -763,15 +787,98 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return response;
   });
 
+
+  app.get('/api/universe/exclusions', async () => {
+    const state = await universeExclusionsService.get();
+    return { ok: true, excluded: state.excluded };
+  });
+
+  app.post('/api/universe/exclusions/add', async (request, reply) => {
+    const body = request.body as { symbol?: unknown };
+    const symbol = typeof body?.symbol === 'string' ? body.symbol.trim().toUpperCase() : '';
+    if (!symbol) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_SYMBOL' });
+    }
+
+    const botState = botEngine.getState();
+    if (botState.running) {
+      return reply.code(400).send({ ok: false, error: 'BOT_RUNNING' });
+    }
+
+    const universe = await universeService.get();
+    if (!universe?.ready) {
+      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+    }
+
+    if (!universe.symbols.some((entry) => entry.symbol === symbol)) {
+      return reply.code(400).send({ ok: false, error: 'SYMBOL_NOT_IN_UNIVERSE' });
+    }
+
+    const state = await universeExclusionsService.add(symbol);
+    const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
+    const symbols = effectiveEntries.map((entry) => entry.symbol);
+    await marketHub.setUniverseSymbols(symbols);
+    botEngine.setUniverseEntries(effectiveEntries);
+    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    return { ok: true, excluded: state.excluded };
+  });
+
+  app.post('/api/universe/exclusions/remove', async (request, reply) => {
+    const body = request.body as { symbol?: unknown };
+    const symbol = typeof body?.symbol === 'string' ? body.symbol.trim().toUpperCase() : '';
+    if (!symbol) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_SYMBOL' });
+    }
+
+    const botState = botEngine.getState();
+    if (botState.running) {
+      return reply.code(400).send({ ok: false, error: 'BOT_RUNNING' });
+    }
+
+    const universe = await universeService.get();
+    if (!universe?.ready) {
+      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+    }
+
+    const state = await universeExclusionsService.remove(symbol);
+    const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
+    const symbols = effectiveEntries.map((entry) => entry.symbol);
+    await marketHub.setUniverseSymbols(symbols);
+    botEngine.setUniverseEntries(effectiveEntries);
+    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    return { ok: true, excluded: state.excluded };
+  });
+
+  app.post('/api/universe/exclusions/clear', async (_request, reply) => {
+    const botState = botEngine.getState();
+    if (botState.running) {
+      return reply.code(400).send({ ok: false, error: 'BOT_RUNNING' });
+    }
+
+    const universe = await universeService.get();
+    if (!universe?.ready) {
+      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+    }
+
+    const state = await universeExclusionsService.clear();
+    const symbols = universe.symbols.map((entry) => entry.symbol);
+    await marketHub.setUniverseSymbols(symbols);
+    botEngine.setUniverseEntries(universe.symbols);
+    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    return { ok: true, excluded: state.excluded };
+  });
+
   app.get('/api/universe', async () => {
     const state = await universeService.get();
     if (!state) {
       return { ok: false, ready: false };
     }
 
+    const exclusions = await universeExclusionsService.get();
     return {
       ok: true,
-      ...state
+      ...state,
+      excluded: exclusions.excluded
     };
   });
 
@@ -786,6 +893,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/universe/clear', async () => {
     await universeService.clear();
+    await universeExclusionsService.clear();
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
     botEngine.clearSnapshotState();
@@ -826,14 +934,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const universe = await universeService.get();
-    const universeSymbols = universe?.ready ? universe.symbols.map((entry) => entry.symbol) : [];
+    const universeEntries = universe?.ready ? await getEffectiveUniverseEntries(universe.symbols) : [];
+    const universeSymbols = universeEntries.map((entry) => entry.symbol);
     const runtimeSymbols = botEngine.getRuntimeSymbols();
     const symbols = Array.from(new Set([...universeSymbols, ...runtimeSymbols]));
 
     await marketHub.start();
     await marketHub.setUniverseSymbols(symbols);
     if (universe?.ready) {
-      botEngine.setUniverseEntries(universe.symbols);
+      botEngine.setUniverseEntries(universeEntries);
       const missingRuntimeSymbols = runtimeSymbols.filter((symbol) => !universeSymbols.includes(symbol));
       if (missingRuntimeSymbols.length > 0) {
         botEngine.setUniverseSymbols(Array.from(new Set([...universeSymbols, ...missingRuntimeSymbols])));

@@ -3,6 +3,7 @@ import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Table } from 'rea
 
 import {
   ApiRequestError,
+  addUniverseExclusion,
   cancelOrder,
   clearJournal,
   clearUniverse,
@@ -20,9 +21,11 @@ import {
   getReplayFiles,
   getReplayState,
   getUniverse,
+  getUniverseExclusions,
   killBot,
   pauseBot,
   refreshUniverse,
+  removeUniverseExclusion,
   resetBotStats,
   resumeBot,
   saveProfile,
@@ -35,7 +38,7 @@ import {
   stopReplay,
   uploadProfiles
 } from '../api';
-import type { BotSettings, BotState, BotStats, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
+import type { BotPerSymbolStats, BotSettings, BotState, BotStats, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
 import { formatDuration } from '../utils/time';
 
 type LogLine = {
@@ -56,6 +59,16 @@ type Props = {
 };
 
 const SETTINGS_KEY = 'bot.settings.v1';
+
+type PerSymbolRow = BotPerSymbolStats & {
+  markPrice: number | null;
+  oiCandleValue: number | null;
+  oiPrevCandleValue: number | null;
+  oiCandleDeltaValue: number | null;
+  oiCandleDeltaPct: number | null;
+  excluded: boolean;
+};
+
 const USE_ACTIVE_PROFILE_ON_START_KEY = 'bot.settings.useActiveProfileOnStart.v1';
 
 
@@ -179,6 +192,35 @@ function formatSecondsLeft(expiresTs: number): string {
   return `${sec}s`;
 }
 
+type SortDirection = 'asc' | 'desc';
+
+type SortConfig<T> = {
+  key: keyof T;
+  direction: SortDirection;
+};
+
+function stableSortBy<T>(items: T[], getValue: (item: T) => string | number | null | undefined, direction: SortDirection): T[] {
+  return items
+    .map((item, index) => ({ item, index, value: getValue(item) }))
+    .sort((a, b) => {
+      const av = a.value;
+      const bv = b.value;
+      let cmp = 0;
+      if (typeof av === 'number' && typeof bv === 'number') {
+        cmp = av - bv;
+      } else {
+        cmp = String(av ?? '').localeCompare(String(bv ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+      }
+
+      if (cmp === 0) {
+        return a.index - b.index;
+      }
+
+      return direction === 'asc' ? cmp : -cmp;
+    })
+    .map((entry) => entry.item);
+}
+
 export function BotPage({
   botState,
   setBotState,
@@ -216,6 +258,8 @@ export function BotPage({
   const [showUniverseSymbols, setShowUniverseSymbols] = useState<boolean>(false);
   const [universeSearch, setUniverseSearch] = useState<string>('');
   const [universeSort, setUniverseSort] = useState<'turnover' | 'symbol'>('turnover');
+  const [excludedSymbols, setExcludedSymbols] = useState<string[]>([]);
+  const [perSymbolSort, setPerSymbolSort] = useState<SortConfig<PerSymbolRow>>({ key: 'symbol', direction: 'asc' });
   const [universePage, setUniversePage] = useState<number>(1);
   const [recordTopN, setRecordTopN] = useState<number>(20);
   const [recordFileName, setRecordFileName] = useState<string>(`session-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.ndjson`);
@@ -331,9 +375,23 @@ export function BotPage({
     }
   }, []);
 
+
+  const refreshExclusions = useCallback(async () => {
+    try {
+      const response = await getUniverseExclusions();
+      setExcludedSymbols(response.excluded);
+    } catch {
+      // no-op
+    }
+  }, []);
+
   useEffect(() => {
     void refreshBotStats();
   }, [refreshBotStats]);
+
+  useEffect(() => {
+    void refreshExclusions();
+  }, [refreshExclusions]);
 
   useEffect(() => {
     void refreshBotStats();
@@ -751,6 +809,49 @@ export function BotPage({
     return [qty, price, pnl].filter(Boolean).join(', ') || '-';
   };
 
+
+  const perSymbolRows = useMemo(() => {
+    const rows: PerSymbolRow[] = (botStats.perSymbol ?? []).map((entry) => {
+      const live = symbolMap[entry.symbol];
+      return {
+        ...entry,
+        markPrice: live?.markPrice ?? null,
+        oiCandleValue: live?.oiCandleValue ?? null,
+        oiPrevCandleValue: live?.oiPrevCandleValue ?? null,
+        oiCandleDeltaValue: live?.oiCandleDeltaValue ?? null,
+        oiCandleDeltaPct: live?.oiCandleDeltaPct ?? null,
+        excluded: excludedSymbols.includes(entry.symbol)
+      };
+    });
+
+    return stableSortBy(rows, (item) => item[perSymbolSort.key] as string | number | null | undefined, perSymbolSort.direction);
+  }, [botStats.perSymbol, excludedSymbols, perSymbolSort.direction, perSymbolSort.key, symbolMap]);
+
+  const setPerSymbolSortKey = (key: keyof PerSymbolRow) => {
+    setPerSymbolSort((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const handleToggleExclude = async (symbol: string, excluded: boolean) => {
+    if (botState.running) {
+      return;
+    }
+
+    setError('');
+    try {
+      if (excluded) {
+        await removeUniverseExclusion(symbol);
+      } else {
+        await addUniverseExclusion(symbol);
+      }
+      await Promise.all([syncRest(), refreshExclusions()]);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const disableSettings = botState.running;
 
   return (
@@ -833,6 +934,7 @@ export function BotPage({
               </Table>
             </div>
           </Card.Body>
+
         </Card>
       </Col>
 
@@ -874,6 +976,7 @@ export function BotPage({
                   : '-'}
               </div>
               <div>Symbols: {universeState.symbols?.length ?? 0}</div>
+              <div>Excluded: {excludedSymbols.length}</div>
               <div>Contract filter: USDT Linear PerPETUAL only</div>
               {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? (
                 <div>Filtered out (non-perp/expiring): {universeState.filteredOut.expiringOrNonPerp}</div>
@@ -990,6 +1093,63 @@ export function BotPage({
                 ? `${new Date(botStats.lastClosed.ts).toLocaleString()} ${botStats.lastClosed.symbol} ${formatPnl(botStats.lastClosed.pnlUSDT)}`
                 : '-'}
             </div>
+          </Card.Body>
+
+        </Card>
+      </Col>
+
+      <Col md={12}>
+        <Card className="mt-3">
+          <Card.Header>Per-symbol performance</Card.Header>
+          <Card.Body className="table-responsive">
+            <Table bordered striped size="sm" className="mb-0">
+              <thead>
+                <tr>
+                  <th>Exclude</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('symbol')}>Symbol</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('trades')}>Trades</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('winratePct')}>Winrate %</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('pnlUSDT')}>PnL USDT</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('longTrades')}>Long</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('shortTrades')}>Short</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('markPrice')}>Price</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('oiCandleValue')}>OI candle</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('oiCandleDeltaValue')}>OI Δ</th>
+                  <th role="button" onClick={() => setPerSymbolSortKey('lastClosedTs')}>Last closed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perSymbolRows.map((row) => (
+                  <tr key={row.symbol}>
+                    <td>
+                      <Button
+                        size="sm"
+                        variant={row.excluded ? 'outline-success' : 'outline-danger'}
+                        disabled={botState.running}
+                        onClick={() => void handleToggleExclude(row.symbol, row.excluded)}
+                      >
+                        {row.excluded ? '+' : '-'}
+                      </Button>
+                    </td>
+                    <td>{row.symbol} {row.excluded ? <Badge bg="secondary">excluded</Badge> : null}</td>
+                    <td>{row.trades}</td>
+                    <td>{row.winratePct.toFixed(2)}%</td>
+                    <td>{formatPnl(row.pnlUSDT)}</td>
+                    <td>{row.longTrades} ({row.longTrades > 0 ? ((row.longWins / row.longTrades) * 100).toFixed(1) : '0.0'}%)</td>
+                    <td>{row.shortTrades} ({row.shortTrades > 0 ? ((row.shortWins / row.shortTrades) * 100).toFixed(1) : '0.0'}%)</td>
+                    <td>{row.markPrice === null ? '-' : `${row.markPrice} (BT)`}</td>
+                    <td>{row.oiCandleValue === null ? '-' : row.oiCandleValue.toFixed(2)}</td>
+                    <td>{row.oiCandleDeltaValue === null ? '-' : `${row.oiCandleDeltaValue.toFixed(2)} (${row.oiCandleDeltaPct?.toFixed(2) ?? '-'}%)`}</td>
+                    <td>{row.lastClosedTs ? new Date(row.lastClosedTs).toLocaleTimeString() : '-'}</td>
+                  </tr>
+                ))}
+                {perSymbolRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={11} className="text-center">No closed trades yet</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </Table>
           </Card.Body>
         </Card>
       </Col>

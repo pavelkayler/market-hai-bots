@@ -54,6 +54,24 @@ export type BotStatsSideBreakdown = {
   pnlUSDT: number;
 };
 
+
+export type BotPerSymbolStats = {
+  symbol: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  winratePct: number;
+  pnlUSDT: number;
+  longTrades: number;
+  longWins: number;
+  longLosses: number;
+  shortTrades: number;
+  shortWins: number;
+  shortLosses: number;
+  lastClosedTs?: number | null;
+  lastClosedPnlUSDT?: number | null;
+};
+
 export type BotStats = {
   totalTrades: number;
   wins: number;
@@ -72,6 +90,7 @@ export type BotStats = {
     symbol: string;
     pnlUSDT: number;
   };
+  perSymbol?: BotPerSymbolStats[];
 };
 
 export type UniverseFilters = {
@@ -98,6 +117,7 @@ export type UniverseState = {
   filteredOut?: {
     expiringOrNonPerp: number;
   };
+  excluded?: string[];
 };
 
 export type SymbolBaseline = {
@@ -131,6 +151,10 @@ export type SymbolUpdatePayload = {
   state: 'IDLE' | 'HOLDING_LONG' | 'HOLDING_SHORT' | 'ENTRY_PENDING' | 'POSITION_OPEN';
   markPrice: number;
   openInterestValue: number;
+  oiCandleValue: number | null;
+  oiPrevCandleValue: number | null;
+  oiCandleDeltaValue: number | null;
+  oiCandleDeltaPct: number | null;
   baseline: SymbolBaseline | null;
   pendingOrder: PendingOrder | null;
   position: Position | null;
