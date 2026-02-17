@@ -209,6 +209,27 @@ export type PositionUpdatePayload = {
   exitFeeUSDT?: number;
   entryFeeRate?: number;
   exitFeeRate?: number;
+  entry?: {
+    markAtSignal?: number;
+    entryLimit?: number;
+    fillPrice?: number;
+    entryOffsetPct?: number;
+    slippageBpsApplied?: number;
+    spreadBpsAtEntry?: number | null;
+  };
+  exit?: {
+    tpPrice?: number;
+    slPrice?: number;
+    closePrice?: number;
+    slippageBpsApplied?: number;
+    spreadBpsAtExit?: number | null;
+  };
+  impact?: {
+    grossPnlUSDT?: number;
+    feesUSDT?: number;
+    slippageUSDT?: number | null;
+    netPnlUSDT?: number;
+  };
 };
 
 export type BotStats = {
@@ -232,6 +253,14 @@ export type BotStats = {
   bothChosenLongCount: number;
   bothChosenShortCount: number;
   bothTieBreakMode: BothTieBreak;
+  totalFeesUSDT: number;
+  totalSlippageUSDT: number;
+  avgSpreadBpsEntry: number | null;
+  avgSpreadBpsExit: number | null;
+  expectancyUSDT: number | null;
+  profitFactor: number | null;
+  avgFeePerTradeUSDT: number | null;
+  avgNetPerTradeUSDT: number | null;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -239,6 +268,10 @@ export type BotStats = {
     grossPnlUSDT: number;
     feesUSDT: number;
     netPnlUSDT: number;
+    slippageUSDT: number | null;
+    entry?: PositionUpdatePayload['entry'];
+    exit?: PositionUpdatePayload['exit'];
+    impact?: PositionUpdatePayload['impact'];
     entryFeeUSDT?: number;
     exitFeeUSDT?: number;
     reason: string;
@@ -539,13 +572,25 @@ export class BotEngine {
     bothHadBothCount: 0,
     bothChosenLongCount: 0,
     bothChosenShortCount: 0,
-    bothTieBreakMode: DEFAULT_BOTH_TIE_BREAK
+    bothTieBreakMode: DEFAULT_BOTH_TIE_BREAK,
+    totalFeesUSDT: 0,
+    totalSlippageUSDT: 0,
+    avgSpreadBpsEntry: null,
+    avgSpreadBpsExit: null,
+    expectancyUSDT: null,
+    profitFactor: null,
+    avgFeePerTradeUSDT: null,
+    avgNetPerTradeUSDT: null
   };
   private winPnlSum = 0;
   private lossPnlSum = 0;
   private todayPnlDayKey: string | null = null;
   private readonly perSymbolStats = new Map<string, BotPerSymbolAccumulator>();
   private readonly closedTradesNetWindow: number[] = [];
+  private spreadEntrySumBps = 0;
+  private spreadEntryCount = 0;
+  private spreadExitSumBps = 0;
+  private spreadExitCount = 0;
   private lastEntryPlacedTs = 0;
   private lastNoEntryLogTs = 0;
   private lastPnlSanityWarnTs = 0;
@@ -648,13 +693,25 @@ export class BotEngine {
       bothHadBothCount: 0,
       bothChosenLongCount: 0,
       bothChosenShortCount: 0,
-      bothTieBreakMode: this.state.config?.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK
+      bothTieBreakMode: this.state.config?.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK,
+      totalFeesUSDT: 0,
+      totalSlippageUSDT: 0,
+      avgSpreadBpsEntry: null,
+      avgSpreadBpsExit: null,
+      expectancyUSDT: null,
+      profitFactor: null,
+      avgFeePerTradeUSDT: null,
+      avgNetPerTradeUSDT: null
     };
     this.winPnlSum = 0;
     this.lossPnlSum = 0;
     this.todayPnlDayKey = null;
     this.perSymbolStats.clear();
     this.closedTradesNetWindow.length = 0;
+    this.spreadEntrySumBps = 0;
+    this.spreadEntryCount = 0;
+    this.spreadExitSumBps = 0;
+    this.spreadExitCount = 0;
     this.lastPnlSanityWarnTs = 0;
     this.persistSnapshot();
   }
@@ -838,11 +895,23 @@ export class BotEngine {
         bothChosenLongCount: snapshot.stats.bothChosenLongCount ?? 0,
         bothChosenShortCount: snapshot.stats.bothChosenShortCount ?? 0,
         bothTieBreakMode: snapshot.stats.bothTieBreakMode ?? snapshot.config?.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK,
+        totalFeesUSDT: snapshot.stats.totalFeesUSDT ?? 0,
+        totalSlippageUSDT: snapshot.stats.totalSlippageUSDT ?? 0,
+        avgSpreadBpsEntry: snapshot.stats.avgSpreadBpsEntry ?? null,
+        avgSpreadBpsExit: snapshot.stats.avgSpreadBpsExit ?? null,
+        expectancyUSDT: snapshot.stats.expectancyUSDT ?? null,
+        profitFactor: snapshot.stats.profitFactor ?? null,
+        avgFeePerTradeUSDT: snapshot.stats.avgFeePerTradeUSDT ?? null,
+        avgNetPerTradeUSDT: snapshot.stats.avgNetPerTradeUSDT ?? null,
         ...(snapshot.stats.lastClosed ? { lastClosed: snapshot.stats.lastClosed } : {})
       };
       this.winPnlSum = snapshot.stats.wins * (snapshot.stats.avgWinUSDT ?? 0);
       this.lossPnlSum = snapshot.stats.losses * (snapshot.stats.avgLossUSDT ?? 0);
       this.todayPnlDayKey = new Date(this.now()).toISOString().slice(0, 10);
+      this.spreadEntryCount = snapshot.stats.avgSpreadBpsEntry === null || snapshot.stats.avgSpreadBpsEntry === undefined ? 0 : snapshot.stats.totalTrades;
+      this.spreadEntrySumBps = (snapshot.stats.avgSpreadBpsEntry ?? 0) * this.spreadEntryCount;
+      this.spreadExitCount = snapshot.stats.avgSpreadBpsExit === null || snapshot.stats.avgSpreadBpsExit === undefined ? 0 : snapshot.stats.totalTrades;
+      this.spreadExitSumBps = (snapshot.stats.avgSpreadBpsExit ?? 0) * this.spreadExitCount;
       this.perSymbolStats.clear();
       for (const entry of snapshot.stats.perSymbol ?? []) {
         this.perSymbolStats.set(entry.symbol, {
@@ -1539,6 +1608,9 @@ export class BotEngine {
       side: orderSide,
       limitPrice: entryLimit,
       qty,
+      markAtSignal: marketState.markPrice,
+      entryOffsetPct: off,
+      spreadBpsAtEntry: marketState.spreadBps ?? null,
       placedTs: now,
       expiresTs: now + ONE_HOUR_MS,
       tpPrice: side === 'LONG' ? entryLimit * (1 + tpMovePct) : entryLimit * (1 - tpMovePct),
@@ -1639,6 +1711,11 @@ export class BotEngine {
         symbol: symbolState.symbol,
         side,
         entryPrice: pendingOrder.limitPrice,
+        markAtSignal: pendingOrder.markAtSignal,
+        entryLimit: pendingOrder.limitPrice,
+        entryOffsetPct: pendingOrder.entryOffsetPct,
+        entrySlippageBpsApplied: 0,
+        spreadBpsAtEntry: pendingOrder.spreadBpsAtEntry,
         qty: pendingOrder.qty,
         tpPrice: pendingOrder.tpPrice ?? pendingOrder.limitPrice,
         slPrice: pendingOrder.slPrice ?? pendingOrder.limitPrice,
@@ -1692,9 +1769,58 @@ export class BotEngine {
       status: 'CLOSED',
       position: closedPosition,
       exitPrice: marketState.markPrice,
-      pnlUSDT: 0
+      pnlUSDT: 0,
+      entry: {
+        markAtSignal: closedPosition.markAtSignal,
+        entryLimit: closedPosition.entryLimit,
+        fillPrice: closedPosition.entryPrice,
+        entryOffsetPct: closedPosition.entryOffsetPct,
+        slippageBpsApplied: closedPosition.entrySlippageBpsApplied ?? 0,
+        spreadBpsAtEntry: closedPosition.spreadBpsAtEntry ?? null
+      },
+      exit: {
+        tpPrice: closedPosition.tpPrice,
+        slPrice: closedPosition.slPrice,
+        closePrice: marketState.markPrice,
+        slippageBpsApplied: 0,
+        spreadBpsAtExit: marketState.spreadBps ?? null
+      },
+      impact: {
+        grossPnlUSDT: 0,
+        feesUSDT: 0,
+        slippageUSDT: null,
+        netPnlUSDT: 0
+      }
     });
-    this.recordClosedTrade(symbolState.symbol, closedPosition.side, 0, 0, 0, 'DEMO_CLOSE');
+    this.recordClosedTrade(
+      symbolState.symbol,
+      closedPosition.side,
+      0,
+      0,
+      0,
+      'DEMO_CLOSE',
+      undefined,
+      undefined,
+      closedPosition.openedTs,
+      0,
+      closedPosition.spreadBpsAtEntry ?? null,
+      marketState.spreadBps ?? null,
+      {
+        markAtSignal: closedPosition.markAtSignal,
+        entryLimit: closedPosition.entryLimit,
+        fillPrice: closedPosition.entryPrice,
+        entryOffsetPct: closedPosition.entryOffsetPct,
+        slippageBpsApplied: closedPosition.entrySlippageBpsApplied ?? 0,
+        spreadBpsAtEntry: closedPosition.spreadBpsAtEntry ?? null
+      },
+      {
+        tpPrice: closedPosition.tpPrice,
+        slPrice: closedPosition.slPrice,
+        closePrice: marketState.markPrice,
+        slippageBpsApplied: 0,
+        spreadBpsAtExit: marketState.spreadBps ?? null
+      }
+    );
     this.updateSummaryCounts();
     this.persistSnapshot();
   }
@@ -1735,12 +1861,18 @@ export class BotEngine {
       return;
     }
     const entrySlippageFraction = (this.state.config.paperEntrySlippageBps ?? DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS) / 10_000;
+    const entrySlippageBpsApplied = this.state.config.paperEntrySlippageBps ?? DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS;
     const entryPrice = side === 'LONG' ? filledOrder.limitPrice * (1 + entrySlippageFraction) : filledOrder.limitPrice * (1 - entrySlippageFraction);
 
     const position: PaperPosition = {
       symbol: symbolState.symbol,
       side,
       entryPrice,
+      markAtSignal: filledOrder.markAtSignal,
+      entryLimit: filledOrder.limitPrice,
+      entryOffsetPct: filledOrder.entryOffsetPct,
+      entrySlippageBpsApplied,
+      spreadBpsAtEntry: filledOrder.spreadBpsAtEntry,
       qty: filledQty,
       tpPrice: side === 'LONG' ? entryPrice * (1 + tpMovePct) : entryPrice * (1 - tpMovePct),
       slPrice: side === 'LONG' ? entryPrice * (1 - slMovePct) : entryPrice * (1 + slMovePct),
@@ -1777,15 +1909,19 @@ export class BotEngine {
     const closeReason = slHit ? 'SL' : 'TP';
     const rawExitPrice = slHit ? position.slPrice : position.tpPrice;
     const exitSlippageFraction = (this.state.config?.paperExitSlippageBps ?? DEFAULT_PAPER_EXIT_SLIPPAGE_BPS) / 10_000;
+    const exitSlippageBpsApplied = this.state.config?.paperExitSlippageBps ?? DEFAULT_PAPER_EXIT_SLIPPAGE_BPS;
     const exitPrice = position.side === 'LONG' ? rawExitPrice * (1 - exitSlippageFraction) : rawExitPrice * (1 + exitSlippageFraction);
     const grossPnl = position.side === 'LONG' ? (exitPrice - position.entryPrice) * position.qty : (position.entryPrice - exitPrice) * position.qty;
+    const slippageAbsPerUnitEntry = Math.abs(position.entryPrice - (position.entryLimit ?? position.entryPrice));
+    const slippageAbsPerUnitExit = Math.abs(exitPrice - rawExitPrice);
+    const slippageUSDT = (slippageAbsPerUnitEntry + slippageAbsPerUnitExit) * position.qty;
     // PAPER fee model: entry limit fills are treated as maker; TP/SL closes are taker for conservative expectancy.
     const entryFeeRate = PAPER_FEES.makerFeeRate;
     const exitFeeRate = PAPER_FEES.takerFeeRate;
     const entryFeeUSDT = entryFeeRate * position.qty * position.entryPrice;
     const exitFeeUSDT = exitFeeRate * position.qty * exitPrice;
     const feeTotalUSDT = entryFeeUSDT + exitFeeUSDT;
-    const netPnlUSDT = grossPnl - feeTotalUSDT;
+    const netPnlUSDT = grossPnl - feeTotalUSDT - slippageUSDT;
 
     const closedPosition: PaperPosition = {
       ...position,
@@ -1801,6 +1937,9 @@ export class BotEngine {
       netPnlUSDT,
       entryFeeRate,
       exitFeeRate,
+      exitSlippageBpsApplied,
+      spreadBpsAtExit: marketState.spreadBps ?? null,
+      slippageUSDT,
       lastPnlUSDT: netPnlUSDT
     };
 
@@ -1820,9 +1959,58 @@ export class BotEngine {
       entryFeeUSDT,
       exitFeeUSDT,
       entryFeeRate,
-      exitFeeRate
+      exitFeeRate,
+      entry: {
+        markAtSignal: position.markAtSignal,
+        entryLimit: position.entryLimit,
+        fillPrice: position.entryPrice,
+        entryOffsetPct: position.entryOffsetPct,
+        slippageBpsApplied: position.entrySlippageBpsApplied,
+        spreadBpsAtEntry: position.spreadBpsAtEntry ?? null
+      },
+      exit: {
+        tpPrice: position.tpPrice,
+        slPrice: position.slPrice,
+        closePrice: exitPrice,
+        slippageBpsApplied: exitSlippageBpsApplied,
+        spreadBpsAtExit: marketState.spreadBps ?? null
+      },
+      impact: {
+        grossPnlUSDT: grossPnl,
+        feesUSDT: feeTotalUSDT,
+        slippageUSDT,
+        netPnlUSDT
+      }
     });
-    this.recordClosedTrade(symbolState.symbol, position.side, grossPnl, feeTotalUSDT, netPnlUSDT, closeReason, entryFeeUSDT, exitFeeUSDT, position.openedTs);
+    this.recordClosedTrade(
+      symbolState.symbol,
+      position.side,
+      grossPnl,
+      feeTotalUSDT,
+      netPnlUSDT,
+      closeReason,
+      entryFeeUSDT,
+      exitFeeUSDT,
+      position.openedTs,
+      slippageUSDT,
+      position.spreadBpsAtEntry ?? null,
+      marketState.spreadBps ?? null,
+      {
+        markAtSignal: position.markAtSignal,
+        entryLimit: position.entryLimit,
+        fillPrice: position.entryPrice,
+        entryOffsetPct: position.entryOffsetPct,
+        slippageBpsApplied: position.entrySlippageBpsApplied,
+        spreadBpsAtEntry: position.spreadBpsAtEntry ?? null
+      },
+      {
+        tpPrice: position.tpPrice,
+        slPrice: position.slPrice,
+        closePrice: exitPrice,
+        slippageBpsApplied: exitSlippageBpsApplied,
+        spreadBpsAtExit: marketState.spreadBps ?? null
+      }
+    );
     this.updateSummaryCounts();
     this.persistSnapshot();
   }
@@ -1940,14 +2128,46 @@ export class BotEngine {
     reason: string,
     entryFeeUSDT?: number,
     exitFeeUSDT?: number,
-    positionOpenedTs?: number
+    positionOpenedTs?: number,
+    slippageUSDT?: number | null,
+    spreadBpsAtEntry?: number | null,
+    spreadBpsAtExit?: number | null,
+    entry?: PositionUpdatePayload['entry'],
+    exit?: PositionUpdatePayload['exit']
   ): void {
     const now = this.now();
     this.rotateDailyPnlBucket();
     this.stats.totalTrades += 1;
     this.stats.pnlUSDT += netPnlUSDT;
     this.stats.todayPnlUSDT += netPnlUSDT;
-    this.stats.lastClosed = { ts: now, symbol, side, grossPnlUSDT, feesUSDT, netPnlUSDT, reason, entryFeeUSDT, exitFeeUSDT };
+    const normalizedSlippage = slippageUSDT ?? 0;
+    this.stats.lastClosed = {
+      ts: now,
+      symbol,
+      side,
+      grossPnlUSDT,
+      feesUSDT,
+      netPnlUSDT,
+      slippageUSDT: slippageUSDT ?? null,
+      entry,
+      exit,
+      impact: { grossPnlUSDT, feesUSDT, slippageUSDT: slippageUSDT ?? null, netPnlUSDT },
+      reason,
+      entryFeeUSDT,
+      exitFeeUSDT
+    };
+    this.stats.totalFeesUSDT += feesUSDT;
+    this.stats.totalSlippageUSDT += normalizedSlippage;
+    if (typeof spreadBpsAtEntry === 'number' && Number.isFinite(spreadBpsAtEntry)) {
+      this.spreadEntryCount += 1;
+      this.spreadEntrySumBps += spreadBpsAtEntry;
+    }
+    if (typeof spreadBpsAtExit === 'number' && Number.isFinite(spreadBpsAtExit)) {
+      this.spreadExitCount += 1;
+      this.spreadExitSumBps += spreadBpsAtExit;
+    }
+    this.stats.avgSpreadBpsEntry = this.spreadEntryCount > 0 ? this.spreadEntrySumBps / this.spreadEntryCount : null;
+    this.stats.avgSpreadBpsExit = this.spreadExitCount > 0 ? this.spreadExitSumBps / this.spreadExitCount : null;
 
     if (netPnlUSDT > 0) {
       this.stats.wins += 1;
@@ -1962,6 +2182,13 @@ export class BotEngine {
     this.stats.winratePct = this.stats.totalTrades > 0 ? (this.stats.wins / this.stats.totalTrades) * 100 : 0;
     this.stats.avgWinUSDT = this.stats.wins > 0 ? this.winPnlSum / this.stats.wins : null;
     this.stats.avgLossUSDT = this.stats.losses > 0 ? this.lossPnlSum / this.stats.losses : null;
+    const winrateFraction = this.stats.winratePct / 100;
+    this.stats.expectancyUSDT = this.stats.totalTrades > 0 ? winrateFraction * (this.stats.avgWinUSDT ?? 0) + (1 - winrateFraction) * (this.stats.avgLossUSDT ?? 0) : null;
+    const sumWinsAbs = this.winPnlSum;
+    const sumLossAbs = Math.abs(this.lossPnlSum);
+    this.stats.profitFactor = this.stats.losses > 0 && sumLossAbs > 0 ? sumWinsAbs / sumLossAbs : null;
+    this.stats.avgFeePerTradeUSDT = this.stats.totalTrades > 0 ? this.stats.totalFeesUSDT / this.stats.totalTrades : null;
+    this.stats.avgNetPerTradeUSDT = this.stats.totalTrades > 0 ? this.stats.pnlUSDT / this.stats.totalTrades : null;
     const sideBucket = side === 'LONG' ? this.stats.long : this.stats.short;
     sideBucket.trades += 1;
     sideBucket.pnlUSDT += netPnlUSDT;

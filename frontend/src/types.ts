@@ -116,6 +116,14 @@ export type BotStats = {
   bothChosenLongCount: number;
   bothChosenShortCount: number;
   bothTieBreakMode: BothTieBreak;
+  totalFeesUSDT: number;
+  totalSlippageUSDT: number;
+  avgSpreadBpsEntry: number | null;
+  avgSpreadBpsExit: number | null;
+  expectancyUSDT: number | null;
+  profitFactor: number | null;
+  avgFeePerTradeUSDT: number | null;
+  avgNetPerTradeUSDT: number | null;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -123,6 +131,28 @@ export type BotStats = {
     grossPnlUSDT: number;
     feesUSDT: number;
     netPnlUSDT: number;
+    slippageUSDT: number | null;
+    entry?: {
+      markAtSignal?: number;
+      entryLimit?: number;
+      fillPrice?: number;
+      entryOffsetPct?: number;
+      slippageBpsApplied?: number;
+      spreadBpsAtEntry?: number | null;
+    };
+    exit?: {
+      tpPrice?: number;
+      slPrice?: number;
+      closePrice?: number;
+      slippageBpsApplied?: number;
+      spreadBpsAtExit?: number | null;
+    };
+    impact?: {
+      grossPnlUSDT?: number;
+      feesUSDT?: number;
+      slippageUSDT?: number | null;
+      netPnlUSDT?: number;
+    };
     entryFeeUSDT?: number;
     exitFeeUSDT?: number;
     reason: string;
@@ -152,10 +182,7 @@ export type UniverseState = {
   createdAt?: number;
   filters?: UniverseFilters;
   symbols?: UniverseEntry[];
-  metricDefinition?: {
-    volDefinition: string;
-    turnoverDefinition: string;
-  };
+  metricDefinition?: string;
   contractFilter?: 'USDT_LINEAR_PERPETUAL_ONLY';
   filteredOut?: {
     expiringOrNonPerp: number;

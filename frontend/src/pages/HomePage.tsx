@@ -39,7 +39,15 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
     bothHadBothCount: 0,
     bothChosenLongCount: 0,
     bothChosenShortCount: 0,
-    bothTieBreakMode: 'shortPriority'
+    bothTieBreakMode: 'shortPriority',
+    totalFeesUSDT: 0,
+    totalSlippageUSDT: 0,
+    avgSpreadBpsEntry: null,
+    avgSpreadBpsExit: null,
+    expectancyUSDT: null,
+    profitFactor: null,
+    avgFeePerTradeUSDT: null,
+    avgNetPerTradeUSDT: null
   });
 
   const selectedMode = botState.mode ?? botState.lastConfig?.mode ?? null;

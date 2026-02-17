@@ -79,6 +79,7 @@ type ColumnDef<T> = {
   sortKey: string;
   accessor: (row: T) => unknown;
   align?: 'start' | 'end' | 'center';
+  tooltip?: string;
 };
 
 type SortableHeaderProps<T> = {
@@ -92,7 +93,7 @@ function SortableHeader<T>({ column, sortState, onSort }: SortableHeaderProps<T>
   const indicator = isActive ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
   const className = column.align === 'end' ? 'text-end' : column.align === 'center' ? 'text-center' : undefined;
   return (
-    <th role="button" className={className} style={{ cursor: 'pointer' }} onClick={() => onSort(column.sortKey)}>
+    <th role="button" title={column.tooltip} className={className} style={{ cursor: 'pointer' }} onClick={() => onSort(column.sortKey)}>
       {column.label}
       {indicator}
     </th>
@@ -120,7 +121,15 @@ const EMPTY_BOT_STATS: BotStats = {
   bothHadBothCount: 0,
   bothChosenLongCount: 0,
   bothChosenShortCount: 0,
-  bothTieBreakMode: 'shortPriority'
+  bothTieBreakMode: 'shortPriority',
+  totalFeesUSDT: 0,
+  totalSlippageUSDT: 0,
+  avgSpreadBpsEntry: null,
+  avgSpreadBpsExit: null,
+  expectancyUSDT: null,
+  profitFactor: null,
+  avgFeePerTradeUSDT: null,
+  avgNetPerTradeUSDT: null
 };
 
 const defaultSettings: BotSettings = {
@@ -263,8 +272,20 @@ export function BotPage({
   const universeColumns: ColumnDef<(typeof filteredUniverseSymbols)[number]>[] = useMemo(
     () => [
       { label: 'symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
-      { label: 'turnover24hUSDT', sortKey: 'turnover24hUSDT', accessor: (row) => row.turnover24hUSDT, align: 'end' },
-      { label: 'vol24hRangePct', sortKey: 'vol24hRangePct', accessor: (row) => row.vol24hRangePct, align: 'end' },
+      {
+        label: 'turnover24hUSDT',
+        sortKey: 'turnover24hUSDT',
+        accessor: (row) => row.turnover24hUSDT,
+        align: 'end',
+        tooltip: '24h turnover in USDT from Bybit ticker'
+      },
+      {
+        label: 'vol24hRangePct',
+        sortKey: 'vol24hRangePct',
+        accessor: (row) => row.vol24hRangePct,
+        align: 'end',
+        tooltip: '24h range % = (high24h-low24h)/low24h*100; not 1m candle change'
+      },
       { label: 'high24h', sortKey: 'highPrice24h', accessor: (row) => row.highPrice24h, align: 'end' },
       { label: 'low24h', sortKey: 'lowPrice24h', accessor: (row) => row.lowPrice24h, align: 'end' },
       { label: 'forcedActive', sortKey: 'forcedActive', accessor: (row) => (row.forcedActive ? 1 : 0), align: 'center' }
@@ -1076,8 +1097,12 @@ export function BotPage({
               <div>Symbols: {universeState.symbols?.length ?? 0}</div>
               <div>Excluded: {excludedSymbols.length}</div>
               <div>Contract filter: USDT Linear Perpetual only</div>
-              <div>Vol metric: {universeState.metricDefinition?.volDefinition ?? '24h range % = (high24h-low24h)/low24h*100'}</div>
-              <div>Turnover metric: {universeState.metricDefinition?.turnoverDefinition ?? '24h turnover in USDT from Bybit ticker'}</div>
+              <details className="mt-2">
+                <summary>How volatility is computed</summary>
+                <div className="mt-1">
+                  {universeState.metricDefinition ?? 'turnover24hUSDT from Bybit 24h ticker; vol24hRangePct=(high24h-low24h)/low24h*100 (not candle volatility)'}
+                </div>
+              </details>
               {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? (
                 <div>Filtered out (non-perp/expiring): {universeState.filteredOut.expiringOrNonPerp}</div>
               ) : null}
@@ -1182,13 +1207,27 @@ export function BotPage({
             <div>Guardrail pause reason: {botStats.guardrailPauseReason ?? '-'}</div>
             <div>Avg win (USDT): {botStats.avgWinUSDT === null ? '-' : formatPnl(botStats.avgWinUSDT)}</div>
             <div>Avg loss (USDT): {botStats.avgLossUSDT === null ? '-' : formatPnl(botStats.avgLossUSDT)}</div>
+            <div>Total fees (USDT): {formatPnl(botStats.totalFeesUSDT)}</div>
+            <div>Total slippage (USDT): {formatPnl(botStats.totalSlippageUSDT)}</div>
+            <div>Avg spread entry (bps): {botStats.avgSpreadBpsEntry === null ? '-' : botStats.avgSpreadBpsEntry.toFixed(2)}</div>
+            <div>Avg spread exit (bps): {botStats.avgSpreadBpsExit === null ? '-' : botStats.avgSpreadBpsExit.toFixed(2)}</div>
+            {botStats.totalTrades > 0 ? (
+              <div className="mt-2">
+                <div>Expectancy (USDT): {botStats.expectancyUSDT === null ? '-' : formatPnl(botStats.expectancyUSDT)}</div>
+                <div>Profit factor: {botStats.profitFactor === null ? '-' : botStats.profitFactor.toFixed(3)}</div>
+                <div>Avg fee/trade (USDT): {botStats.avgFeePerTradeUSDT === null ? '-' : formatPnl(botStats.avgFeePerTradeUSDT)}</div>
+                <div>Avg net/trade (USDT): {botStats.avgNetPerTradeUSDT === null ? '-' : formatPnl(botStats.avgNetPerTradeUSDT)}</div>
+              </div>
+            ) : null}
             <div>
               Last closed:{' '}
               {botStats.lastClosed ? (
-                <span className="font-monospace">
-                  {new Date(botStats.lastClosed.ts).toLocaleString()} {botStats.lastClosed.symbol} {botStats.lastClosed.side}{' '}
-                  net {formatPnl(botStats.lastClosed.netPnlUSDT)} | fees {formatPnl(botStats.lastClosed.feesUSDT)} ({botStats.lastClosed.reason})
-                </span>
+                <div className="font-monospace">
+                  <div>{new Date(botStats.lastClosed.ts).toLocaleString()} {botStats.lastClosed.symbol} {botStats.lastClosed.side} ({botStats.lastClosed.reason})</div>
+                  <div>Impact: gross {formatPnl(botStats.lastClosed.impact?.grossPnlUSDT ?? botStats.lastClosed.grossPnlUSDT)} | fees {formatPnl(botStats.lastClosed.impact?.feesUSDT ?? botStats.lastClosed.feesUSDT)} | slippage {botStats.lastClosed.impact?.slippageUSDT === null || botStats.lastClosed.impact?.slippageUSDT === undefined ? '-' : formatPnl(botStats.lastClosed.impact.slippageUSDT)} | net {formatPnl(botStats.lastClosed.impact?.netPnlUSDT ?? botStats.lastClosed.netPnlUSDT)}</div>
+                  <div>Entry: mark {botStats.lastClosed.entry?.markAtSignal?.toFixed(4) ?? '-'} | limit {botStats.lastClosed.entry?.entryLimit?.toFixed(4) ?? '-'} | fill {botStats.lastClosed.entry?.fillPrice?.toFixed(4) ?? '-'} | offset {botStats.lastClosed.entry?.entryOffsetPct?.toFixed(4) ?? '-'}% | spread {botStats.lastClosed.entry?.spreadBpsAtEntry?.toFixed(2) ?? '-'}bps</div>
+                  <div>Exit: close {botStats.lastClosed.exit?.closePrice?.toFixed(4) ?? '-'} | spread {botStats.lastClosed.exit?.spreadBpsAtExit?.toFixed(2) ?? '-'}bps</div>
+                </div>
               ) : (
                 '-'
               )}

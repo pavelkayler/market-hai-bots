@@ -1197,8 +1197,16 @@ describe('BotEngine demo execution', () => {
     });
     expect(positionUpdates[positionUpdates.length - 1]).toMatchObject({
       status: 'CLOSED',
-      exitPrice: closeMarket.markPrice
+      exitPrice: closeMarket.markPrice,
+      impact: {
+        grossPnlUSDT: 0,
+        feesUSDT: 0,
+        slippageUSDT: null,
+        netPnlUSDT: 0
+      }
     });
+    expect(positionUpdates[positionUpdates.length - 1]?.entry?.spreadBpsAtEntry).not.toBeUndefined();
+    expect(positionUpdates[positionUpdates.length - 1]?.exit?.spreadBpsAtExit).not.toBeUndefined();
   });
 
 });
@@ -1963,24 +1971,31 @@ describe('BotEngine diagnostics + paper model hardening', () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: (payload) => updates.push(payload), emitQueueUpdate: () => undefined });
     engine.setUniverseSymbols(['BTCUSDT']);
-    engine.start({ ...defaultConfig, signalCounterThreshold: 1, paperEntrySlippageBps: 10, paperExitSlippageBps: 10, paperPartialFillPct: 50 });
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, entryOffsetPct: 0.1, paperEntrySlippageBps: 10, paperExitSlippageBps: 10, paperPartialFillPct: 50 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, bid: 101.9, ask: 102.1, spreadBps: 19.6, lastTickTs: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.898, openInterestValue: 1021, ts: now, bid: 101.8, ask: 102, spreadBps: 19.6, lastTickTs: now });
 
     const opened = updates.find((entry) => entry.status === 'OPEN')?.position;
     expect(opened).toBeTruthy();
-    expect(opened?.qty).toBeCloseTo((defaultConfig.marginUSDT * defaultConfig.leverage) / 102 * 0.5, 3);
-    expect(opened?.entryPrice).toBeCloseTo(102 * 1.001, 6);
+    expect(opened?.qty).toBeCloseTo((defaultConfig.marginUSDT * defaultConfig.leverage) / 101.898 * 0.5, 3);
+    expect(opened?.entryLimit).toBeCloseTo(101.898, 6);
+    expect(opened?.entryOffsetPct).toBeCloseTo(0.1, 6);
+    expect(opened?.spreadBpsAtEntry).toBeCloseTo(19.6, 6);
+    expect(opened?.entryPrice).toBeCloseTo(101.898 * 1.001, 6);
 
     const tp = opened!.tpPrice;
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: tp, openInterestValue: 1022, ts: now });
-    const closed = updates.find((entry) => entry.status === 'CLOSED')?.position;
-    expect(closed?.exitPrice).toBeCloseTo(tp * (1 - 0.001), 6);
+    engine.onMarketUpdate('BTCUSDT', { markPrice: tp, openInterestValue: 1022, ts: now, bid: tp - 0.1, ask: tp + 0.1, spreadBps: 19.4, lastTickTs: now });
+    const closed = updates.find((entry) => entry.status === 'CLOSED');
+    expect(closed?.position.exitPrice).toBeCloseTo(tp * (1 - 0.001), 6);
+    expect(typeof closed?.entry?.spreadBpsAtEntry).toBe('number');
+    expect(typeof closed?.exit?.spreadBpsAtExit).toBe('number');
+    expect(closed?.impact?.slippageUSDT).toBeCloseTo(closed?.position.slippageUSDT ?? 0, 8);
+    expect(closed?.impact?.netPnlUSDT).toBeCloseTo((closed?.impact?.grossPnlUSDT ?? 0) - (closed?.impact?.feesUSDT ?? 0) - (closed?.impact?.slippageUSDT ?? 0), 8);
   });
 
   it('keeps default paper math unchanged when slippage=0 and partial=100', () => {
@@ -1996,6 +2011,25 @@ describe('BotEngine diagnostics + paper model hardening', () => {
     engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
     const opened = updates.find((entry) => entry.status === 'OPEN')?.position;
     expect(opened?.entryPrice).toBeCloseTo(102, 8);
+  });
+
+
+  it('computes expectancy/profit factor and fee/net averages from closed trades', () => {
+    const engine = new BotEngine({ now: () => Date.UTC(2025, 0, 1, 0, 0, 0), emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    const mutable = engine as unknown as {
+      recordClosedTrade: (symbol: string, side: 'LONG' | 'SHORT', gross: number, fees: number, net: number, reason: string, entryFeeUSDT?: number, exitFeeUSDT?: number, openedTs?: number, slippageUSDT?: number) => void;
+    };
+
+    mutable.recordClosedTrade('BTCUSDT', 'LONG', 1.2, 0.2, 1, 'TP', undefined, undefined, undefined, 0.05);
+    mutable.recordClosedTrade('BTCUSDT', 'LONG', 1.2, 0.2, 1, 'TP', undefined, undefined, undefined, 0.05);
+    mutable.recordClosedTrade('BTCUSDT', 'SHORT', -1.2, 0.2, -1, 'SL', undefined, undefined, undefined, 0.05);
+    mutable.recordClosedTrade('BTCUSDT', 'SHORT', -1.2, 0.2, -1, 'SL', undefined, undefined, undefined, 0.05);
+
+    const stats = engine.getStats();
+    expect(stats.expectancyUSDT).toBeCloseTo(0, 8);
+    expect(stats.profitFactor).toBeCloseTo(1, 8);
+    expect(stats.avgFeePerTradeUSDT).toBeCloseTo(0.2, 8);
+    expect(stats.avgNetPerTradeUSDT).toBeCloseTo(0, 8);
   });
 
   it('emits pnl sanity warning only when winrate is high and net is negative', () => {

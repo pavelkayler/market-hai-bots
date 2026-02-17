@@ -18,10 +18,7 @@ export type UniverseState = {
     minTurnover: number;
     minVolPct: number;
   };
-  metricDefinition?: {
-    volDefinition: string;
-    turnoverDefinition: string;
-  };
+  metricDefinition?: string;
   symbols: UniverseEntry[];
   ready: boolean;
   totalSymbols?: number;
