@@ -10,7 +10,13 @@
           "qtyStep": "0.001",
           "minOrderQty": "0.001",
           "maxOrderQty": "100"
-        }
+        },
+        "category": "linear",
+        "contractType": "LinearPerpetual",
+        "status": "Trading",
+        "settleCoin": "USDT",
+        "quoteCoin": "USDT",
+        "baseCoin": "BTC"
       }
     ],
     "nextPageCursor": ""

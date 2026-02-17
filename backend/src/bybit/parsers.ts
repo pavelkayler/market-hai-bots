@@ -108,6 +108,18 @@ export const parseInstrumentsInfo = (json: unknown): InstrumentLinear[] => {
     const lotSizeFilter = (row as { lotSizeFilter?: Record<string, unknown> }).lotSizeFilter;
     instruments.push({
       symbol,
+      category: typeof (row as { category?: unknown }).category === 'string' ? (row as { category: string }).category : null,
+      contractType:
+        typeof (row as { contractType?: unknown }).contractType === 'string'
+          ? (row as { contractType: string }).contractType
+          : null,
+      status: typeof (row as { status?: unknown }).status === 'string' ? (row as { status: string }).status : null,
+      settleCoin:
+        typeof (row as { settleCoin?: unknown }).settleCoin === 'string'
+          ? (row as { settleCoin: string }).settleCoin
+          : null,
+      quoteCoin: typeof (row as { quoteCoin?: unknown }).quoteCoin === 'string' ? (row as { quoteCoin: string }).quoteCoin : null,
+      baseCoin: typeof (row as { baseCoin?: unknown }).baseCoin === 'string' ? (row as { baseCoin: string }).baseCoin : null,
       qtyStep: parseFiniteNumber(lotSizeFilter?.qtyStep),
       minOrderQty: parseFiniteNumber(lotSizeFilter?.minOrderQty),
       maxOrderQty: parseFiniteNumber(lotSizeFilter?.maxOrderQty)

@@ -4,9 +4,11 @@ import path from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 
 import type { IBybitMarketClient, InstrumentLinear, TickerLinear } from './bybitMarketClient.js';
+import { isUsdtLinearPerpetualInstrument, UNIVERSE_CONTRACT_FILTER } from './universeContractFilter.js';
 import type { UniverseEntry, UniverseFilters, UniverseState } from '../types/universe.js';
 
 const MIN_TURNOVER = 10000000 as const;
+const INSTRUMENTS_CACHE_TTL_MS = 30_000 as const;
 
 export class ActiveSymbolSet {
   private readonly active = new Set<string>();
@@ -43,6 +45,7 @@ const computeVol24hPct = (highPrice24h: number, lowPrice24h: number): number | n
 
 export class UniverseService {
   private state: UniverseState | null = null;
+  private instrumentsCache: { expiresAt: number; bySymbol: Map<string, InstrumentLinear> } | null = null;
 
   constructor(
     private readonly marketClient: IBybitMarketClient,
@@ -59,13 +62,19 @@ export class UniverseService {
       createdAt: Date.now(),
       filters: { minTurnover, minVolPct },
       symbols: built.entries,
-      ready: true
+      ready: true,
+      totalSymbols: built.totalFetched,
+      validSymbols: built.validCount,
+      filteredOut: {
+        expiringOrNonPerp: built.totalFetched - built.validCount
+      },
+      contractFilter: UNIVERSE_CONTRACT_FILTER
     };
 
-    this.state = nextState;
-    await this.persist(nextState);
+    this.state = this.applyReadyStateForContractFilter(nextState);
+    await this.persist(this.state);
 
-    return { state: nextState, totalFetched: built.totalFetched, forcedActive: 0 };
+    return { state: this.state, totalFetched: built.totalFetched, forcedActive: 0 };
   }
 
   async refresh(minVolPct?: number, minTurnover?: number): Promise<{ state: UniverseState; forcedActive: number } | null> {
@@ -84,21 +93,44 @@ export class UniverseService {
       createdAt: Date.now(),
       filters: { minTurnover: effectiveMinTurnover, minVolPct: effectiveMinVolPct },
       symbols: forced.entries,
-      ready: true
+      ready: true,
+      totalSymbols: built.totalFetched,
+      validSymbols: built.validCount,
+      filteredOut: {
+        expiringOrNonPerp: built.totalFetched - built.validCount
+      },
+      contractFilter: UNIVERSE_CONTRACT_FILTER
     };
 
-    this.state = nextState;
-    await this.persist(nextState);
+    this.state = this.applyReadyStateForContractFilter(nextState);
+    await this.persist(this.state);
 
-    return { state: nextState, forcedActive: forced.forcedCount };
+    return { state: this.state, forcedActive: forced.forcedCount };
   }
 
   async get(): Promise<UniverseState | null> {
-    if (this.state) {
+    if (!this.state) {
+      this.state = await this.loadFromDisk();
+      if (!this.state) {
+        return null;
+      }
+    }
+
+    if (
+      this.state.contractFilter === UNIVERSE_CONTRACT_FILTER &&
+      isFiniteNumber(this.state.totalSymbols) &&
+      isFiniteNumber(this.state.validSymbols) &&
+      this.state.filteredOut !== undefined
+    ) {
       return this.state;
     }
 
-    this.state = await this.loadFromDisk();
+    const sanitized = await this.sanitizePersistedUniverseState(this.state);
+    if (JSON.stringify(sanitized) !== JSON.stringify(this.state)) {
+      this.state = sanitized;
+      await this.persist(this.state);
+    }
+
     return this.state;
   }
 
@@ -117,18 +149,17 @@ export class UniverseService {
   private async buildFilteredUniverse(minVolPct: number, minTurnover: number): Promise<{
     entries: UniverseEntry[];
     totalFetched: number;
+    validCount: number;
     tickersBySymbol: Map<string, TickerLinear>;
     instrumentBySymbol: Map<string, InstrumentLinear>;
   }> {
-    const [instruments, tickersBySymbol] = await Promise.all([
-      this.marketClient.getInstrumentsLinearAll(),
-      this.marketClient.getTickersLinear()
-    ]);
+    const [instruments, tickersBySymbol] = await Promise.all([this.marketClient.getInstrumentsLinearAll(), this.marketClient.getTickersLinear()]);
 
     const instrumentBySymbol = new Map(instruments.map((instrument) => [instrument.symbol, instrument]));
     const entries: UniverseEntry[] = [];
+    const validInstruments = instruments.filter((instrument) => isUsdtLinearPerpetualInstrument(instrument));
 
-    for (const instrument of instruments) {
+    for (const instrument of validInstruments) {
       const ticker = tickersBySymbol.get(instrument.symbol);
       if (!ticker) {
         continue;
@@ -161,7 +192,7 @@ export class UniverseService {
       }
     }
 
-    return { entries, totalFetched: instruments.length, tickersBySymbol, instrumentBySymbol };
+    return { entries, totalFetched: instruments.length, validCount: validInstruments.length, tickersBySymbol, instrumentBySymbol };
   }
 
   private mergeForcedActive(
@@ -186,6 +217,11 @@ export class UniverseService {
 
       const ticker = tickersBySymbol.get(activeSymbol);
       const instrument = instrumentBySymbol.get(activeSymbol);
+      if (!instrument || !isUsdtLinearPerpetualInstrument(instrument)) {
+        this.logger.warn({ symbol: activeSymbol }, 'Skipping forced active symbol that does not match universe contract filter');
+        continue;
+      }
+
       if (!ticker) {
         this.logger.warn({ symbol: activeSymbol }, 'Active symbol missing from tickers during universe refresh');
         symbols.set(activeSymbol, {
@@ -226,6 +262,56 @@ export class UniverseService {
     }
 
     return { entries: Array.from(symbols.values()), forcedCount };
+  }
+
+  private async getInstrumentBySymbolCached(): Promise<Map<string, InstrumentLinear>> {
+    const now = Date.now();
+    if (this.instrumentsCache && this.instrumentsCache.expiresAt > now) {
+      return this.instrumentsCache.bySymbol;
+    }
+
+    const instruments = await this.marketClient.getInstrumentsLinearAll();
+    const bySymbol = new Map(instruments.map((instrument) => [instrument.symbol, instrument]));
+    this.instrumentsCache = {
+      bySymbol,
+      expiresAt: now + INSTRUMENTS_CACHE_TTL_MS
+    };
+    return bySymbol;
+  }
+
+  private async sanitizePersistedUniverseState(state: UniverseState): Promise<UniverseState> {
+    const instrumentsBySymbol = await this.getInstrumentBySymbolCached();
+    const totalSymbols = state.symbols.length;
+    const validEntries = state.symbols.filter((entry) => {
+      const instrument = instrumentsBySymbol.get(entry.symbol);
+      return !!instrument && isUsdtLinearPerpetualInstrument(instrument);
+    });
+
+    return this.applyReadyStateForContractFilter({
+      ...state,
+      symbols: validEntries,
+      totalSymbols,
+      validSymbols: validEntries.length,
+      filteredOut: {
+        expiringOrNonPerp: Math.max(0, totalSymbols - validEntries.length)
+      },
+      contractFilter: UNIVERSE_CONTRACT_FILTER
+    });
+  }
+
+  private applyReadyStateForContractFilter(state: UniverseState): UniverseState {
+    if ((state.totalSymbols ?? 0) > 0 && (state.validSymbols ?? 0) === 0) {
+      return {
+        ...state,
+        ready: false,
+        notReadyReason: 'No symbols matched contract filter USDT_LINEAR_PERPETUAL_ONLY'
+      };
+    }
+
+    return {
+      ...state,
+      notReadyReason: undefined
+    };
   }
 
   private async persist(state: UniverseState): Promise<void> {
@@ -283,7 +369,15 @@ export class UniverseService {
         qtyStep: entry.qtyStep ?? null,
         minOrderQty: entry.minOrderQty ?? null,
         maxOrderQty: entry.maxOrderQty ?? null
-      }))
+      })),
+      totalSymbols: isFiniteNumber(parsed.totalSymbols) ? parsed.totalSymbols : undefined,
+      validSymbols: isFiniteNumber(parsed.validSymbols) ? parsed.validSymbols : undefined,
+      filteredOut:
+        parsed.filteredOut && isFiniteNumber(parsed.filteredOut.expiringOrNonPerp)
+          ? { expiringOrNonPerp: parsed.filteredOut.expiringOrNonPerp }
+          : undefined,
+      contractFilter: parsed.contractFilter === UNIVERSE_CONTRACT_FILTER ? parsed.contractFilter : undefined,
+      notReadyReason: typeof parsed.notReadyReason === 'string' ? parsed.notReadyReason : undefined
     };
   }
 }

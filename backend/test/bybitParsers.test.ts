@@ -37,6 +37,12 @@ describe('Bybit parsers', () => {
     expect(parseInstrumentsInfo(fixture)).toEqual([
       {
         symbol: 'BTCUSDT',
+        category: 'linear',
+        contractType: 'LinearPerpetual',
+        status: 'Trading',
+        settleCoin: 'USDT',
+        quoteCoin: 'USDT',
+        baseCoin: 'BTC',
         qtyStep: 0.001,
         minOrderQty: 0.001,
         maxOrderQty: 100

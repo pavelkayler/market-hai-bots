@@ -614,6 +614,55 @@ describe('server routes', () => {
   });
 
 
+
+  it('universe create includes only USDT linear perpetual symbols', async () => {
+    const tickerStream = new FakeTickerStream();
+    app = buildIsolatedServer({
+      tickerStream,
+      marketClient: new FakeMarketClient(
+        [
+          {
+            symbol: 'BTCUSDT',
+            category: 'linear',
+            contractType: 'PERPETUAL',
+            status: 'Trading',
+            quoteCoin: 'USDT',
+            settleCoin: 'USDT',
+            baseCoin: 'BTC',
+            qtyStep: 0.001,
+            minOrderQty: 0.001,
+            maxOrderQty: 100
+          },
+          {
+            symbol: 'BTCUSDT-26JUN26',
+            category: 'linear',
+            contractType: 'FUTURES',
+            status: 'Trading',
+            quoteCoin: 'USDT',
+            settleCoin: 'USDT',
+            baseCoin: 'BTC',
+            qtyStep: 0.001,
+            minOrderQty: 0.001,
+            maxOrderQty: 100
+          }
+        ],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }],
+          ['BTCUSDT-26JUN26', { symbol: 'BTCUSDT-26JUN26', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+        ])
+      )
+    });
+
+    const createResponse = await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    expect(createResponse.statusCode).toBe(200);
+    expect(createResponse.json()).toMatchObject({
+      passed: 1,
+      contractFilter: 'USDT_LINEAR_PERPETUAL_ONLY',
+      filteredOut: { expiringOrNonPerp: 1 }
+    });
+    expect(tickerStream.setSymbolsCalls).toEqual([[], ['BTCUSDT']]);
+  });
+
   it('universe create wires market symbols once and clear resets symbol update throttle', async () => {
     const tickerStream = new FakeTickerStream();
     const wsMessages: string[] = [];
@@ -654,6 +703,101 @@ describe('server routes', () => {
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 101, openInterestValue: 2001, ts: Date.now() });
     const secondSymbolUpdateCount = wsMessages.filter((raw) => JSON.parse(raw).type === 'symbol:update').length;
     expect(secondSymbolUpdateCount).toBe(2);
+  });
+
+
+  it('universe excludes expiring futures from persisted load and market subscriptions', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-contract-filter-'));
+    const universeFilePath = path.join(tempDir, 'data', 'universe.json');
+    await mkdir(path.dirname(universeFilePath), { recursive: true });
+    await writeFile(
+      universeFilePath,
+      JSON.stringify(
+        {
+          createdAt: Date.now(),
+          ready: true,
+          filters: { minTurnover: 10000000, minVolPct: 5 },
+          symbols: [
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 12000000,
+              highPrice24h: 110,
+              lowPrice24h: 100,
+              vol24hPct: 10,
+              forcedActive: false,
+              qtyStep: 0.001,
+              minOrderQty: 0.001,
+              maxOrderQty: 100
+            },
+            {
+              symbol: 'BTCUSDT-26JUN26',
+              turnover24h: 12000000,
+              highPrice24h: 110,
+              lowPrice24h: 100,
+              vol24hPct: 10,
+              forcedActive: false,
+              qtyStep: 0.001,
+              minOrderQty: 0.001,
+              maxOrderQty: 100
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+
+    const tickerStream = new FakeTickerStream();
+    await app.close();
+    app = buildIsolatedServer({
+      tickerStream,
+      universeFilePath,
+      marketClient: new FakeMarketClient(
+        [
+          {
+            symbol: 'BTCUSDT',
+            category: 'linear',
+            contractType: 'PERPETUAL',
+            status: 'Trading',
+            quoteCoin: 'USDT',
+            settleCoin: 'USDT',
+            baseCoin: 'BTC',
+            qtyStep: 0.001,
+            minOrderQty: 0.001,
+            maxOrderQty: 100
+          },
+          {
+            symbol: 'BTCUSDT-26JUN26',
+            category: 'linear',
+            contractType: 'FUTURES',
+            status: 'Trading',
+            quoteCoin: 'USDT',
+            settleCoin: 'USDT',
+            baseCoin: 'BTC',
+            qtyStep: 0.001,
+            minOrderQty: 0.001,
+            maxOrderQty: 100
+          }
+        ],
+        new Map()
+      )
+    });
+
+    await app.ready();
+
+    expect(tickerStream.setSymbolsCalls).toEqual([['BTCUSDT']]);
+
+    const universeResponse = await app.inject({ method: 'GET', url: '/api/universe' });
+    expect(universeResponse.statusCode).toBe(200);
+    expect(universeResponse.json()).toMatchObject({
+      ok: true,
+      symbols: [expect.objectContaining({ symbol: 'BTCUSDT' })],
+      contractFilter: 'USDT_LINEAR_PERPETUAL_ONLY',
+      filteredOut: { expiringOrNonPerp: 1 }
+    });
+
+    await rm(tempDir, { recursive: true, force: true });
   });
 
   it('POST /api/orders/cancel cancels pending paper order and returns ok', async () => {

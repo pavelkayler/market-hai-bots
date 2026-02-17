@@ -694,7 +694,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       filters: result.state.filters,
       totalFetched: result.totalFetched,
       passed: result.state.symbols.length,
-      forcedActive: result.forcedActive
+      forcedActive: result.forcedActive,
+      contractFilter: result.state.contractFilter,
+      filteredOut: result.state.filteredOut
     };
 
     broadcast('universe:created', {
@@ -732,7 +734,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       refreshedAt: result.state.createdAt,
       filters: result.state.filters,
       passed: result.state.symbols.length,
-      forcedActive: result.forcedActive
+      forcedActive: result.forcedActive,
+      contractFilter: result.state.contractFilter,
+      filteredOut: result.state.filteredOut
     };
 
     broadcast('universe:refreshed', {

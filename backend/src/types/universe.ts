@@ -18,6 +18,13 @@ export type UniverseState = {
   };
   symbols: UniverseEntry[];
   ready: boolean;
+  totalSymbols?: number;
+  validSymbols?: number;
+  filteredOut?: {
+    expiringOrNonPerp: number;
+  };
+  contractFilter?: 'USDT_LINEAR_PERPETUAL_ONLY';
+  notReadyReason?: string;
 };
 
 export type UniverseFilters = UniverseState['filters'];
