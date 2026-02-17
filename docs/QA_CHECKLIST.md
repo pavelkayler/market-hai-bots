@@ -118,3 +118,27 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 ## Pre-run smoke commands (record in QA_REPORT_LATEST)
 1. Run `npm run rc:check` and record PASS/FAIL.
 2. Run `npm run rc:smoke` and record PASS/FAIL plus startup/timeout log evidence.
+
+## H) Bot page tabs and dashboard composition (Task 50)
+1. Open `/bot` in a fresh browser profile (no `bot:tab` in storage).
+   - Expect default tab = **Dashboard**.
+2. Validate tab order exactly:
+   - Dashboard, Settings, Journal, Log, Per-symbol performance, Entry reasons.
+3. Switch tabs and reload page.
+   - Expect last selected tab restored from localStorage (`bot:tab`).
+4. Dashboard checks:
+   - Controls block visible.
+   - Results / performance summary visible in Dashboard.
+   - No settings input controls are visible on Dashboard.
+5. Settings checks:
+   - Settings form appears only in Settings tab.
+   - While bot is running, settings remain locked.
+6. Tab content checks:
+   - Journal tab contains journal table + SYSTEM-badge rows.
+   - Log tab contains operator/log output block.
+   - Per-symbol performance tab contains sortable per-symbol table + exclude controls.
+   - Entry reasons tab contains "No entry reasons (top)" and "Top entry reasons (confirmed)" cards.
+7. KILL checks:
+   - Trigger KILL with active order/position.
+   - Expect UI to show KILL in progress, then completion.
+   - Final state should report `activeOrders=0` and `openPositions=0` (or explicit warning state if upstream unreachable).

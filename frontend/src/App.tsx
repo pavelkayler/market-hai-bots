@@ -35,7 +35,10 @@ export function App() {
     queueDepth: 0,
     activeOrders: 0,
     openPositions: 0,
-    uptimeMs: 0
+    uptimeMs: 0,
+    killInProgress: false,
+    killCompletedAt: null,
+    killWarning: null
   });
   const [universeState, setUniverseState] = useState<UniverseState>({ ok: false, ready: false });
   const [symbolMap, setSymbolMap] = useState<Record<string, SymbolUpdatePayload>>({});

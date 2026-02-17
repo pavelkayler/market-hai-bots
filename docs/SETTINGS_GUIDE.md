@@ -371,3 +371,17 @@ These presets are seeded by backend startup only if missing, so user edits are p
 - Lifecycle controls append ops events using `symbol=SYSTEM`, `side=null`:
   - `BOT_PAUSE`, `BOT_RESUME`, `BOT_KILL`, `SYSTEM_RESET_ALL`, `EXPORT_PACK_REQUESTED`.
 - Ops journaling is best-effort: route responses remain successful even if journal append fails.
+
+## Bot page tabs (Task 50)
+The `/bot` page is organized as operator-first tabs in this exact order:
+1. Dashboard (default)
+2. Settings
+3. Journal
+4. Log
+5. Per-symbol performance
+6. Entry reasons
+
+Notes:
+- Last selected tab is persisted in localStorage (`bot:tab`); first load defaults to Dashboard.
+- Settings form controls are only shown in the Settings tab and remain locked while the bot is running.
+- Dashboard is for runtime monitoring/controls only (no settings form fields).

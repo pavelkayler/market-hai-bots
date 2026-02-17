@@ -56,6 +56,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   let tickHandlerCount = 0;
   let wsFramesSent = 0;
   let evalRunCount = 0;
+  let killInProgress = false;
+  let killCompletedAt: number | null = null;
+  let killWarning: string | null = null;
   const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
   const marketClient = options.marketClient ?? new BybitMarketClient();
@@ -154,7 +157,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       activeOrders: state.activeOrders,
       openPositions: state.openPositions,
       startedAt: state.startedAt,
-      uptimeMs: state.uptimeMs
+      uptimeMs: state.uptimeMs,
+      killInProgress,
+      killCompletedAt,
+      killWarning
     };
   };
 
@@ -496,10 +502,33 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
 
   app.post('/api/bot/kill', async () => {
-    const cancelled = await botEngine.killSwitch((symbol) => marketHub.getState(symbol));
+    killInProgress = true;
+    killCompletedAt = null;
+    killWarning = null;
     broadcastBotState();
-    await appendOpsJournalEvent('BOT_KILL');
-    return { ok: true, cancelled };
+
+    const result = await botEngine.killSwitch((symbol) => marketHub.getState(symbol));
+    const warning =
+      result.warning ??
+      (result.activeOrdersRemaining > 0 || result.openPositionsRemaining > 0
+        ? `KILL finished with remaining activeOrders=${result.activeOrdersRemaining}, openPositions=${result.openPositionsRemaining}`
+        : null);
+
+    killWarning = warning;
+    killInProgress = false;
+    killCompletedAt = Date.now();
+    botEngine.stop();
+    broadcastBotState();
+
+    await appendOpsJournalEvent('BOT_KILL', {
+      cancelledOrders: result.cancelledOrders,
+      closedPositions: result.closedPositions,
+      activeOrdersRemaining: result.activeOrdersRemaining,
+      openPositionsRemaining: result.openPositionsRemaining,
+      warning
+    });
+
+    return { ok: true, ...result, warning };
   });
 
   app.get('/api/bot/guardrails', async () => {

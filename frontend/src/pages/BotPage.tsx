@@ -75,11 +75,15 @@ type PerSymbolRow = BotPerSymbolStats & {
 
 const USE_ACTIVE_PROFILE_ON_START_KEY = 'bot.settings.useActiveProfileOnStart.v1';
 
-type BotPageTab = 'dashboard' | 'settings';
+type BotPageTab = 'dashboard' | 'settings' | 'journal' | 'log' | 'perSymbolPerformance' | 'entryReasons';
 
 function loadBotPageTab(): BotPageTab {
   try {
-    return localStorage.getItem(BOT_TAB_KEY) === 'settings' ? 'settings' : 'dashboard';
+    const stored = localStorage.getItem(BOT_TAB_KEY);
+    if (stored === 'settings' || stored === 'journal' || stored === 'log' || stored === 'perSymbolPerformance' || stored === 'entryReasons') {
+      return stored;
+    }
+    return 'dashboard';
   } catch {
     return 'dashboard';
   }
@@ -614,7 +618,7 @@ export function BotPage({
   };
 
   const handleKill = async () => {
-    if (!window.confirm('Cancel all pending orders and pause?')) {
+    if (!window.confirm('Cancel all pending orders and close all open positions immediately?')) {
       return;
     }
 
@@ -624,7 +628,8 @@ export function BotPage({
       const next = await getBotState();
       setBotState(next);
       await refreshBotStats();
-      setStatus(`KILL done: cancelled ${result.cancelled} pending orders`);
+      const warningSuffix = result.warning ? ` (warning: ${result.warning})` : '';
+      setStatus(`KILL complete: cancelled ${result.cancelledOrders}, closed ${result.closedPositions}${warningSuffix}`);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -1041,6 +1046,12 @@ export function BotPage({
     excluded: excludedSymbols.length
   };
 
+
+  const showPerSymbolTab = activeTab === 'perSymbolPerformance';
+  const showEntryReasonsTab = activeTab === 'entryReasons';
+  const showJournalTab = activeTab === 'journal';
+  const showLogTab = activeTab === 'log';
+
   const formatEntryReason = (reason: EntryReason | null | undefined): string => {
     if (!reason) {
       return '—';
@@ -1063,6 +1074,10 @@ export function BotPage({
         >
           <Tab eventKey="dashboard" title="Dashboard" />
           <Tab eventKey="settings" title="Settings" />
+          <Tab eventKey="journal" title="Journal" />
+          <Tab eventKey="log" title="Log" />
+          <Tab eventKey="perSymbolPerformance" title="Per-symbol performance" />
+          <Tab eventKey="entryReasons" title="Entry reasons" />
         </Tabs>
       </Col>
       {activeTab === 'dashboard' ? (
@@ -1388,6 +1403,7 @@ export function BotPage({
         </Card>
       </Col>
 
+      {showPerSymbolTab ? (
       <Col md={12}>
         <Card className="mt-3">
           <Card.Header>Per-symbol performance</Card.Header>
@@ -1446,6 +1462,7 @@ export function BotPage({
           </Card.Body>
         </Card>
       </Col>
+      ) : null}
         </>
       ) : null}
 
@@ -1755,6 +1772,13 @@ export function BotPage({
               onChange={(event) => setUseActiveProfileOnStart(event.target.checked)}
               disabled={botState.running}
             />
+            {botState.killInProgress ? <Alert variant="warning">KILL in progress: cancelling orders and closing all positions…</Alert> : null}
+            {!botState.killInProgress && botState.killCompletedAt ? (
+              <Alert variant={botState.killWarning ? 'warning' : 'success'}>
+                KILL complete at {new Date(botState.killCompletedAt).toLocaleTimeString()}.
+                {botState.killWarning ? ` ${botState.killWarning}` : ' Active orders and positions were cleared.'}
+              </Alert>
+            ) : null}
             <Card className="mb-3">
               <Card.Header>Session</Card.Header>
               <Card.Body>
@@ -1932,6 +1956,8 @@ export function BotPage({
           </Card.Body>
         </Card>
 
+        {showEntryReasonsTab ? (
+        <>
         <Card className="mb-3">
           <Card.Header>No entry reasons (top)</Card.Header>
           <Card.Body>
@@ -1956,6 +1982,8 @@ export function BotPage({
             <div>BOTH ties ({botStats.bothTieBreakMode}): hadBoth {botStats.bothHadBothCount}, chosen long {botStats.bothChosenLongCount}, chosen short {botStats.bothChosenShortCount}</div>
           </Card.Body>
         </Card>
+        </>
+        ) : null}
 
         <Card>
           <Card.Header>Orders</Card.Header>
@@ -2034,6 +2062,7 @@ export function BotPage({
       </Col>
 
 
+      {showJournalTab ? (
       <Col md={12}>
         <Card>
           <Card.Header>Journal</Card.Header>
@@ -2097,7 +2126,9 @@ export function BotPage({
           </Card.Body>
         </Card>
       </Col>
+      ) : null}
 
+      {showLogTab ? (
         <Col md={12}>
           <Card>
             <Card.Header>Log (last 5)</Card.Header>
@@ -2109,6 +2140,7 @@ export function BotPage({
           </Card.Body>
         </Card>
         </Col>
+      ) : null}
         </>
       ) : null}
 

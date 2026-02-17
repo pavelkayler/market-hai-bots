@@ -74,6 +74,8 @@ class FakeDemoTradeClient implements IDemoTradeClient {
   async getPosition(symbol: string): Promise<DemoPosition | null> {
     return this.positionsBySymbol.get(symbol) ?? null;
   }
+
+  async closePositionMarket(): Promise<void> {}
 }
 
 const flush = async (): Promise<void> => {
@@ -1457,12 +1459,13 @@ describe('BotEngine snapshot + pause/resume', () => {
     expect(resumed.activeOrders).toBe(0);
     expect(resumed.openPositions).toBe(1);
 
-    const cancelled = await engine.killSwitch(() => ({ markPrice: 101, openInterestValue: 1_021, ts: now }));
-    expect(cancelled).toBe(0);
+    const killResult = await engine.killSwitch(() => ({ markPrice: 101, openInterestValue: 1_021, ts: now }));
+    expect(killResult.cancelledOrders).toBe(0);
+    expect(killResult.closedPositions).toBe(1);
     const killed = engine.getState();
     expect(killed.queueDepth).toBe(0);
     expect(killed.activeOrders).toBe(0);
-    expect(killed.openPositions).toBe(1);
+    expect(killed.openPositions).toBe(0);
   });
 
   it('demo activity metrics track queue depth and open positions', async () => {
