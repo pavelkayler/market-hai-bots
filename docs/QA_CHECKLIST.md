@@ -5,9 +5,10 @@ Use this for operator validation. Percent convention is always **`3 = 3%`**.
 
 ## Expected operator UI strings (must match)
 - Universe states:
-  - `Universe ready (N symbols)`
-  - `Built empty (0 symbols passed filters).`
-  - `Upstream error (last build failed)`
+  - `READY · Universe ready (N symbols)`
+  - `BUILT_EMPTY · Built empty (0 symbols passed filters).`
+  - `UPSTREAM_ERROR · Upstream error (last build failed)`
+  - `NO_UNIVERSE · No universe yet.`
   - `Last good universe is kept; download uses last good.`
 - Symbol phase labels:
   - `HOLDING_*` / `ARMED_*` => signal phase (no order, no position)
@@ -17,26 +18,26 @@ Use this for operator validation. Percent convention is always **`3 = 3%`**.
   - In-flight button label: `Exporting...`
 
 ## PASS/FAIL recording format
-For each step, record one line in `docs/QA_REPORT.md`:
-- `Section <id> - <step>: PASS - <evidence>`
-- `Section <id> - <step>: FAIL - <actual> (expected: <expected>)`
+For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.md`:
+- `Section <id>: PASS - <evidence>`
+- `Section <id>: FAIL - <actual> (expected: <expected>)`
 
 ---
 
 ## A) Universe create/get/refresh states
 1. Open Bot page → Universe card.
 2. Enter `minVolPct` and optional `minTurnover`, click **Create**.
-   - On a live network with valid connectivity/credentials and typical thresholds, expect **Universe ready (N symbols)** with `N > 0`.
-   - If it is empty, expect **Built empty (0 symbols passed filters).** with bucket counts visible, including `tickerMissing` when present.
+   - On a live network with valid connectivity/credentials and typical thresholds, expect **READY · Universe ready (N symbols)** with `N > 0`.
+   - If it is empty, expect **BUILT_EMPTY · Built empty (0 symbols passed filters).** and ordered buckets: `contractFilterExcluded`, `thresholdFiltered`, `tickerMissing`, `dataUnavailable`, `excluded`.
 3. Click **Get**.
    - Expect same persisted `createdAt`, filters, and counts.
 4. Click **Download universe.json**.
-   - Expect file download succeeds when a universe has been persisted.
+   - Expect file download succeeds when a universe has been persisted (including built-empty).
 5. Build an intentionally strict universe (very high filters), click **Create**.
    - Expect **Built empty (0 symbols passed filters).**
-   - Expect filtered counters visible (`turnover/vol`, `data unavailable`, optional contract-filter).
+   - Expect active filters + contract rule text and ordered bucket counters (above).
 6. Simulate upstream failure (`UNIVERSE_FORCE_UPSTREAM_ERROR=1`) then click **Refresh**.
-   - Expect HTTP 502 surfaced as upstream error UI.
+   - Expect HTTP 502 surfaced as **UPSTREAM_ERROR · Upstream error (last build failed)** UI.
    - Expect text: **Last good universe is kept; download uses last good.**
    - Expect `Download universe.json` still succeeds.
 7. Remove `UNIVERSE_FORCE_UPSTREAM_ERROR` and click **Refresh** again.
@@ -45,7 +46,7 @@ For each step, record one line in `docs/QA_REPORT.md`:
 8. Fixture/mocked run: moderate thresholds with valid perps.
    - Expect **Ready (N symbols)** with `N > 0` and diagnostics totals showing `validTotal > 0`.
 9. Fixture/mocked run: ticker-missing dataset.
-   - Expect **Built empty** with `diagnostics.excluded.tickerMissing > 0` and `filteredOut.dataUnavailable > 0`.
+   - Expect **BUILT_EMPTY** with `diagnostics.excluded.tickerMissing > 0` and `filteredOut.dataUnavailable > 0`.
 10. Fixture/mocked run: all-non-perp dataset.
    - Expect **Built empty** with contract-filter buckets (`expiring/nonLinear/nonPerp`) > 0 and clear empty-state reason.
 
@@ -93,3 +94,8 @@ For each step, record one line in `docs/QA_REPORT.md`:
 3. Verify post-reset:
    - Runtime state, journal tail, stats, exclusions, universe, replay state are cleared.
    - Profiles are preserved.
+
+
+## Pre-run smoke commands (record in QA_REPORT_LATEST)
+1. Run `npm run rc:check` and record PASS/FAIL.
+2. Run `npm run rc:smoke` and record PASS/FAIL plus startup/timeout log evidence.
