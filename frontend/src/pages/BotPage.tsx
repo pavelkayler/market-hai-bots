@@ -220,7 +220,17 @@ export function BotPage({
   }, [botState.lastConfig]);
 
   const trackedSymbols = useMemo(() => {
-    return Object.values(symbolMap).filter((item) => item.state !== 'IDLE' || item.pendingOrder || item.position);
+    return Object.values(symbolMap)
+      .map((item) => {
+        if (item.position && item.state !== 'POSITION_OPEN') {
+          return { ...item, state: 'POSITION_OPEN' as const };
+        }
+        if (item.pendingOrder && item.state === 'IDLE') {
+          return { ...item, state: 'ENTRY_PENDING' as const };
+        }
+        return item;
+      })
+      .filter((item) => item.state !== 'IDLE' || item.pendingOrder || item.position);
   }, [symbolMap]);
 
   const handleCancelOrder = useCallback(

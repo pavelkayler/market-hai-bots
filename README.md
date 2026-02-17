@@ -1,19 +1,31 @@
 # Bybit OI/Price Bot — monorepo (local)
 
-Backend must run on http://localhost:8080
+Backend runs on `http://localhost:8080`.
+Frontend runs on `http://localhost:5173` (Vite default).
 
-## Quickstart
+## Run locally
 1. Install dependencies from repo root:
    - `npm i`
-2. Start backend + frontend together:
+2. Start backend only:
+   - `npm --prefix backend run dev`
+3. Start frontend only:
+   - `npm --prefix frontend run dev`
+4. Or start both from root:
    - `npm run dev`
+
+Useful verification commands:
+- Backend tests: `npm --prefix backend test`
+- Frontend production build: `npm --prefix frontend run build`
 
 ## Environment setup (demo mode)
 1. Copy `.env.example` to `.env`.
 2. Set the demo credentials when you want to place demo REST orders:
    - `DEMO_API_KEY=...`
    - `DEMO_API_SECRET=...`
-3. Keep `BYBIT_DEMO_REST=https://api-demo.bybit.com` for demo REST trading.
+3. Keep `BYBIT_DEMO_REST=https://api-demo.bybit.com` for demo REST trading (this is the default).
+4. Configure mode/credentials in UI settings:
+   - `mode=demo` requires `DEMO_API_KEY` + `DEMO_API_SECRET`.
+   - `mode=paper` does not require exchange credentials.
 
 
 ## Data files & export pack
