@@ -47,3 +47,9 @@
 - Lifecycle ops journaling is best-effort: pause/resume/kill/reset/export routes still succeed if journal append fails (warn-only logging).
 - Export pack is partial-by-design: `meta.json` is always present, optional files are included only when found, and missing files are listed in `meta.json.notes`.
 - Upstream universe failures return structured 502 payloads while preserving the last good persisted universe for download.
+
+
+## UX polish: Bot page tabs
+- Added internal Bot page tabs with `Dashboard` default and `Settings` for all configuration forms.
+- Moved Universe build controls, Profiles, and full settings panel under **Settings** only.
+- Dashboard now focuses on operator runtime panels/actions without exposing config inputs while running.

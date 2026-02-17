@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Table } from 'react-bootstrap';
+import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Tab, Table, Tabs } from 'react-bootstrap';
 
 import {
   ApiRequestError,
@@ -62,6 +62,7 @@ type Props = {
 };
 
 const SETTINGS_KEY = 'bot.settings.v1';
+const BOT_TAB_KEY = 'bot:tab';
 
 type PerSymbolRow = BotPerSymbolStats & {
   markPrice: number | null;
@@ -73,6 +74,16 @@ type PerSymbolRow = BotPerSymbolStats & {
 };
 
 const USE_ACTIVE_PROFILE_ON_START_KEY = 'bot.settings.useActiveProfileOnStart.v1';
+
+type BotPageTab = 'dashboard' | 'settings';
+
+function loadBotPageTab(): BotPageTab {
+  try {
+    return localStorage.getItem(BOT_TAB_KEY) === 'settings' ? 'settings' : 'dashboard';
+  } catch {
+    return 'dashboard';
+  }
+}
 
 type ColumnDef<T> = {
   label: string;
@@ -233,6 +244,7 @@ export function BotPage({
   const [expandedSymbolRows, setExpandedSymbolRows] = useState<Record<string, boolean>>({});
   const [dashboardEntries, setDashboardEntries] = useState<JournalEntry[]>([]);
   const [dashboardFetchedAt, setDashboardFetchedAt] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<BotPageTab>(loadBotPageTab());
   const profileUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -344,6 +356,10 @@ export function BotPage({
   useEffect(() => {
     localStorage.setItem(USE_ACTIVE_PROFILE_ON_START_KEY, useActiveProfileOnStart ? '1' : '0');
   }, [useActiveProfileOnStart]);
+
+  useEffect(() => {
+    localStorage.setItem(BOT_TAB_KEY, activeTab);
+  }, [activeTab]);
 
   const refreshProfiles = useCallback(async () => {
     const state = await getProfiles();
@@ -1021,8 +1037,21 @@ export function BotPage({
   return (
     <Row className="g-2 ui-dense">
       <Col md={12}>
-        <Card>
-          <Card.Header>Dashboard</Card.Header>
+        <Tabs
+          id="bot-page-tabs"
+          activeKey={activeTab}
+          onSelect={(nextKey) => setActiveTab((nextKey as BotPageTab) ?? 'dashboard')}
+          className="mb-2 flex-wrap"
+        >
+          <Tab eventKey="dashboard" title="Dashboard" />
+          <Tab eventKey="settings" title="Settings" />
+        </Tabs>
+      </Col>
+      {activeTab === 'dashboard' ? (
+        <>
+          <Col md={12}>
+          <Card>
+            <Card.Header>Dashboard</Card.Header>
           <Card.Body className="universe-panel">
             <Row className="g-3">
               <Col md={3}>
@@ -1100,12 +1129,15 @@ export function BotPage({
             </div>
           </Card.Body>
 
-        </Card>
-      </Col>
+          </Card>
+        </Col>
+        </>
+      ) : null}
 
-      <Col md={6}>
-        <Card>
-          <Card.Header>Universe</Card.Header>
+      {activeTab === 'settings' ? (
+        <Col md={6}>
+          <Card>
+            <Card.Header>Universe</Card.Header>
           <Card.Body>
             <Row className="g-2 mb-2">
               <Col md={6}>
@@ -1275,10 +1307,15 @@ export function BotPage({
               </div>
             </Collapse>
           </Card.Body>
-        </Card>
+          </Card>
+        </Col>
+      ) : null}
 
-        <Card className="mt-3">
-          <Card.Header className="d-flex justify-content-between align-items-center">
+      {activeTab === 'dashboard' ? (
+        <>
+          <Col md={6}>
+          <Card className="mt-3">
+            <Card.Header className="d-flex justify-content-between align-items-center">
             <span>Results</span>
             <div className="d-flex gap-2">
               <Button size="sm" variant="outline-secondary" onClick={() => void refreshBotStats()}>
@@ -1391,10 +1428,13 @@ export function BotPage({
           </Card.Body>
         </Card>
       </Col>
+        </>
+      ) : null}
 
-      <Col md={6}>
-        <Card>
-          <Card.Header>Settings</Card.Header>
+      {activeTab === 'settings' ? (
+        <Col md={6}>
+          <Card>
+            <Card.Header>Settings</Card.Header>
           <Card.Body>
             {disableSettings ? <Alert variant="warning">Settings are locked while the bot is running.</Alert> : null}
             <Card className="mb-3">
@@ -1657,12 +1697,15 @@ export function BotPage({
               </Card.Body>
             </Card>
           </Card.Body>
-        </Card>
-      </Col>
+          </Card>
+        </Col>
+      ) : null}
 
-      <Col md={12}>
-        <Card>
-          <Card.Header>Controls</Card.Header>
+      {activeTab === 'dashboard' ? (
+        <>
+          <Col md={12}>
+          <Card>
+            <Card.Header>Controls</Card.Header>
           <Card.Body>
             <div className="d-flex gap-2 mb-3">
               <Button variant="success" onClick={() => void handleStart()} disabled={botState.running}>
@@ -2033,9 +2076,9 @@ export function BotPage({
         </Card>
       </Col>
 
-      <Col md={12}>
-        <Card>
-          <Card.Header>Log (last 5)</Card.Header>
+        <Col md={12}>
+          <Card>
+            <Card.Header>Log (last 5)</Card.Header>
           <Card.Body>
             {logs.length === 0 ? <div>No logs yet.</div> : null}
             {logs.map((line) => (
@@ -2043,7 +2086,9 @@ export function BotPage({
             ))}
           </Card.Body>
         </Card>
-      </Col>
+        </Col>
+        </>
+      ) : null}
 
       {status ? <Alert variant="success">{status}</Alert> : null}
       {error ? <Alert variant="danger">{error}</Alert> : null}
