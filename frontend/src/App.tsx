@@ -141,7 +141,20 @@ export function App() {
         if (message.type === 'state') {
           const payload = message.payload as Partial<BotState>;
           const { paused: _paused, hasSnapshot: _hasSnapshot, lastConfig: _lastConfig, ...allowedPayload } = payload;
-          setBotState((prev) => ({ ...prev, ...allowedPayload }));
+          const safeActivityMetrics = {
+            queueDepth: typeof allowedPayload.queueDepth === 'number' && Number.isFinite(allowedPayload.queueDepth) ? allowedPayload.queueDepth : undefined,
+            activeOrders:
+              typeof allowedPayload.activeOrders === 'number' && Number.isFinite(allowedPayload.activeOrders) ? allowedPayload.activeOrders : undefined,
+            openPositions:
+              typeof allowedPayload.openPositions === 'number' && Number.isFinite(allowedPayload.openPositions) ? allowedPayload.openPositions : undefined
+          };
+          setBotState((prev) => ({
+            ...prev,
+            ...allowedPayload,
+            queueDepth: safeActivityMetrics.queueDepth ?? prev.queueDepth ?? 0,
+            activeOrders: safeActivityMetrics.activeOrders ?? prev.activeOrders ?? 0,
+            openPositions: safeActivityMetrics.openPositions ?? prev.openPositions ?? 0
+          }));
           return;
         }
 

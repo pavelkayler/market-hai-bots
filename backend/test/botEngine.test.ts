@@ -1141,4 +1141,111 @@ describe('BotEngine snapshot + pause/resume', () => {
     engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1300, ts: now });
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
   });
+
+  it('activity metrics are always numeric across paper lifecycle states', async () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    const fresh = engine.getState();
+    expect(fresh.queueDepth).toBe(0);
+    expect(fresh.activeOrders).toBe(0);
+    expect(fresh.openPositions).toBe(0);
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, maxActiveSymbols: 9_999, signalCounterThreshold: 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1_000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1_020, ts: now });
+
+    const pending = engine.getState();
+    expect(pending.activeOrders).toBe(1);
+    expect(pending.openPositions).toBe(0);
+
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1_021, ts: now });
+    const open = engine.getState();
+    expect(open.activeOrders).toBe(0);
+    expect(open.openPositions).toBe(1);
+
+    engine.pause();
+    const paused = engine.getState();
+    expect(paused.queueDepth).toBe(0);
+    expect(paused.activeOrders).toBe(0);
+    expect(paused.openPositions).toBe(1);
+
+    engine.resume(true);
+    const resumed = engine.getState();
+    expect(resumed.queueDepth).toBe(0);
+    expect(resumed.activeOrders).toBe(0);
+    expect(resumed.openPositions).toBe(1);
+
+    const cancelled = await engine.killSwitch(() => ({ markPrice: 101, openInterestValue: 1_021, ts: now }));
+    expect(cancelled).toBe(0);
+    const killed = engine.getState();
+    expect(killed.queueDepth).toBe(0);
+    expect(killed.activeOrders).toBe(0);
+    expect(killed.openPositions).toBe(1);
+  });
+
+  it('demo activity metrics track queue depth and open positions', async () => {
+    let now = Date.UTC(2025, 0, 1, 0, 1, 0);
+    const client = new FakeDemoTradeClient();
+    client.blockCreate = true;
+    const queueDepthEvents: number[] = [];
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: (payload) => queueDepthEvents.push(payload.depth),
+      demoTradeClient: client
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, mode: 'demo', signalCounterThreshold: 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1_000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1_020, ts: now });
+
+    const queued = engine.getState();
+    expect(queued.queueDepth).toBeGreaterThan(0);
+    expect(queued.activeOrders).toBe(1);
+    expect(queued.openPositions).toBe(0);
+    expect(queueDepthEvents.some((depth) => depth > 0)).toBe(true);
+
+    client.blockCreate = false;
+    await flush();
+
+    const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
+    expect(pendingOrder).toBeTruthy();
+    client.openOrdersBySymbol.set('BTCUSDT', [
+      {
+        symbol: 'BTCUSDT',
+        orderId: pendingOrder?.orderId ?? 'oid-BTCUSDT-1',
+        orderLinkId: pendingOrder?.orderLinkId ?? null,
+        side: 'Buy',
+        qty: String(pendingOrder?.qty ?? 1),
+        price: String(pendingOrder?.limitPrice ?? 101),
+        orderStatus: 'Filled'
+      }
+    ]);
+
+    await engine.pollDemoOrders({
+      BTCUSDT: {
+        markPrice: 102,
+        openInterestValue: 1_020,
+        ts: now
+      }
+    });
+
+    const withPosition = engine.getState();
+    expect(withPosition.activeOrders).toBe(0);
+    expect(withPosition.openPositions).toBe(1);
+  });
 });
