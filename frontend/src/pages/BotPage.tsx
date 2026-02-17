@@ -1133,7 +1133,7 @@ export function BotPage({
               <Alert variant="warning" className="py-2 mb-2 small">
                 <div><strong>Built empty (0 symbols passed filters).</strong></div>
                 <div>
-                  Top reasons: ticker missing {universeDiagnosticsExcluded?.tickerMissing ?? 0}, threshold filtered {universeDiagnosticsExcluded?.thresholdFiltered ?? universeMetricFiltered}, contract-filter excluded {universeContractFiltered}.
+                  Top reasons: threshold filtered {universeDiagnosticsExcluded?.thresholdFiltered ?? universeMetricFiltered}, contract-filter excluded {universeContractFiltered}{(universeDiagnosticsExcluded?.tickerMissing ?? 0) > 0 ? `, tickerMissing ${universeDiagnosticsExcluded?.tickerMissing ?? 0}` : ''}.
                 </div>
               </Alert>
             ) : (

@@ -26,7 +26,8 @@ For each step, record one line in `docs/QA_REPORT.md`:
 ## A) Universe create/get/refresh states
 1. Open Bot page → Universe card.
 2. Enter `minVolPct` and optional `minTurnover`, click **Create**.
-   - Expect status block **Universe ready (N symbols)** or **Built empty (0 symbols passed filters).**
+   - On a live network with valid connectivity/credentials and typical thresholds, expect **Universe ready (N symbols)** with `N > 0`.
+   - If it is empty, expect **Built empty (0 symbols passed filters).** with bucket counts visible, including `tickerMissing` when present.
 3. Click **Get**.
    - Expect same persisted `createdAt`, filters, and counts.
 4. Click **Download universe.json**.

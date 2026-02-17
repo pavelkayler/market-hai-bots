@@ -13,55 +13,75 @@ const normalize = (value: string | null | undefined): string | null => {
   return trimmed.length > 0 ? trimmed.toUpperCase() : null;
 };
 
-const hasDeliveryTime = (value: string | null | undefined): boolean => {
-  if (typeof value !== 'string') {
-    return false;
+const parseDeliveryTimeToNumber = (value: string | number | null | undefined): number | null => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
   }
 
   const trimmed = value.trim();
-  return trimmed.length > 0 && trimmed !== '0';
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const contractTypeIndicatesFutures = (contractType: string | null): boolean => {
+  if (!contractType) {
+    return false;
+  }
+  return contractType.includes('FUTURES') || contractType.includes('DELIVERY');
+};
+
+const contractTypeIndicatesPerp = (contractType: string | null): boolean => {
+  if (!contractType) {
+    return true;
+  }
+  return contractType.includes('PERPETUAL');
+};
+
+const symbolLooksExpiring = (symbol: string | null): boolean => {
+  if (!symbol) {
+    return false;
+  }
+  return /-[0-9]{1,2}[A-Z]{3}[0-9]{2}$/.test(symbol);
 };
 
 export const classifyUsdtLinearPerpetualInstrument = (
   instrument: InstrumentLinear
 ): { included: true } | { included: false; reason: UniverseContractExclusionReason } => {
   const category = normalize(instrument.category) ?? 'LINEAR';
-  const contractType = normalize(instrument.contractType) ?? 'PERPETUAL';
+  const contractType = normalize(instrument.contractType);
   const status = normalize(instrument.status) ?? 'TRADING';
   const settleCoin = normalize(instrument.settleCoin);
   const quoteCoin = normalize(instrument.quoteCoin);
+  const symbol = normalize(instrument.symbol);
+  const deliveryTime = parseDeliveryTimeToNumber(instrument.deliveryTime);
 
 
   if (category !== 'LINEAR') {
     return { included: false, reason: 'nonLinear' };
   }
 
-  if (contractType !== 'PERPETUAL') {
-    return { included: false, reason: hasDeliveryTime(instrument.deliveryTime) ? 'expiring' : 'nonPerp' };
+  if (settleCoin !== 'USDT' || quoteCoin !== 'USDT') {
+    return settleCoin === null || quoteCoin === null ? { included: false, reason: 'unknown' } : { included: false, reason: 'nonUSDT' };
   }
 
-  if (hasDeliveryTime(instrument.deliveryTime)) {
+  if (contractTypeIndicatesFutures(contractType) || (deliveryTime !== null && deliveryTime > 0) || symbolLooksExpiring(symbol)) {
     return { included: false, reason: 'expiring' };
+  }
+
+  if (!contractTypeIndicatesPerp(contractType)) {
+    return { included: false, reason: 'nonPerp' };
   }
 
   if (status !== 'TRADING') {
     return { included: false, reason: 'nonTrading' };
-  }
-
-  if (!settleCoin && !quoteCoin) {
-    const normalizedSymbol = normalize(instrument.symbol);
-    if (normalizedSymbol && normalizedSymbol.endsWith('USDT')) {
-      return { included: true };
-    }
-    return { included: false, reason: 'unknown' };
-  }
-
-  if (settleCoin !== null && settleCoin !== 'USDT') {
-    return { included: false, reason: 'nonUSDT' };
-  }
-
-  if (quoteCoin !== null && quoteCoin !== 'USDT') {
-    return { included: false, reason: 'nonUSDT' };
   }
 
   return { included: true };

@@ -119,6 +119,45 @@ describe('UniverseService diagnostics and matching', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+
+  it('includes perpetual variants and excludes expiring futures in one build', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-service-'));
+    const service = new UniverseService(
+      new FixtureMarketClient(
+        [
+          makeInstrument({ symbol: 'BTCUSDT', contractType: 'PERPETUAL', deliveryTime: null }),
+          makeInstrument({ symbol: 'ETHUSDT', contractType: 'LinearPerpetual', deliveryTime: '' }),
+          makeInstrument({ symbol: 'SOLUSDT', contractType: null, deliveryTime: null }),
+          makeInstrument({ symbol: 'XRPUSDT', contractType: 'LinearFutures', deliveryTime: '1782345600000' }),
+          makeInstrument({ symbol: 'BTCUSDT-26JUN26', contractType: '', deliveryTime: '0' })
+        ],
+        new Map([
+          ['BTCUSDT', makeTicker('BTCUSDT')],
+          ['ETHUSDT', makeTicker('ETHUSDT')],
+          ['SOLUSDT', makeTicker('SOLUSDT')],
+          ['XRPUSDT', makeTicker('XRPUSDT')],
+          ['BTCUSDT-26JUN26', makeTicker('BTCUSDT-26JUN26')]
+        ])
+      ),
+      new ActiveSymbolSet(),
+      logger,
+      path.join(tempDir, 'universe.json')
+    );
+
+    const result = await service.create(5, 5_000_000);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.state.symbols.map((entry) => entry.symbol)).toEqual(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+    expect(result.state.diagnostics?.excluded.expiring).toBe(2);
+    expect(result.state.diagnostics?.excluded.nonPerp).toBe(0);
+    expect(result.state.diagnostics?.excluded.tickerMissing).toBe(0);
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   it('valid perps produce non-zero symbols and consistent sums', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-service-'));
     const service = new UniverseService(
