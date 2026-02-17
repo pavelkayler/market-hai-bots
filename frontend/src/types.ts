@@ -33,6 +33,9 @@ export type BotSettings = {
   maxSpreadBps: number;
   maxTickStalenessMs: number;
   minNotionalUSDT: number;
+  paperEntrySlippageBps?: number;
+  paperExitSlippageBps?: number;
+  paperPartialFillPct?: number;
 };
 
 export type BotConfig = BotSettings;
@@ -195,6 +198,25 @@ export type NoEntryReason = {
   threshold?: number;
 };
 
+
+export type GateSnapshot = {
+  tf: number;
+  higherTfMinutes: number;
+  trendDir: 'up' | 'down' | 'flat' | null;
+  trendBlocked: boolean;
+  trendBlockReason?: string;
+  confirmWindowBars: number;
+  confirmCount: number;
+  confirmZ?: number | null;
+  oiCandleValue?: number | null;
+  oiPrevCandleValue?: number | null;
+  oiCandleDeltaPct?: number | null;
+  continuationOk?: boolean | null;
+  impulseAgeMs?: number | null;
+  spreadBps?: number | null;
+  tickAgeMs?: number | null;
+};
+
 export type SymbolUpdatePayload = {
   symbol: string;
   state: 'IDLE' | 'HOLDING_LONG' | 'HOLDING_SHORT' | 'ARMED_LONG' | 'ARMED_SHORT' | 'ENTRY_PENDING' | 'POSITION_OPEN';
@@ -213,6 +235,7 @@ export type SymbolUpdatePayload = {
   oiDeltaPct?: number | null;
   signalCount24h?: number;
   signalCounterThreshold?: number;
+  gates?: GateSnapshot | null;
 };
 
 export type QueueUpdatePayload = {

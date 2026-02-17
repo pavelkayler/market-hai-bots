@@ -37,7 +37,10 @@ const defaultConfig: BotConfig = {
   minSpreadBps: 0,
   maxSpreadBps: 35,
   maxTickStalenessMs: 2500,
-  minNotionalUSDT: 5
+  minNotionalUSDT: 5,
+  paperEntrySlippageBps: 0,
+  paperExitSlippageBps: 0,
+  paperPartialFillPct: 100
 };
 
 class FakeDemoTradeClient implements IDemoTradeClient {
@@ -1814,5 +1817,124 @@ describe('BotEngine strategy hardening gates', () => {
     const state = engine.getSymbolState('BTCUSDT');
     expect(state?.fsmState).toBe('IDLE');
     expect(state?.lastNoEntryReasons.some((entry) => entry.code === 'OI_2CANDLES_FAIL')).toBe(true);
+  });
+});
+
+
+describe('BotEngine diagnostics + paper model hardening', () => {
+  it('populates gate snapshot and preserves it via snapshot restore', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, confirmWindowBars: 2 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, bid: 101.9, ask: 102.1, spreadBps: 19.6, lastTickTs: now - 250 });
+
+    const state = engine.getSymbolState('BTCUSDT');
+    expect(state?.gates).toBeTruthy();
+    expect(state?.gates?.tf).toBe(1);
+    expect(state?.gates?.higherTfMinutes).toBe(defaultConfig.trendTfMinutes);
+    expect(state?.gates?.spreadBps).toBeCloseTo(19.6, 6);
+    expect(state?.gates?.tickAgeMs).toBeGreaterThanOrEqual(0);
+
+    const snapshotStore = { save: (snapshot: unknown) => (snapshotStore.saved = snapshot), load: () => null, clear: () => undefined, saved: null as unknown };
+    const writer = new BotEngine({ emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined, snapshotStore });
+    writer.setUniverseSymbols(['BTCUSDT']);
+    writer.start(defaultConfig);
+    (writer as unknown as { symbols: Map<string, unknown> }).symbols = (engine as unknown as { symbols: Map<string, unknown> }).symbols;
+    (writer as unknown as { persistSnapshot: () => void }).persistSnapshot();
+
+    const reader = new BotEngine({ emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    reader.restoreFromSnapshot((snapshotStore.saved as { symbols: Record<string, unknown> }) as never);
+    expect(reader.getSymbolState('BTCUSDT')?.gates?.tf).toBe(1);
+  });
+
+  it('renders no-entry log with top reasons and value-threshold comparisons', () => {
+    const logs: string[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      emitLog: (line) => logs.push(line)
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, maxSpreadBps: 10, trendMinMovePct: 100 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99, ask: 101, spreadBps: 200, lastTickTs: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, bid: 100.8, ask: 103.2, spreadBps: 238.1, lastTickTs: now });
+
+    const line = logs.find((entry) => entry.includes('No entry (BTCUSDT) (top reasons):'));
+    expect(line).toBeTruthy();
+    expect(line).toContain('1)');
+    expect(line).toContain('SPREAD_TOO_WIDE');
+    expect(line).toContain('max=10.00bps');
+  });
+
+  it('applies entry/exit slippage and partial fill to paper PnL', () => {
+    const updates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: (payload) => updates.push(payload), emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, paperEntrySlippageBps: 10, paperExitSlippageBps: 10, paperPartialFillPct: 50 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+
+    const opened = updates.find((entry) => entry.status === 'OPEN')?.position;
+    expect(opened).toBeTruthy();
+    expect(opened?.qty).toBeCloseTo((defaultConfig.marginUSDT * defaultConfig.leverage) / 102 * 0.5, 3);
+    expect(opened?.entryPrice).toBeCloseTo(102 * 1.001, 6);
+
+    const tp = opened!.tpPrice;
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: tp, openInterestValue: 1022, ts: now });
+    const closed = updates.find((entry) => entry.status === 'CLOSED')?.position;
+    expect(closed?.exitPrice).toBeCloseTo(tp * (1 - 0.001), 6);
+  });
+
+  it('keeps default paper math unchanged when slippage=0 and partial=100', () => {
+    const updates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: (payload) => updates.push(payload), emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+    const opened = updates.find((entry) => entry.status === 'OPEN')?.position;
+    expect(opened?.entryPrice).toBeCloseTo(102, 8);
+  });
+
+  it('emits pnl sanity warning only when winrate is high and net is negative', () => {
+    const logs: string[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined, emitLog: (line) => logs.push(line) });
+    const mutable = engine as unknown as { recordClosedTrade: (symbol: string, side: 'LONG' | 'SHORT', gross: number, fees: number, net: number, reason: string) => void };
+    for (let i = 0; i < 12; i += 1) {
+      mutable.recordClosedTrade('BTCUSDT', 'LONG', 0, 0, 0.2, 'TP');
+      now += 1;
+    }
+    for (let i = 0; i < 8; i += 1) {
+      mutable.recordClosedTrade('BTCUSDT', 'LONG', 0, 0, -0.5, 'SL');
+      now += 1;
+    }
+    expect(logs.some((line) => line.includes('PNL_SANITY'))).toBe(true);
   });
 });

@@ -32,6 +32,10 @@ Example:
 - `notional = marginUSDT * leverage`
 - Entry qty: `qty = notional / entryPrice` (then lot-size normalization)
 - `entryOffsetPct` is applied first (entry limit), then TP/SL are derived from that entry price.
+- Paper micro-fill knobs (optional, default keeps current behavior):
+  - `paperEntrySlippageBps` (default `0`): adverse fill slippage on entry limit fills.
+  - `paperExitSlippageBps` (default `0`): adverse slippage on TP/SL exits.
+  - `paperPartialFillPct` (default `100`): filled size percent of normalized qty.
 - ROI→price mapping:
   - `tpMovePct = tpRoiPct / leverage / 100`
   - `slMovePct = slRoiPct / leverage / 100`
@@ -114,6 +118,7 @@ Most common causes:
 2. Avg loss bigger than avg win
 3. SL-priority in gap-like discrete ticks (conservative close)
 4. Overly tight TP/SL with high leverage
+5. Slippage/partial fills: even with >55% winrate, net can stay negative if realized R:R after fees/slippage is poor
 
 ### “No entries happening”
 

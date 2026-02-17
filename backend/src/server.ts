@@ -304,7 +304,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         priceDeltaPct: symbolState.lastPriceDeltaPct,
         oiDeltaPct: symbolState.lastOiDeltaPct,
         signalCount24h: symbolState.lastSignalCount24h,
-        signalCounterThreshold: botEngine.getState().config?.signalCounterThreshold
+        signalCounterThreshold: botEngine.getState().config?.signalCounterThreshold,
+        gates: symbolState.gates
       }
     );
   };

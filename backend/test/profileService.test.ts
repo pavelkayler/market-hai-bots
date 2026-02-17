@@ -91,7 +91,7 @@ describe('ProfileService', () => {
       const list = await service.list();
       expect(list.activeProfile).toBe('balanced');
       expect(list.names).toEqual(['aggressive', 'balanced', 'default', 'fast_test_1m', 'overnight_1m_safe']);
-      expect(await service.get('aggressive')).toEqual({ ...aggressiveConfig, leverage: 5 });
+      expect(await service.get('aggressive')).toMatchObject({ ...aggressiveConfig, leverage: 5 });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
