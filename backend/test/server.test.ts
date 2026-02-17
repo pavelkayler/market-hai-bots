@@ -95,6 +95,7 @@ describe('server routes', () => {
   let app = buildIsolatedServer();
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await app.close();
     app = buildIsolatedServer();
   });
@@ -221,6 +222,51 @@ describe('server routes', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+
+
+  it('ops endpoints remain successful when SYSTEM journal append fails (best-effort)', async () => {
+    const appendSpy = vi.spyOn(JournalService.prototype, 'append').mockImplementation(async (entry) => {
+      if (entry.symbol === 'SYSTEM') {
+        throw new Error('journal write failed');
+      }
+    });
+
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 105, openInterestValue: 200000 }]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 3 } });
+    const startResponse = await app.inject({ method: 'POST', url: '/api/bot/start', payload: null });
+    expect(startResponse.statusCode).toBe(200);
+
+    const pauseResponse = await app.inject({ method: 'POST', url: '/api/bot/pause', payload: {} });
+    expect(pauseResponse.statusCode).toBe(200);
+
+    const resumeResponse = await app.inject({ method: 'POST', url: '/api/bot/resume', payload: {} });
+    expect(resumeResponse.statusCode).toBe(200);
+
+    const killResponse = await app.inject({ method: 'POST', url: '/api/bot/kill', payload: {} });
+    expect(killResponse.statusCode).toBe(200);
+
+    const exportResponse = await app.inject({ method: 'GET', url: '/api/export/pack' });
+    expect(exportResponse.statusCode).toBe(200);
+    const zip = await JSZip.loadAsync(exportResponse.rawPayload);
+    expect(Object.keys(zip.files)).toContain('meta.json');
+
+    const stopResponse = await app.inject({ method: 'POST', url: '/api/bot/stop', payload: {} });
+    expect(stopResponse.statusCode).toBe(200);
+
+    const resetResponse = await app.inject({ method: 'POST', url: '/api/reset/all', payload: {} });
+    expect(resetResponse.statusCode).toBe(200);
+
+    expect(appendSpy).toHaveBeenCalled();
+  });
+
   it('GET /api/export/pack returns zip containing expected files and meta contract', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'export-pack-route-test-'));
     const universeFilePath = path.join(tempDir, 'universe.json');
@@ -242,6 +288,7 @@ describe('server routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('application/zip');
     expect(response.headers['content-disposition']).toContain('attachment; filename="export-pack_');
+    expect(response.headers['x-export-included']).toBe('universe.json,profiles.json,runtime.json,journal.ndjson,meta.json');
 
     const zip = await JSZip.loadAsync(response.rawPayload);
     const names = Object.keys(zip.files).sort();
@@ -1692,6 +1739,7 @@ describe('universe exclusions routes', () => {
   let app = buildIsolatedServer();
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await app.close();
     app = buildIsolatedServer();
   });

@@ -733,6 +733,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     await appendOpsJournalEvent('EXPORT_PACK_REQUESTED');
 
     const zip = new JSZip();
+    const includedFiles: string[] = [];
     const notes: string[] = [];
     const counts: { journalLines?: number; universeSymbols?: number; profilesCount?: number } = {};
 
@@ -748,6 +749,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const universeRaw = await readIfPresent(storagePaths.universePath, 'universe.json missing (no persisted universe found)');
     if (universeRaw !== null) {
       zip.file('universe.json', universeRaw);
+      includedFiles.push('universe.json');
       try {
         const parsed = JSON.parse(universeRaw) as { symbols?: unknown };
         if (Array.isArray(parsed.symbols)) {
@@ -761,6 +763,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const profilesRaw = await readIfPresent(storagePaths.profilesPath, 'profiles.json missing (no persisted profiles found)');
     if (profilesRaw !== null) {
       zip.file('profiles.json', profilesRaw);
+      includedFiles.push('profiles.json');
       try {
         const parsed = JSON.parse(profilesRaw) as { names?: unknown };
         if (Array.isArray(parsed.names)) {
@@ -774,6 +777,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const runtimeRaw = await readIfPresent(storagePaths.runtimePath, 'runtime.json missing (no persisted runtime snapshot found)');
     if (runtimeRaw !== null) {
       zip.file('runtime.json', runtimeRaw);
+      includedFiles.push('runtime.json');
     }
 
     const journalRaw = journalExistedBeforeRequest
@@ -783,6 +787,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       notes.push('journal.ndjson missing (no journal file found)');
     } else if (journalRaw !== null) {
       zip.file('journal.ndjson', journalRaw);
+      includedFiles.push('journal.ndjson');
       counts.journalLines = journalRaw.split('\n').filter((line) => line.trim().length > 0).length;
     }
 
@@ -807,11 +812,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         2
       )
     );
+    includedFiles.push('meta.json');
 
     const payload = await zip.generateAsync({ type: 'nodebuffer' });
     const safeTs = new Date().toISOString().replaceAll(':', '-');
     reply.header('Content-Type', 'application/zip');
     reply.header('Content-Disposition', `attachment; filename="export-pack_${safeTs}.zip"`);
+    reply.header('X-Export-Included', includedFiles.join(','));
     return reply.send(payload);
   });
 

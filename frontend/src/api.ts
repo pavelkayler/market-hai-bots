@@ -199,7 +199,7 @@ export async function downloadJournal(format: 'ndjson' | 'json' | 'csv'): Promis
 }
 
 
-export async function exportPack(): Promise<{ blob: Blob; fileName: string }> {
+export async function exportPack(): Promise<{ blob: Blob; fileName: string; includedFiles: string[] }> {
   const response = await fetch(`${API_BASE}/api/export/pack`);
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
@@ -223,8 +223,13 @@ export async function exportPack(): Promise<{ blob: Blob; fileName: string }> {
   const contentDisposition = response.headers.get('Content-Disposition') ?? '';
   const matched = /filename="?([^";]+)"?/i.exec(contentDisposition);
   const fileName = matched?.[1] ?? `export-pack-${new Date().toISOString().replaceAll(':', '-')}.zip`;
+  const includedRaw = response.headers.get('X-Export-Included') ?? '';
+  const includedFiles = includedRaw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 
-  return { blob: await response.blob(), fileName };
+  return { blob: await response.blob(), fileName, includedFiles };
 }
 
 export async function getDoctor(): Promise<DoctorResponse> {

@@ -4,6 +4,7 @@ Percent convention: **`3` means 3%** (not `0.03`).
 
 ## Definitions (operator quick reference)
 
+
 - **Percent inputs**: unless explicitly marked otherwise, `3` means **3%**, not `0.03`.
 - **What volatility means here (`vol24hRangePct`)**: `((high24h - low24h) / low24h) * 100` from **24h ticker** data. It is not 1m candle volatility.
 - **ROI% to price move**: `roiPct / leverage / 100`.
@@ -11,6 +12,36 @@ Percent convention: **`3` means 3%** (not `0.03`).
 - **Net PnL**: `grossPnl - fees` (entry fee + exit fee).
   - Example: 3 wins `+2,+2,+2` and 2 losses `-4,-4` gives gross `-2`. Even with 60% winrate, fees can push net further negative.
 - **Today PnL** uses the **UTC** day boundary (00:00 UTC reset), not local timezone midnight.
+
+
+## Operator quick-start
+
+### Run locally
+- Install deps: `npm i`
+- Backend: `npm --prefix backend run dev`
+- Frontend: `npm --prefix frontend run dev`
+- Both: `npm run dev`
+
+### Minimal operator flow
+1. **Universe create**
+   - Set `minVolPct`/`minTurnover`, click Create.
+   - Verify one of:
+     - `Universe ready (N symbols)`
+     - `Built empty (0 symbols passed filters)`
+     - `Upstream error (last build failed)` with last-good universe still downloadable.
+2. **Start bot and validate lifecycle**
+   - Start in paper mode.
+   - Confirm signal gating -> `ENTRY_PENDING` -> `POSITION_OPEN` -> `POSITION_CLOSED` journal/stat updates.
+3. **Pause/Resume/Kill**
+   - Pause sets `paused=true` and snapshot.
+   - Resume requires snapshot + ready universe.
+   - Kill cancels pending entries; does not force-close open positions.
+4. **Export pack**
+   - Click Export Pack; button is disabled while exporting.
+   - Validate zip: `meta.json` always present; optional files included only when present.
+5. **Reset all**
+   - Allowed only when bot is stopped.
+   - Clears runtime tables (stats/journal/runtime/universe/exclusions/replay) and preserves profiles.
 
 ## Universe filters (24h metrics, v1)
 

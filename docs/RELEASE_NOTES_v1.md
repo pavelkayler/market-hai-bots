@@ -19,7 +19,7 @@
 - Active symbols are only `ENTRY_PENDING` or `POSITION_OPEN`.
 - Reset-all is STOP-only and preserves profiles.
 - Today PnL uses UTC day boundaries.
-- Export pack contains `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`, `meta.json`.
+- Export pack always contains `meta.json`; other files are included only when present (`universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`).
 
 ## Known limitations
 - No ML/autotune/optimizer in v1 (math-only deterministic rules).
@@ -31,3 +31,9 @@
 ## Recommended runs
 - **2-hour smoke**: `fast_test_1m` + guardrails ON.
 - **Overnight**: `overnight_1m_safe` + conservative `maxActiveSymbols` + `dailyLossLimitUSDT`.
+
+
+## Operational safety & export
+- Lifecycle ops journaling is best-effort: pause/resume/kill/reset/export routes still succeed if journal append fails (warn-only logging).
+- Export pack is partial-by-design: `meta.json` is always present, optional files are included only when found, and missing files are listed in `meta.json.notes`.
+- Upstream universe failures return structured 502 payloads while preserving the last good persisted universe for download.
