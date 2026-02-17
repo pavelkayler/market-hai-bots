@@ -195,7 +195,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
             oiValue: payload.oiValue,
             priceDeltaPct: payload.priceDeltaPct,
             oiDeltaPct: payload.oiDeltaPct,
-            entryReason: payload.entryReason
+            entryReason: payload.entryReason,
+            ...(payload.bothCandidate ? { bothCandidate: payload.bothCandidate } : {})
           }
         });
       }
@@ -305,7 +306,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         oiDeltaPct: symbolState.lastOiDeltaPct,
         signalCount24h: symbolState.lastSignalCount24h,
         signalCounterThreshold: botEngine.getState().config?.signalCounterThreshold,
-        gates: symbolState.gates
+        gates: symbolState.gates,
+        bothCandidate: symbolState.lastBothCandidate
       }
     );
   };

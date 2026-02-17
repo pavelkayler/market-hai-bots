@@ -201,3 +201,11 @@ If an invariant is violated, v1 safe fallback is applied: symbol is logged and r
 6. **Reset all tables**
    - Run only while bot is stopped.
    - Verify runtime/stats/universe/journal/exclusions are reset while profiles are preserved.
+
+
+## Operational presets
+
+- `fast_test_1m`: 1–2 hour smoke preset with faster signal cadence and conservative guardrails. Use for short operator validation only (not unattended long sessions).
+- `overnight_1m_safe`: slower higher-quality preset for unattended overnight monitoring with tighter spread/staleness controls and stricter confirmation.
+
+These presets are seeded by backend startup only if missing, so user edits are preserved across upgrades.

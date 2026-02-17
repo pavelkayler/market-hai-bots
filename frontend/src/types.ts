@@ -1,11 +1,13 @@
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
+export type BothTieBreak = 'shortPriority' | 'longPriority' | 'strongerSignal';
 export type BotTf = 1 | 3 | 5;
 export type EntryReason = 'LONG_CONTINUATION' | 'SHORT_CONTINUATION' | 'SHORT_DIVERGENCE';
 
 export type BotSettings = {
   mode: BotMode;
   direction: BotDirection;
+  bothTieBreak: BothTieBreak;
   tf: BotTf;
   /** @deprecated confirmation now uses signalCounterThreshold */
   holdSeconds: number;
@@ -84,6 +86,11 @@ export type BotPerSymbolStats = {
   shortTrades: number;
   shortWins: number;
   shortLosses: number;
+  signalsAttempted: number;
+  signalsConfirmed: number;
+  confirmedBySide: { long: number; short: number };
+  confirmedByEntryReason: Record<EntryReason, number>;
+  avgHoldMs?: number | null;
   lastClosedTs?: number | null;
   lastClosedPnlUSDT?: number | null;
 };
@@ -105,6 +112,10 @@ export type BotStats = {
   signalsConfirmed: number;
   signalsBySide: { long: number; short: number };
   signalsByEntryReason: Record<EntryReason, number>;
+  bothHadBothCount: number;
+  bothChosenLongCount: number;
+  bothChosenShortCount: number;
+  bothTieBreakMode: BothTieBreak;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -199,6 +210,14 @@ export type NoEntryReason = {
 };
 
 
+export type BothCandidateDiagnostics = {
+  hadBoth: boolean;
+  chosen: 'long' | 'short';
+  tieBreak: BothTieBreak;
+  edgeLong?: number;
+  edgeShort?: number;
+};
+
 export type GateSnapshot = {
   tf: number;
   higherTfMinutes: number;
@@ -215,6 +234,7 @@ export type GateSnapshot = {
   impulseAgeMs?: number | null;
   spreadBps?: number | null;
   tickAgeMs?: number | null;
+  bothCandidate?: BothCandidateDiagnostics;
 };
 
 export type SymbolUpdatePayload = {
@@ -236,6 +256,7 @@ export type SymbolUpdatePayload = {
   signalCount24h?: number;
   signalCounterThreshold?: number;
   gates?: GateSnapshot | null;
+  bothCandidate?: BothCandidateDiagnostics | null;
 };
 
 export type QueueUpdatePayload = {

@@ -116,12 +116,17 @@ const EMPTY_BOT_STATS: BotStats = {
   reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 },
   signalsConfirmed: 0,
   signalsBySide: { long: 0, short: 0 },
-  signalsByEntryReason: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
+  signalsByEntryReason: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 },
+  bothHadBothCount: 0,
+  bothChosenLongCount: 0,
+  bothChosenShortCount: 0,
+  bothTieBreakMode: 'shortPriority'
 };
 
 const defaultSettings: BotSettings = {
   mode: 'paper',
   direction: 'both',
+  bothTieBreak: 'shortPriority',
   tf: 1,
   holdSeconds: 3,
   signalCounterThreshold: 2,
@@ -215,6 +220,7 @@ export function BotPage({
   const [journalLimit, setJournalLimit] = useState<number>(200);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [showPhaseHelp, setShowPhaseHelp] = useState<boolean>(false);
+  const [expandedSymbolRows, setExpandedSymbolRows] = useState<Record<string, boolean>>({});
   const [dashboardEntries, setDashboardEntries] = useState<JournalEntry[]>([]);
   const [dashboardFetchedAt, setDashboardFetchedAt] = useState<number | null>(null);
   const profileUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -423,7 +429,7 @@ export function BotPage({
       const response = await getProfile(name);
       persistSettings(response.config);
       setSelectedProfile(name);
-      setStatus(`Loaded profile: ${name}`);
+      setStatus(`Applied profile: ${name}`);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -842,17 +848,10 @@ export function BotPage({
     () => [
       { label: 'Symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
       { label: 'Trades', sortKey: 'trades', accessor: (row) => row.trades, align: 'end' },
-      { label: 'Wins', sortKey: 'wins', accessor: (row) => row.wins, align: 'end' },
-      { label: 'Losses', sortKey: 'losses', accessor: (row) => row.losses, align: 'end' },
       { label: 'Winrate %', sortKey: 'winratePct', accessor: (row) => row.winratePct, align: 'end' },
       { label: 'PnL USDT', sortKey: 'pnlUSDT', accessor: (row) => row.pnlUSDT, align: 'end' },
-      { label: 'Long', sortKey: 'longTrades', accessor: (row) => row.longTrades, align: 'end' },
-      { label: 'Short', sortKey: 'shortTrades', accessor: (row) => row.shortTrades, align: 'end' },
-      { label: 'Price', sortKey: 'markPrice', accessor: (row) => row.markPrice, align: 'end' },
-      { label: 'OI candle', sortKey: 'oiCandleValue', accessor: (row) => row.oiCandleValue, align: 'end' },
-      { label: 'OI Δ', sortKey: 'oiCandleDeltaValue', accessor: (row) => row.oiCandleDeltaValue, align: 'end' },
-      { label: 'OI Δ %', sortKey: 'oiCandleDeltaPct', accessor: (row) => row.oiCandleDeltaPct, align: 'end' },
-      { label: 'Last close', sortKey: 'lastClosedTs', accessor: (row) => row.lastClosedTs ?? null, align: 'end' }
+      { label: 'Confirmed', sortKey: 'signalsConfirmed', accessor: (row) => row.signalsConfirmed, align: 'end' },
+      { label: 'Long/Short confirmed', sortKey: 'confirmedBySide', accessor: (row) => row.confirmedBySide.long - row.confirmedBySide.short, align: 'end' }
     ],
     []
   );
@@ -1214,35 +1213,42 @@ export function BotPage({
               </thead>
               <tbody>
                 {sortedPerSymbolRows.map((row) => (
-                  <tr key={row.symbol}>
-                    <td>
-                      <Button
-                        size="sm"
-                        variant={row.excluded ? 'outline-success' : 'outline-danger'}
-                        disabled={botState.running}
-                        onClick={() => void handleToggleExclude(row.symbol, row.excluded)}
-                      >
-                        {row.excluded ? '+' : '-'}
-                      </Button>
-                    </td>
-                    <td>{row.symbol} {row.excluded ? <Badge bg="secondary">excluded</Badge> : null}</td>
-                    <td className="text-end">{row.trades}</td>
-                    <td className="text-end">{row.wins}</td>
-                    <td className="text-end">{row.losses}</td>
-                    <td className="text-end">{row.winratePct.toFixed(2)}%</td>
-                    <td className="text-end">{formatPnl(row.pnlUSDT)}</td>
-                    <td className="text-end">{row.longTrades} ({row.longTrades > 0 ? ((row.longWins / row.longTrades) * 100).toFixed(1) : '0.0'}%)</td>
-                    <td className="text-end">{row.shortTrades} ({row.shortTrades > 0 ? ((row.shortWins / row.shortTrades) * 100).toFixed(1) : '0.0'}%)</td>
-                    <td className="text-end">{row.markPrice === null ? '-' : `${row.markPrice} (BT)`}</td>
-                    <td className="text-end">{row.oiCandleValue === null ? '-' : row.oiCandleValue.toFixed(2)}</td>
-                    <td className="text-end">{row.oiCandleDeltaValue === null ? '-' : row.oiCandleDeltaValue.toFixed(2)}</td>
-                    <td className="text-end">{row.oiCandleDeltaPct === null ? '-' : `${row.oiCandleDeltaPct.toFixed(2)}%`}</td>
-                    <td className="text-end">{row.lastClosedTs ? new Date(row.lastClosedTs).toLocaleTimeString() : '-'}</td>
-                  </tr>
+                  <>
+                    <tr key={row.symbol}>
+                      <td>
+                        <Button
+                          size="sm"
+                          variant={row.excluded ? 'outline-success' : 'outline-danger'}
+                          disabled={botState.running}
+                          onClick={() => void handleToggleExclude(row.symbol, row.excluded)}
+                        >
+                          {row.excluded ? '+' : '-'}
+                        </Button>
+                      </td>
+                      <td>
+                        <Button size="sm" variant="outline-secondary" onClick={() => setExpandedSymbolRows((prev) => ({ ...prev, [row.symbol]: !prev[row.symbol] }))}>
+                          {expandedSymbolRows[row.symbol] ? '−' : '+'}
+                        </Button>{' '}
+                        {row.symbol} {row.excluded ? <Badge bg="secondary">excluded</Badge> : null}
+                      </td>
+                      <td className="text-end">{row.trades}</td>
+                      <td className="text-end">{row.winratePct.toFixed(2)}%</td>
+                      <td className="text-end">{formatPnl(row.pnlUSDT)}</td>
+                      <td className="text-end">{row.signalsConfirmed}</td>
+                      <td className="text-end">L {row.confirmedBySide.long} / S {row.confirmedBySide.short}</td>
+                    </tr>
+                    {expandedSymbolRows[row.symbol] ? (
+                      <tr key={`${row.symbol}-details`}>
+                        <td colSpan={7} className="small">
+                          Reasons: LONG_CONTINUATION {row.confirmedByEntryReason.LONG_CONTINUATION}, SHORT_CONTINUATION {row.confirmedByEntryReason.SHORT_CONTINUATION}, SHORT_DIVERGENCE {row.confirmedByEntryReason.SHORT_DIVERGENCE} | Avg hold: {row.avgHoldMs === null || row.avgHoldMs === undefined ? '-' : formatDuration(row.avgHoldMs)} | Last close: {row.lastClosedTs ? new Date(row.lastClosedTs).toLocaleString() : '-'}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </>
                 ))}
                 {sortedPerSymbolRows.length === 0 ? (
                   <tr>
-                    <td colSpan={14} className="text-center">No closed trades yet</td>
+                    <td colSpan={7} className="text-center">No closed trades yet</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -1291,10 +1297,10 @@ export function BotPage({
                         Import
                       </Button>
                       <Button size="sm" variant="outline-info" onClick={() => void handleLoadProfile('fast_test_1m')} disabled={!profileNames.includes('fast_test_1m')}>
-                        Load fast_test_1m
+                        Apply fast_test_1m
                       </Button>
                       <Button size="sm" variant="outline-info" onClick={() => void handleLoadProfile('overnight_1m_safe')} disabled={!profileNames.includes('overnight_1m_safe')}>
-                        Load overnight_1m_safe
+                        Apply overnight_1m_safe
                       </Button>
                       <input
                         ref={profileUploadInputRef}
@@ -1335,6 +1341,16 @@ export function BotPage({
                   <option value="long">long</option>
                   <option value="short">short</option>
                   <option value="both">both</option>
+                </Form.Select>
+                <Form.Label className="mt-2">BOTH tie-break <span className="text-muted small">(shortPriority legacy, longPriority symmetric, strongerSignal picks higher edge)</span></Form.Label>
+                <Form.Select
+                  disabled={disableSettings}
+                  value={settings.bothTieBreak}
+                  onChange={(event) => persistSettings({ ...settings, bothTieBreak: event.target.value as BotSettings['bothTieBreak'] })}
+                >
+                  <option value="shortPriority">shortPriority</option>
+                  <option value="longPriority">longPriority</option>
+                  <option value="strongerSignal">strongerSignal</option>
                 </Form.Select>
                 <Form.Text muted>both: engine may take either side (short priority when both fire).</Form.Text>
               </Col>
@@ -1694,8 +1710,11 @@ export function BotPage({
                   const gateDetails = item.gates
                     ? `trend ${item.gates.trendDir ?? '—'}${item.gates.trendBlocked ? ` (${item.gates.trendBlockReason ?? 'blocked'})` : ''} | confirm ${item.gates.confirmCount}/${item.gates.confirmWindowBars}${item.gates.confirmZ === null || item.gates.confirmZ === undefined ? '' : ` z ${item.gates.confirmZ.toFixed(3)}%`} | OI2 ${item.gates.oiCandleDeltaPct === null || item.gates.oiCandleDeltaPct === undefined ? '—' : `${item.gates.oiCandleDeltaPct.toFixed(2)}%`} | spread ${item.gates.spreadBps === null || item.gates.spreadBps === undefined ? '—' : `${item.gates.spreadBps.toFixed(2)}bps`} | tick ${item.gates.tickAgeMs === null || item.gates.tickAgeMs === undefined ? '—' : `${Math.round(item.gates.tickAgeMs)}ms`} | impulse ${item.gates.impulseAgeMs === null || item.gates.impulseAgeMs === undefined ? '—' : `${Math.round(item.gates.impulseAgeMs)}ms`}`
                     : 'gate —';
+                  const bothDetails = item.bothCandidate?.hadBoth
+                    ? ` | BOTH: chosen ${item.bothCandidate.chosen.toUpperCase()} (${item.bothCandidate.tieBreak}${item.bothCandidate.tieBreak === 'strongerSignal' ? ` edgeS=${(item.bothCandidate.edgeShort ?? 0).toFixed(2)} edgeL=${(item.bothCandidate.edgeLong ?? 0).toFixed(2)}` : ''})`
+                    : '';
                   const signalDetails = item.baseline
-                    ? `base ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0}/${item.signalCounterThreshold ?? 0} | ${gateDetails}`
+                    ? `base ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0}/${item.signalCounterThreshold ?? 0} | ${gateDetails}${bothDetails}`
                     : '—';
                   return (
                     <tr key={`phase-${item.symbol}`}>
@@ -1734,6 +1753,7 @@ export function BotPage({
             <hr />
             <div>Confirmed signals: {botStats.signalsConfirmed} (Long {botStats.signalsBySide.long} / Short {botStats.signalsBySide.short})</div>
             <div>By reason — LONG_CONTINUATION: {botStats.signalsByEntryReason.LONG_CONTINUATION}, SHORT_CONTINUATION: {botStats.signalsByEntryReason.SHORT_CONTINUATION}, SHORT_DIVERGENCE: {botStats.signalsByEntryReason.SHORT_DIVERGENCE}</div>
+            <div>BOTH ties ({botStats.bothTieBreakMode}): hadBoth {botStats.bothHadBothCount}, chosen long {botStats.bothChosenLongCount}, chosen short {botStats.bothChosenShortCount}</div>
           </Card.Body>
         </Card>
 

@@ -5,13 +5,14 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { DemoCreateOrderParams, DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
-import { BotEngine, type BotConfig, type OrderUpdatePayload, type PositionUpdatePayload, type SignalPayload } from '../src/bot/botEngine.js';
+import { BotEngine, normalizeBotConfig, type BotConfig, type OrderUpdatePayload, type PositionUpdatePayload, type SignalPayload } from '../src/bot/botEngine.js';
 import { PAPER_FEES } from '../src/bot/paperFees.js';
 import { FileSnapshotStore } from '../src/bot/snapshotStore.js';
 
 const defaultConfig: BotConfig = {
   mode: 'paper',
   direction: 'long',
+  bothTieBreak: 'shortPriority',
   tf: 1,
   holdSeconds: 1,
   signalCounterThreshold: 2,
@@ -382,6 +383,76 @@ describe('BotEngine paper execution', () => {
     expect(signals[0]?.entryReason).toBe('SHORT_DIVERGENCE');
     expect(engine.getSymbolState('BTCUSDT')?.entryReason).toBe('SHORT_DIVERGENCE');
     expect(engine.getStats().reasonCounts.SHORT_DIVERGENCE).toBe(1);
+  });
+
+
+  it('keeps default BOTH tie-break as shortPriority', () => {
+    const normalized = normalizeBotConfig({ ...defaultConfig, direction: 'both' } as unknown as Record<string, unknown>);
+    expect(normalized?.bothTieBreak).toBe('shortPriority');
+  });
+
+  it('uses longPriority tie-break when both long and short are valid', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: (payload) => signals.push(payload), emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'both', bothTieBreak: 'longPriority', signalCounterThreshold: 1, priceUpThrPct: 0, oiUpThrPct: 0 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+
+    expect(signals[0]?.side).toBe('LONG');
+    expect(signals[0]?.bothCandidate).toMatchObject({ hadBoth: true, chosen: 'long', tieBreak: 'longPriority' });
+  });
+
+  it('uses strongerSignal tie-break and stable short fallback on equal edge', () => {
+    const strongerSignals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const strongerEngine = new BotEngine({ now: () => now, emitSignal: (payload) => strongerSignals.push(payload), emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    strongerEngine.setUniverseSymbols(['BTCUSDT']);
+    strongerEngine.start({ ...defaultConfig, direction: 'both', bothTieBreak: 'strongerSignal', signalCounterThreshold: 1, priceUpThrPct: -1, oiUpThrPct: 0 });
+
+    strongerEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    strongerEngine.onMarketUpdate('BTCUSDT', { markPrice: 99.5, openInterestValue: 1000, ts: now });
+    expect(strongerSignals[0]?.side).toBe('SHORT');
+    expect((strongerSignals[0]?.bothCandidate?.edgeShort ?? 0) > (strongerSignals[0]?.bothCandidate?.edgeLong ?? 0)).toBe(true);
+
+    const tieSignals: SignalPayload[] = [];
+    let tieNow = Date.UTC(2025, 0, 1, 2, 0, 0);
+    const tieEngine = new BotEngine({ now: () => tieNow, emitSignal: (payload) => tieSignals.push(payload), emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    tieEngine.setUniverseSymbols(['BTCUSDT']);
+    tieEngine.start({ ...defaultConfig, direction: 'both', bothTieBreak: 'strongerSignal', signalCounterThreshold: 1, priceUpThrPct: 0, oiUpThrPct: 0 });
+    tieEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: tieNow });
+    tieNow += 60_000;
+    tieEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: tieNow });
+    expect(tieSignals[0]?.side).toBe('SHORT');
+    expect(tieSignals[0]?.bothCandidate?.edgeLong).toBeCloseTo(tieSignals[0]?.bothCandidate?.edgeShort ?? 0, 6);
+  });
+
+  it('tracks BOTH tie counters and includes bothCandidate only for hadBoth', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: (payload) => signals.push(payload), emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'both', bothTieBreak: 'shortPriority', signalCounterThreshold: 1, priceUpThrPct: 0, oiUpThrPct: 0 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.5, openInterestValue: 990, ts: now });
+
+    const stats = engine.getStats();
+    expect(stats.bothHadBothCount).toBe(1);
+    expect(stats.bothChosenShortCount).toBe(1);
+    expect(stats.bothChosenLongCount).toBe(0);
+    expect(signals[0]?.bothCandidate?.hadBoth).toBe(true);
+    expect(signals[1]?.bothCandidate).toBeUndefined();
   });
 
   it('blocks confirmed entry when spread is above maxSpreadBps', () => {
@@ -1479,6 +1550,11 @@ describe('BotEngine per-symbol stats and candle OI', () => {
     expect(row?.losses).toBe(1);
     expect(row?.longTrades).toBe(2);
     expect(row?.shortTrades).toBe(0);
+    expect(row?.signalsAttempted).toBeGreaterThanOrEqual(2);
+    expect(row?.signalsConfirmed).toBeGreaterThanOrEqual(2);
+    expect(row?.confirmedBySide.long).toBeGreaterThanOrEqual(2);
+    expect(row?.confirmedByEntryReason.LONG_CONTINUATION).toBeGreaterThanOrEqual(2);
+    expect((row?.avgHoldMs ?? 0) > 0).toBe(true);
   });
 
   it('tracks oi candle current/previous and deltas across TF buckets', () => {

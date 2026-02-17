@@ -11,6 +11,7 @@ import { ProfileService } from '../src/services/profileService.js';
 const aggressiveConfig: BotConfig = {
   mode: 'paper',
   direction: 'short',
+  bothTieBreak: 'shortPriority',
   tf: 1,
   holdSeconds: 1,
   signalCounterThreshold: 2,
@@ -159,7 +160,11 @@ describe('ProfileService', () => {
       const fast = await service.get('fast_test_1m');
       const overnight = await service.get('overnight_1m_safe');
       expect(fast?.leverage).toBe(7);
-      expect(overnight).not.toBeNull();
+      expect(fast?.signalCounterThreshold).toBe(2);
+      expect(overnight?.signalCounterThreshold).toBe(3);
+      expect(overnight?.priceUpThrPct).toBe(0.6);
+      expect(overnight?.oiUpThrPct).toBe(0.8);
+      expect(overnight?.maxTickStalenessMs).toBe(1200);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
