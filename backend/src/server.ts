@@ -806,7 +806,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   app.addHook('onReady', async () => {
     const snapshot = snapshotStore.load();
     if (snapshot) {
-      botEngine.restoreFromSnapshot(snapshot);
+      const normalizedSnapshotConfig =
+        snapshot.config && typeof snapshot.config === 'object' ? normalizeBotConfig(snapshot.config as Record<string, unknown>) : null;
+      botEngine.restoreFromSnapshot({ ...snapshot, config: normalizedSnapshotConfig });
     }
 
     const universe = await universeService.get();

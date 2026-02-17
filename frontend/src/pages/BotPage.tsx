@@ -146,6 +146,7 @@ const defaultSettings: BotSettings = {
   leverage: 10,
   tpRoiPct: 1,
   slRoiPct: 0.7,
+  entryOffsetPct: 0.01,
   maxActiveSymbols: 5,
   dailyLossLimitUSDT: 0,
   maxConsecutiveLosses: 0
@@ -833,12 +834,14 @@ export function BotPage({
           <Card.Body>
             <Row className="g-2 mb-3">
               <Col md={6}>
-                <Form.Label>minVolPct</Form.Label>
+                <Form.Label>minVolPct (%)</Form.Label>
                 <Form.Control type="number" value={minVolPct} onChange={(event) => setMinVolPct(Number(event.target.value))} />
+                <Form.Text muted>Example: 10 = 10%.</Form.Text>
               </Col>
               <Col md={6}>
-                <Form.Label>minTurnover</Form.Label>
+                <Form.Label>minTurnover (USDT / 24h)</Form.Label>
                 <Form.Control type="number" value={minTurnover} onChange={(event) => setMinTurnover(Number(event.target.value))} />
+                <Form.Text muted>Example: 10000000 = 10M USDT/day.</Form.Text>
               </Col>
             </Row>
             <div className="d-flex gap-2 flex-wrap mb-3">
@@ -1058,7 +1061,7 @@ export function BotPage({
                 ) : null}
               </Col>
               <Col>
-                <Form.Label>TF</Form.Label>
+                <Form.Label>TF (min)</Form.Label>
                 <Form.Select
                   disabled={disableSettings}
                   value={settings.tf}
@@ -1073,17 +1076,18 @@ export function BotPage({
             <Row className="g-2 mt-1">
               {(
                 [
-                  ['signalCounterThreshold', 'signalCounterThreshold'],
-                  ['priceUpThrPct', 'priceUpThrPct'],
-                  ['oiUpThrPct', 'oiUpThrPct'],
-                  ['oiCandleThrPct', 'oiCandleThrPct'],
-                  ['marginUSDT', 'marginUSDT'],
-                  ['leverage', 'leverage'],
-                  ['tpRoiPct', 'tpRoiPct'],
-                  ['slRoiPct', 'slRoiPct'],
-                  ['maxActiveSymbols', 'maxActiveSymbols'],
-                  ['dailyLossLimitUSDT', 'dailyLossLimitUSDT'],
-                  ['maxConsecutiveLosses', 'maxConsecutiveLosses']
+                  ['signalCounterThreshold (count / 24h)', 'signalCounterThreshold'],
+                  ['priceUpThrPct (%)', 'priceUpThrPct'],
+                  ['oiUpThrPct (%)', 'oiUpThrPct'],
+                  ['oiCandleThrPct (%)', 'oiCandleThrPct'],
+                  ['marginUSDT (USDT)', 'marginUSDT'],
+                  ['leverage (x)', 'leverage'],
+                  ['tpRoiPct (% ROI)', 'tpRoiPct'],
+                  ['slRoiPct (% ROI)', 'slRoiPct'],
+                  ['entryOffsetPct (%)', 'entryOffsetPct'],
+                  ['maxActiveSymbols (count)', 'maxActiveSymbols'],
+                  ['dailyLossLimitUSDT (USDT)', 'dailyLossLimitUSDT'],
+                  ['maxConsecutiveLosses (count)', 'maxConsecutiveLosses']
                 ] as const
               ).map(([label, key]) => (
                 <Col md={4} key={key}>
@@ -1096,12 +1100,26 @@ export function BotPage({
                   />
                   {key === 'signalCounterThreshold' ? (
                     <Form.Text muted>
-                      Сколько раз сигнал должен повториться за последние 24ч (на символ), чтобы открыть сделку. Дедуп: не чаще 1 раза на TF-свечу.
+                      How many confirmations are required in the last 24h for a symbol. Example: 2.
                     </Form.Text>
                   ) : null}
+                  {key === 'priceUpThrPct' ? <Form.Text muted>Example: 0.5 = 0.5%.</Form.Text> : null}
+                  {key === 'oiUpThrPct' ? <Form.Text muted>Example: 50 = 50%.</Form.Text> : null}
                   {key === 'oiCandleThrPct' ? (
-                    <Form.Text muted>Порог % изменения OI value между текущей и предыдущей TF-свечой (UTC). 0 = выключено.</Form.Text>
+                    <Form.Text muted>OI candle change threshold. Example: 5 = 5%, 0 = off.</Form.Text>
                   ) : null}
+                  {key === 'marginUSDT' ? <Form.Text muted>Example: 100 = 100 USDT margin.</Form.Text> : null}
+                  {key === 'leverage' ? <Form.Text muted>Example: 10 = 10x.</Form.Text> : null}
+                  {key === 'tpRoiPct' ? <Form.Text muted>Example: 1 = 1% ROI target.</Form.Text> : null}
+                  {key === 'slRoiPct' ? <Form.Text muted>Example: 0.7 = 0.7% ROI stop.</Form.Text> : null}
+                  {key === 'entryOffsetPct' ? (
+                    <Form.Text muted>
+                      Entry limit offset from mark. LONG: mark*(1 - x/100), SHORT: mark*(1 + x/100). Example: 0.05 =&gt; 0.05%.
+                    </Form.Text>
+                  ) : null}
+                  {key === 'maxActiveSymbols' ? <Form.Text muted>Example: 5 symbols max.</Form.Text> : null}
+                  {key === 'dailyLossLimitUSDT' ? <Form.Text muted>Example: 50 = pause at -50 USDT/day.</Form.Text> : null}
+                  {key === 'maxConsecutiveLosses' ? <Form.Text muted>Example: 3 losses in a row.</Form.Text> : null}
                 </Col>
               ))}
             </Row>
@@ -1151,6 +1169,7 @@ export function BotPage({
                     Snapshot found. Click Resume to continue monitoring/orders.
                   </Alert>
                 ) : null}
+                {botState.lastConfig ? <div className="mt-2">entryOffsetPct: {botState.lastConfig.entryOffsetPct}%</div> : null}
               </Card.Body>
             </Card>
             <Badge bg="info" className="me-2">
