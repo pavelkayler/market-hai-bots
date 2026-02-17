@@ -18,7 +18,12 @@ describe('Bybit parsers', () => {
       symbol: 'BTCUSDT',
       markPrice: 65000.5,
       openInterestValue: 123456789.01,
-      ts: 1739942400123
+      ts: 1739942400123,
+      lastPrice: null,
+      bid: null,
+      ask: null,
+      spreadBps: null,
+      lastTickTs: 1739942400123
     });
   });
 

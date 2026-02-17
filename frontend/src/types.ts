@@ -30,6 +30,8 @@ export type BotSettings = {
   requireOiTwoCandles: boolean;
   maxSecondsIntoCandle: number;
   minSpreadBps: number;
+  maxSpreadBps: number;
+  maxTickStalenessMs: number;
   minNotionalUSDT: number;
 };
 
@@ -97,6 +99,9 @@ export type BotStats = {
   long: BotStatsSideBreakdown;
   short: BotStatsSideBreakdown;
   reasonCounts: Record<EntryReason, number>;
+  signalsConfirmed: number;
+  signalsBySide: { long: number; short: number };
+  signalsByEntryReason: Record<EntryReason, number>;
   lastClosed?: {
     ts: number;
     symbol: string;

@@ -113,7 +113,10 @@ const EMPTY_BOT_STATS: BotStats = {
   guardrailPauseReason: null,
   long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
   short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
-  reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
+  reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 },
+  signalsConfirmed: 0,
+  signalsBySide: { long: 0, short: 0 },
+  signalsByEntryReason: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
 };
 
 const defaultSettings: BotSettings = {
@@ -142,6 +145,8 @@ const defaultSettings: BotSettings = {
   requireOiTwoCandles: false,
   maxSecondsIntoCandle: 45,
   minSpreadBps: 0,
+  maxSpreadBps: 35,
+  maxTickStalenessMs: 2500,
   minNotionalUSDT: 5
 };
 
@@ -1282,6 +1287,12 @@ export function BotPage({
                       <Button size="sm" variant="outline-secondary" onClick={() => profileUploadInputRef.current?.click()}>
                         Import
                       </Button>
+                      <Button size="sm" variant="outline-info" onClick={() => void handleLoadProfile('fast_test_1m')} disabled={!profileNames.includes('fast_test_1m')}>
+                        Load fast_test_1m
+                      </Button>
+                      <Button size="sm" variant="outline-info" onClick={() => void handleLoadProfile('overnight_1m_safe')} disabled={!profileNames.includes('overnight_1m_safe')}>
+                        Load overnight_1m_safe
+                      </Button>
                       <input
                         ref={profileUploadInputRef}
                         type="file"
@@ -1456,9 +1467,14 @@ export function BotPage({
                     <Form.Text muted>Gate tiny orders. Example: 5 for paper/demo sanity.</Form.Text>
                   </Col>
                   <Col md={4}>
-                    <Form.Label>minSpreadBps <span className="text-muted small">(bps)</span></Form.Label>
-                    <Form.Control disabled={disableSettings} type="number" step={0.1} placeholder="0" value={settings.minSpreadBps} onChange={(event) => persistSettings({ ...settings, minSpreadBps: Number(event.target.value) })} />
-                    <Form.Text muted>Optional spread filter. Keep 0 when spread feed is unavailable.</Form.Text>
+                    <Form.Label>maxSpreadBps <span className="text-muted small">(bps)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.1} placeholder="35" value={settings.maxSpreadBps} onChange={(event) => persistSettings({ ...settings, maxSpreadBps: Number(event.target.value) })} />
+                    <Form.Text muted>Maximum spread for entries. 35 = 0.35% spread max.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>maxTickStalenessMs <span className="text-muted small">(ms)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={100} placeholder="2500" value={settings.maxTickStalenessMs} onChange={(event) => persistSettings({ ...settings, maxTickStalenessMs: Number(event.target.value) })} />
+                    <Form.Text muted>Block entries when latest tick age exceeds this value.</Form.Text>
                   </Col>
                 </Row>
               </Card.Body>
@@ -1709,6 +1725,9 @@ export function BotPage({
             <div>Long continuation: {botStats.reasonCounts.LONG_CONTINUATION}</div>
             <div>Short continuation: {botStats.reasonCounts.SHORT_CONTINUATION}</div>
             <div>Short divergence: {botStats.reasonCounts.SHORT_DIVERGENCE}</div>
+            <hr />
+            <div>Confirmed signals: {botStats.signalsConfirmed} (Long {botStats.signalsBySide.long} / Short {botStats.signalsBySide.short})</div>
+            <div>By reason — LONG_CONTINUATION: {botStats.signalsByEntryReason.LONG_CONTINUATION}, SHORT_CONTINUATION: {botStats.signalsByEntryReason.SHORT_CONTINUATION}, SHORT_DIVERGENCE: {botStats.signalsByEntryReason.SHORT_DIVERGENCE}</div>
           </Card.Body>
         </Card>
 

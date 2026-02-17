@@ -35,6 +35,8 @@ const defaultConfig: BotConfig = {
   requireOiTwoCandles: false,
   maxSecondsIntoCandle: 45,
   minSpreadBps: 0,
+  maxSpreadBps: 35,
+  maxTickStalenessMs: 2500,
   minNotionalUSDT: 5
 };
 
@@ -377,6 +379,54 @@ describe('BotEngine paper execution', () => {
     expect(signals[0]?.entryReason).toBe('SHORT_DIVERGENCE');
     expect(engine.getSymbolState('BTCUSDT')?.entryReason).toBe('SHORT_DIVERGENCE');
     expect(engine.getStats().reasonCounts.SHORT_DIVERGENCE).toBe(1);
+  });
+
+  it('blocks confirmed entry when spread is above maxSpreadBps', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, maxSpreadBps: 10, maxTickStalenessMs: 0 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99.95, ask: 100.05, spreadBps: 10 });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, bid: 101, ask: 103, spreadBps: 196.08 });
+
+    expect(engine.getSymbolState('BTCUSDT')?.lastNoEntryReasons[0]?.code).toBe('SPREAD_TOO_WIDE');
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
+  });
+
+  it('blocks confirmed entry when last tick is stale', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, maxSpreadBps: 0, maxTickStalenessMs: 1000 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, lastTickTs: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, lastTickTs: now - 5000 });
+
+    expect(engine.getSymbolState('BTCUSDT')?.lastNoEntryReasons[0]?.code).toBe('TICK_STALE');
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
+  });
+
+  it('increments signal-mix counters before liquidity gates block entry', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4, maxSpreadBps: 10, maxTickStalenessMs: 0 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99.95, ask: 100.05, spreadBps: 10 });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, ts: now, bid: 98, ask: 99.5, spreadBps: 151.13 });
+
+    const stats = engine.getStats();
+    expect(stats.signalsConfirmed).toBe(1);
+    expect(stats.signalsBySide.short).toBe(1);
+    expect(stats.signalsByEntryReason.SHORT_DIVERGENCE).toBe(1);
+    expect(engine.getSymbolState('BTCUSDT')?.lastNoEntryReasons[0]?.code).toBe('SPREAD_TOO_WIDE');
   });
 
   it('does not emit short divergence reason when direction=long', () => {

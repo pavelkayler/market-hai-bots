@@ -83,7 +83,9 @@ Stats and per-symbol performance use **net** PnL.
 - `requireOiTwoCandles`: requires last 2 OI candle deltas to be >= `oiCandleThrPct` (for both LONG and SHORT divergence mode OI-rising checks).
 - `maxSecondsIntoCandle`: keeps very-late impulse triggers out (especially on 1m).
 - `minNotionalUSDT`: block tiny entries in paper/demo.
-- `minSpreadBps`: optional spread gate placeholder (keep `0` when spread is unavailable).
+- `maxSpreadBps`: max allowed spread in **bps** for new entries. Example: `35` means `0.35%` max spread.
+- `maxTickStalenessMs`: max age (ms) of latest ticker update before blocking new entries (`TICK_STALE`).
+- `minSpreadBps`: legacy field retained for backward compatibility (not used by v1 gating).
 
 ### Example presets
 
@@ -98,7 +100,7 @@ Stats and per-symbol performance use **net** PnL.
 - `maxConsecutiveLosses = 3`
 - `dailyLossLimitUSDT = 10`
 
-Starter profiles auto-seeded on first run (when profiles file is absent):
+Starter profiles are auto-seeded when missing (without overwriting existing profile names):
 - `default`
 - `fast_test_1m`
 - `overnight_1m_safe`

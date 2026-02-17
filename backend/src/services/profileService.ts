@@ -36,6 +36,8 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   requireOiTwoCandles: false,
   maxSecondsIntoCandle: 45,
   minSpreadBps: 0,
+  maxSpreadBps: 35,
+  maxTickStalenessMs: 2500,
   minNotionalUSDT: 5
 };
 
@@ -53,7 +55,9 @@ const FAST_TEST_1M_PROFILE: BotConfig = {
   requireOiTwoCandles: false,
   maxActiveSymbols: 2,
   dailyLossLimitUSDT: 8,
-  maxConsecutiveLosses: 3
+  maxConsecutiveLosses: 3,
+  maxSpreadBps: 35,
+  maxTickStalenessMs: 2500
 };
 
 const OVERNIGHT_1M_SAFE_PROFILE: BotConfig = {
@@ -70,7 +74,9 @@ const OVERNIGHT_1M_SAFE_PROFILE: BotConfig = {
   requireOiTwoCandles: true,
   maxActiveSymbols: 1,
   dailyLossLimitUSDT: 6,
-  maxConsecutiveLosses: 2
+  maxConsecutiveLosses: 2,
+  maxSpreadBps: 50,
+  maxTickStalenessMs: 5000
 };
 
 const DEFAULT_PROFILES_FILE: ProfilesFile = {
@@ -178,6 +184,8 @@ export class ProfileService {
       state.profiles[DEFAULT_PROFILE_NAME] = DEFAULT_PROFILE_CONFIG;
     }
 
+    this.seedStarterProfiles(state);
+
     await this.persist(state);
   }
 
@@ -224,6 +232,8 @@ export class ProfileService {
         profiles[DEFAULT_PROFILE_NAME] = DEFAULT_PROFILE_CONFIG;
       }
 
+      this.seedStarterProfiles({ activeProfile: DEFAULT_PROFILE_NAME, profiles });
+
       const activeProfile =
         typeof parsed.activeProfile === 'string' && profiles[parsed.activeProfile] ? parsed.activeProfile : DEFAULT_PROFILE_NAME;
 
@@ -246,5 +256,15 @@ export class ProfileService {
     };
     await mkdir(path.dirname(this.filePath), { recursive: true });
     await writeFile(this.filePath, JSON.stringify(this.state, null, 2), 'utf-8');
+  }
+
+  private seedStarterProfiles(state: ProfilesFile): void {
+    if (!state.profiles.fast_test_1m) {
+      state.profiles.fast_test_1m = FAST_TEST_1M_PROFILE;
+    }
+
+    if (!state.profiles.overnight_1m_safe) {
+      state.profiles.overnight_1m_safe = OVERNIGHT_1M_SAFE_PROFILE;
+    }
   }
 }

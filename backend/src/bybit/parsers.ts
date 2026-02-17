@@ -5,6 +5,11 @@ export type WsTickerEvent = {
   markPrice: number;
   openInterestValue: number;
   ts: number;
+  lastPrice: number | null;
+  bid: number | null;
+  ask: number | null;
+  spreadBps: number | null;
+  lastTickTs: number;
 };
 
 export type DemoOpenOrder = {
@@ -68,6 +73,12 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
   const data = rawData as {
     symbol?: unknown;
     markPrice?: unknown;
+    lastPrice?: unknown;
+    bid1Price?: unknown;
+    ask1Price?: unknown;
+    bidPrice?: unknown;
+    askPrice?: unknown;
+    ts?: unknown;
     openInterestValue?: unknown;
   };
 
@@ -76,6 +87,7 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
   }
 
   const markPrice = parseFiniteNumber(data.markPrice);
+  const lastPrice = parseFiniteNumber(data.lastPrice);
   const openInterestValue = parseFiniteNumber(data.openInterestValue);
   const ts = parseFiniteNumber(packet.ts);
 
@@ -83,11 +95,22 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
     return null;
   }
 
+  const bid = parseFiniteNumber(data.bid1Price ?? data.bidPrice);
+  const ask = parseFiniteNumber(data.ask1Price ?? data.askPrice);
+  const mid = bid !== null && ask !== null ? (bid + ask) / 2 : null;
+  const spreadBps = bid !== null && ask !== null && mid && mid > 0 ? ((ask - bid) / mid) * 10_000 : null;
+  const dataTs = parseFiniteNumber(data.ts);
+
   return {
     symbol: data.symbol,
     markPrice,
     openInterestValue,
-    ts
+    ts,
+    lastPrice,
+    bid,
+    ask,
+    spreadBps,
+    lastTickTs: dataTs ?? ts
   };
 };
 
