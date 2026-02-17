@@ -1001,13 +1001,13 @@ export function BotPage({
             <Row className="g-2 mb-3">
               <Col md={6}>
                 <Form.Label>minVolPct (%)</Form.Label>
-                <Form.Control type="number" value={minVolPct} onChange={(event) => setMinVolPct(Number(event.target.value))} />
-                <Form.Text muted>Example: 10 = 10%.</Form.Text>
+                <Form.Control type="number" step={0.01} placeholder="10" value={minVolPct} onChange={(event) => setMinVolPct(Number(event.target.value))} />
+                <Form.Text muted>24h range volatility filter (not 1m activity). Example: 10 means 10%.</Form.Text>
               </Col>
               <Col md={6}>
                 <Form.Label>minTurnover (USDT / 24h)</Form.Label>
-                <Form.Control type="number" value={minTurnover} onChange={(event) => setMinTurnover(Number(event.target.value))} />
-                <Form.Text muted>Example: 10000000 = 10M USDT/day.</Form.Text>
+                <Form.Control type="number" step={1} placeholder="5000000" value={minTurnover} onChange={(event) => setMinTurnover(Number(event.target.value))} />
+                <Form.Text muted>24h turnover filter. Example: 5,000,000.</Form.Text>
               </Col>
             </Row>
             <div className="d-flex gap-2 flex-wrap mb-3">
@@ -1252,7 +1252,9 @@ export function BotPage({
             </Card>
             <Row className="g-2">
               <Col>
-                <Form.Label>Mode</Form.Label>
+                <Form.Label>
+                  mode <span className="text-muted small">(paper/demo)</span>
+                </Form.Label>
                 <Form.Select
                   disabled={disableSettings}
                   value={settings.mode}
@@ -1261,9 +1263,12 @@ export function BotPage({
                   <option value="paper">paper</option>
                   <option value="demo">demo</option>
                 </Form.Select>
+                <Form.Text muted>paper simulates fills locally; demo sends real demo REST orders.</Form.Text>
               </Col>
               <Col>
-                <Form.Label>Direction</Form.Label>
+                <Form.Label>
+                  direction <span className="text-muted small">(long/short/both)</span>
+                </Form.Label>
                 <Form.Select
                   disabled={disableSettings}
                   value={settings.direction}
@@ -1273,12 +1278,12 @@ export function BotPage({
                   <option value="short">short</option>
                   <option value="both">both</option>
                 </Form.Select>
-                {settings.direction === 'both' ? (
-                  <Form.Text muted>Short has priority when both signals appear.</Form.Text>
-                ) : null}
+                <Form.Text muted>both: engine may take either side (short priority when both fire).</Form.Text>
               </Col>
               <Col>
-                <Form.Label>TF (min)</Form.Label>
+                <Form.Label>
+                  TF <span className="text-muted small">(min)</span>
+                </Form.Label>
                 <Form.Select
                   disabled={disableSettings}
                   value={settings.tf}
@@ -1288,63 +1293,127 @@ export function BotPage({
                   <option value="3">3</option>
                   <option value="5">5</option>
                 </Form.Select>
+                <Form.Text muted>Signal candle size in minutes (UTC boundaries). Example: 1.</Form.Text>
               </Col>
             </Row>
-            <Row className="g-2 mt-1">
-              {(
-                [
-                  ['signalCounterThreshold (count / 24h)', 'signalCounterThreshold'],
-                  ['priceUpThrPct (%)', 'priceUpThrPct'],
-                  ['oiUpThrPct (%)', 'oiUpThrPct'],
-                  ['oiCandleThrPct (%)', 'oiCandleThrPct'],
-                  ['marginUSDT (USDT)', 'marginUSDT'],
-                  ['leverage (x)', 'leverage'],
-                  ['tpRoiPct (% ROI)', 'tpRoiPct'],
-                  ['slRoiPct (% ROI)', 'slRoiPct'],
-                  ['entryOffsetPct (%)', 'entryOffsetPct'],
-                  ['maxActiveSymbols (count)', 'maxActiveSymbols'],
-                  ['dailyLossLimitUSDT (USDT)', 'dailyLossLimitUSDT'],
-                  ['maxConsecutiveLosses (count)', 'maxConsecutiveLosses'],
-                  ['trendTf (min: 5/15)', 'trendTf'],
-                  ['trendThrPct (%)', 'trendThrPct'],
-                  ['confirmMovePct (%)', 'confirmMovePct'],
-                  ['confirmMaxCandles', 'confirmMaxCandles'],
-                  ['maxSecondsIntoCandle (sec)', 'maxSecondsIntoCandle']
-                ] as const
-              ).map(([label, key]) => (
-                <Col md={4} key={key}>
-                  <Form.Label>{label}</Form.Label>
-                  <Form.Control
-                    disabled={disableSettings}
-                    type="number"
-                    value={settings[key]}
-                    onChange={(event) => persistSettings({ ...settings, [key]: Number(event.target.value) })}
-                  />
-                  {key === 'signalCounterThreshold' ? (
-                    <Form.Text muted>
-                      How many confirmations are required in the last 24h for a symbol. Example: 2.
-                    </Form.Text>
-                  ) : null}
-                  {key === 'priceUpThrPct' ? <Form.Text muted>Example: 0.5 = 0.5%.</Form.Text> : null}
-                  {key === 'oiUpThrPct' ? <Form.Text muted>Example: 50 = 50%.</Form.Text> : null}
-                  {key === 'oiCandleThrPct' ? (
-                    <Form.Text muted>OI candle change threshold. Example: 5 = 5%, 0 = off.</Form.Text>
-                  ) : null}
-                  {key === 'marginUSDT' ? <Form.Text muted>Example: 100 = 100 USDT margin.</Form.Text> : null}
-                  {key === 'leverage' ? <Form.Text muted>Example: 10 = 10x.</Form.Text> : null}
-                  {key === 'tpRoiPct' ? <Form.Text muted>Example: 1 = 1% ROI target.</Form.Text> : null}
-                  {key === 'slRoiPct' ? <Form.Text muted>Example: 0.7 = 0.7% ROI stop.</Form.Text> : null}
-                  {key === 'entryOffsetPct' ? (
-                    <Form.Text muted>
-                      Entry limit offset from mark. LONG: mark*(1 - x/100), SHORT: mark*(1 + x/100). Example: 0.05 =&gt; 0.05%.
-                    </Form.Text>
-                  ) : null}
-                  {key === 'maxActiveSymbols' ? <Form.Text muted>Example: 5 symbols max.</Form.Text> : null}
-                  {key === 'dailyLossLimitUSDT' ? <Form.Text muted>Example: 50 = pause at -50 USDT/day.</Form.Text> : null}
-                  {key === 'maxConsecutiveLosses' ? <Form.Text muted>Example: 3 losses in a row.</Form.Text> : null}
-                </Col>
-              ))}
-            </Row>
+            <Card className="mt-3">
+              <Card.Header className="py-2">Signal thresholds</Card.Header>
+              <Card.Body>
+                <Form.Text muted className="d-block mb-2">Percent convention: 3 means 3% (not 0.03).</Form.Text>
+                <Row className="g-2">
+                  <Col md={4}>
+                    <Form.Label>signalCounterThreshold <span className="text-muted small">(count)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="2" value={settings.signalCounterThreshold} onChange={(event) => persistSettings({ ...settings, signalCounterThreshold: Number(event.target.value) })} />
+                    <Form.Text muted>Signals required within rolling 24h. Default: 2.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>priceUpThrPct <span className="text-muted small">(%)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.5" value={settings.priceUpThrPct} onChange={(event) => persistSettings({ ...settings, priceUpThrPct: Number(event.target.value) })} />
+                    <Form.Text muted>Price move threshold vs baseline. 0.5 = 0.5% (not 0.005); SHORT uses symmetric price-down.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>oiUpThrPct <span className="text-muted small">(%)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="1" value={settings.oiUpThrPct} onChange={(event) => persistSettings({ ...settings, oiUpThrPct: Number(event.target.value) })} />
+                    <Form.Text muted>OI move threshold vs baseline. 1 = 1% (not 0.01); divergence-short also checks OI↑ with price↓.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>oiCandleThrPct <span className="text-muted small">(%)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.5" value={settings.oiCandleThrPct} onChange={(event) => persistSettings({ ...settings, oiCandleThrPct: Number(event.target.value) })} />
+                    <Form.Text muted>Candle-to-candle OI% change vs previous candle. 0.5 = 0.5% (not 0.005); symmetric for long/short.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>maxSecondsIntoCandle <span className="text-muted small">(sec)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="45" value={settings.maxSecondsIntoCandle} onChange={(event) => persistSettings({ ...settings, maxSecondsIntoCandle: Number(event.target.value) })} />
+                    <Form.Text muted>Impulse must occur early in the candle. Example: 45 (for TF=1m).</Form.Text>
+                  </Col>
+                </Row>
+              </Card.Body>
+            </Card>
+
+            <Card className="mt-3">
+              <Card.Header className="py-2">Trend / confirmation</Card.Header>
+              <Card.Body>
+                <Row className="g-2">
+                  <Col md={4}>
+                    <Form.Label>trendTf <span className="text-muted small">(min)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="5" value={settings.trendTf} onChange={(event) => persistSettings({ ...settings, trendTf: Number(event.target.value) as 5 | 15 })} />
+                    <Form.Text muted>Trend filter using 5m/15m close-to-close slope. Example: TF=5, thr=0.15%.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>trendThrPct <span className="text-muted small">(%)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.15" value={settings.trendThrPct} onChange={(event) => persistSettings({ ...settings, trendThrPct: Number(event.target.value) })} />
+                    <Form.Text muted>Trend filter using 5m/15m close-to-close slope. 0.15 = 0.15% (not 0.0015).</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>confirmMovePct <span className="text-muted small">(%)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.1" value={settings.confirmMovePct} onChange={(event) => persistSettings({ ...settings, confirmMovePct: Number(event.target.value) })} />
+                    <Form.Text muted>Continuation confirmation threshold on next candle. 0.1 means 0.1%.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>confirmMaxCandles <span className="text-muted small">(count)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="1" value={settings.confirmMaxCandles} onChange={(event) => persistSettings({ ...settings, confirmMaxCandles: Number(event.target.value) })} />
+                    <Form.Text muted>How many candles are allowed for continuation confirm. Example: 1.</Form.Text>
+                  </Col>
+                </Row>
+              </Card.Body>
+            </Card>
+
+            <Card className="mt-3">
+              <Card.Header className="py-2">Execution / risk</Card.Header>
+              <Card.Body>
+                <Row className="g-2">
+                  <Col md={4}>
+                    <Form.Label>marginUSDT <span className="text-muted small">(USDT)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="100" value={settings.marginUSDT} onChange={(event) => persistSettings({ ...settings, marginUSDT: Number(event.target.value) })} />
+                    <Form.Text muted>Margin per trade (collateral). Example: 100.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>leverage <span className="text-muted small">(x)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="10" value={settings.leverage} onChange={(event) => persistSettings({ ...settings, leverage: Number(event.target.value) })} />
+                    <Form.Text muted>Notional = margin * leverage. Example: 10.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>tpRoiPct <span className="text-muted small">(% ROI)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="3" value={settings.tpRoiPct} onChange={(event) => persistSettings({ ...settings, tpRoiPct: Number(event.target.value) })} />
+                    <Form.Text muted>TP ROI% on margin. 3 means +3% ROI; price move ≈ 3/leverage.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>slRoiPct <span className="text-muted small">(% ROI)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="3" value={settings.slRoiPct} onChange={(event) => persistSettings({ ...settings, slRoiPct: Number(event.target.value) })} />
+                    <Form.Text muted>SL ROI% on margin. 3 means -3% ROI; price move ≈ 3/leverage.</Form.Text>
+                  </Col>
+                  <Col md={8}>
+                    <Form.Label>entryOffsetPct <span className="text-muted small">(%)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.01" value={settings.entryOffsetPct} onChange={(event) => persistSettings({ ...settings, entryOffsetPct: Number(event.target.value) })} />
+                    <Form.Text muted>LONG entryLimit = mark*(1 - off/100), SHORT entryLimit = mark*(1 + off/100).</Form.Text>
+                    <Form.Text muted>Example: 0.01 = 0.01% offset (not 0.0001).</Form.Text>
+                  </Col>
+                </Row>
+              </Card.Body>
+            </Card>
+
+            <Card className="mt-3">
+              <Card.Header className="py-2">Guardrails</Card.Header>
+              <Card.Body>
+                <Row className="g-2">
+                  <Col md={4}>
+                    <Form.Label>maxActiveSymbols <span className="text-muted small">(count)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="3" value={settings.maxActiveSymbols} onChange={(event) => persistSettings({ ...settings, maxActiveSymbols: Number(event.target.value) })} />
+                    <Form.Text muted>Max concurrent active symbols (entries/positions). Example: 3.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>dailyLossLimitUSDT <span className="text-muted small">(USDT)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="10" value={settings.dailyLossLimitUSDT} onChange={(event) => persistSettings({ ...settings, dailyLossLimitUSDT: Number(event.target.value) })} />
+                    <Form.Text muted>Auto-pause when todayPnL &lt;= -limit. Example: 10.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>maxConsecutiveLosses <span className="text-muted small">(count)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="3" value={settings.maxConsecutiveLosses} onChange={(event) => persistSettings({ ...settings, maxConsecutiveLosses: Number(event.target.value) })} />
+                    <Form.Text muted>Auto-pause after N losses in a row. Example: 3.</Form.Text>
+                  </Col>
+                </Row>
+              </Card.Body>
+            </Card>
           </Card.Body>
         </Card>
       </Col>
