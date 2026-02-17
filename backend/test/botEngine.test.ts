@@ -452,6 +452,46 @@ describe('BotEngine paper execution', () => {
     expect(stats.pnlUSDT).toBeLessThan(0);
   });
 
+  it('tracks long/short breakdown for closed trades', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
+    engine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1030, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1035, ts: now });
+
+    now += 60_000;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 98, openInterestValue: 980, ts: now });
+    now += 1;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 99, openInterestValue: 970, ts: now });
+    now += 1;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 960, ts: now });
+
+    const stats = engine.getStats();
+    expect(stats.long.trades).toBe(1);
+    expect(stats.long.wins).toBe(1);
+    expect(stats.long.losses).toBe(0);
+    expect(stats.long.winratePct).toBe(100);
+    expect(stats.short.trades).toBe(1);
+    expect(stats.short.wins).toBe(0);
+    expect(stats.short.losses).toBe(1);
+    expect(stats.short.winratePct).toBe(0);
+  });
 
   it('maxActiveSymbols prevents a second order when limit=1', () => {
     const logs: string[] = [];
@@ -963,12 +1003,14 @@ describe('BotEngine snapshot + pause/resume', () => {
     const snapshot = new FileSnapshotStore(runtimePath).load();
     expect(snapshot?.stats?.totalTrades).toBe(1);
     expect(snapshot?.stats?.wins).toBe(1);
+    expect(snapshot?.stats?.long.trades).toBe(1);
 
     if (snapshot) {
       reader.restoreFromSnapshot(snapshot);
     }
     expect(reader.getStats().totalTrades).toBe(1);
     expect(reader.getStats().wins).toBe(1);
+    expect(reader.getStats().long.trades).toBe(1);
 
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -1037,6 +1079,33 @@ describe('BotEngine snapshot + pause/resume', () => {
     engine.restoreFromSnapshot(snapshot);
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
     expect(engine.getState()).toMatchObject({ paused: true, running: false, hasSnapshot: true });
+  });
+
+  it('tracks active uptime across start/pause/resume/stop', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.start(defaultConfig);
+    now += 5_000;
+    expect(engine.getState().uptimeMs).toBe(5_000);
+
+    engine.pause();
+    now += 5_000;
+    expect(engine.getState().uptimeMs).toBe(5_000);
+
+    engine.resume(true);
+    now += 2_000;
+    expect(engine.getState().uptimeMs).toBe(7_000);
+
+    engine.stop();
+    now += 3_000;
+    expect(engine.getState().uptimeMs).toBe(7_000);
   });
 
   it('pause stops new signals but allows paper TP/SL close, and resume re-enables generation', () => {

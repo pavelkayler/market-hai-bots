@@ -42,6 +42,16 @@ export type BotState = {
   activeOrders: number;
   openPositions: number;
   startedAt?: number | null;
+  uptimeMs: number;
+};
+
+
+export type BotStatsSideBreakdown = {
+  trades: number;
+  wins: number;
+  losses: number;
+  winratePct: number;
+  pnlUSDT: number;
 };
 
 export type BotStats = {
@@ -55,6 +65,8 @@ export type BotStats = {
   lossStreak: number;
   todayPnlUSDT: number;
   guardrailPauseReason: string | null;
+  long: BotStatsSideBreakdown;
+  short: BotStatsSideBreakdown;
   lastClosed?: {
     ts: number;
     symbol: string;
