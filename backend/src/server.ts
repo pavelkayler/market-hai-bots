@@ -948,8 +948,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.get('/api/universe/download', async (_request, reply) => {
     const state = await universeService.get();
-    if (!state?.ready) {
-      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+    if (!state) {
+      return reply.code(404).send({ ok: false, error: 'UNIVERSE_NOT_FOUND' });
     }
 
     return reply.type('application/json').send(state);

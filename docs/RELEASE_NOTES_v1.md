@@ -10,6 +10,8 @@
 - Guardrails: daily loss limit, max consecutive losses, max active symbols, and kill switch.
 - Signal confirmation via rolling 24h `signalCounterThreshold` with per-UTC-candle dedupe.
 - Operator diagnostics: phase monitor, no-entry reason codes, reason counters, exclusions persistence.
+- Universe empty-build semantics clarified: build can be `ready=true` with `symbols=[]`, with persisted filter/counter diagnostics and downloadable `universe.json`.
+- Compact operator layout pass: denser card/table spacing with unchanged controls/help text.
 
 ## Invariants
 - Percent inputs follow: `3` means `3%`.

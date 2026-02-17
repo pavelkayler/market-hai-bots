@@ -186,7 +186,10 @@ export type UniverseState = {
   contractFilter?: 'USDT_LINEAR_PERPETUAL_ONLY';
   filteredOut?: {
     expiringOrNonPerp: number;
+    byMetricThreshold?: number;
+    dataUnavailable?: number;
   };
+  notReadyReason?: string;
   excluded?: string[];
 };
 
