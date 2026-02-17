@@ -16,6 +16,7 @@ export type BotSettings = {
   leverage: number;
   tpRoiPct: number;
   slRoiPct: number;
+  entryOffsetPct: number;
   maxActiveSymbols: number;
   dailyLossLimitUSDT: number;
   maxConsecutiveLosses: number;

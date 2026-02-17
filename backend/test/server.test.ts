@@ -116,7 +116,8 @@ describe('server routes', () => {
       marginUSDT: 100,
       leverage: 10,
       tpRoiPct: 1,
-      slRoiPct: 0.7
+      slRoiPct: 0.7,
+      entryOffsetPct: 0
     };
 
     const saveResponse = await app.inject({
@@ -306,7 +307,8 @@ describe('server routes', () => {
         marginUSDT: 100,
         leverage: 2,
         tpRoiPct: 1,
-        slRoiPct: 1
+        slRoiPct: 1,
+        entryOffsetPct: 0
       }
     });
 
@@ -384,7 +386,8 @@ describe('server routes', () => {
           marginUSDT: 100,
           leverage: 2,
           tpRoiPct: 1,
-          slRoiPct: 1
+          slRoiPct: 1,
+          entryOffsetPct: 0
         }
       });
 
@@ -690,7 +693,8 @@ describe('server routes', () => {
         marginUSDT: 100,
         leverage: 2,
         tpRoiPct: 1,
-        slRoiPct: 1
+        slRoiPct: 1,
+        entryOffsetPct: 0
       }
     });
 
@@ -743,7 +747,8 @@ describe('server routes', () => {
         marginUSDT: 100,
         leverage: 2,
         tpRoiPct: 1,
-        slRoiPct: 1
+        slRoiPct: 1,
+        entryOffsetPct: 0
       }
     });
 
@@ -817,7 +822,8 @@ describe('server routes', () => {
         marginUSDT: 100,
         leverage: 2,
         tpRoiPct: 1,
-        slRoiPct: 1
+        slRoiPct: 1,
+        entryOffsetPct: 0
       }
     });
 

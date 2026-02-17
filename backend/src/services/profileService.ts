@@ -23,6 +23,7 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   leverage: 10,
   tpRoiPct: 1,
   slRoiPct: 0.7,
+  entryOffsetPct: 0.01,
   maxActiveSymbols: 5,
   dailyLossLimitUSDT: 0,
   maxConsecutiveLosses: 0
@@ -201,4 +202,3 @@ export class ProfileService {
     await writeFile(this.filePath, JSON.stringify(this.state, null, 2), 'utf-8');
   }
 }
-

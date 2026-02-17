@@ -25,6 +25,7 @@ export type BotConfig = {
   leverage: number;
   tpRoiPct: number;
   slRoiPct: number;
+  entryOffsetPct: number;
   maxActiveSymbols: number;
   dailyLossLimitUSDT: number;
   maxConsecutiveLosses: number;
@@ -131,6 +132,7 @@ const DEFAULT_SIGNAL_COUNTER_THRESHOLD = 2;
 const DEFAULT_OI_UP_THR_PCT = 50;
 const DEFAULT_OI_CANDLE_THR_PCT = 0;
 const DEFAULT_MAX_ACTIVE_SYMBOLS = 5;
+const DEFAULT_ENTRY_OFFSET_PCT = 0.01;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 
@@ -167,6 +169,8 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     typeof raw.maxConsecutiveLosses === 'number' && Number.isFinite(raw.maxConsecutiveLosses)
       ? Math.max(0, Math.floor(raw.maxConsecutiveLosses))
       : 0;
+  const entryOffsetPct =
+    typeof raw.entryOffsetPct === 'number' && Number.isFinite(raw.entryOffsetPct) ? Math.max(0, raw.entryOffsetPct) : DEFAULT_ENTRY_OFFSET_PCT;
 
   const numericFields = ['priceUpThrPct', 'marginUSDT', 'leverage', 'tpRoiPct', 'slRoiPct'] as const;
   for (const key of numericFields) {
@@ -188,6 +192,7 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     leverage: raw.leverage as number,
     tpRoiPct: raw.tpRoiPct as number,
     slRoiPct: raw.slRoiPct as number,
+    entryOffsetPct,
     maxActiveSymbols,
     dailyLossLimitUSDT,
     maxConsecutiveLosses
@@ -641,13 +646,16 @@ export class BotEngine {
 
     const now = this.now();
     const orderSide = side === 'LONG' ? 'Buy' : 'Sell';
+    const off = Math.max(0, this.state.config.entryOffsetPct ?? DEFAULT_ENTRY_OFFSET_PCT);
+    const unroundedEntryLimit = side === 'LONG' ? marketState.markPrice * (1 - off / 100) : marketState.markPrice * (1 + off / 100);
+    const entryLimit = this.roundPriceLikeMark(unroundedEntryLimit, marketState.markPrice);
     const tpMovePct = this.state.config.tpRoiPct / this.state.config.leverage;
     const slMovePct = this.state.config.slRoiPct / this.state.config.leverage;
 
     const pendingOrder: PaperPendingOrder = {
       symbol: symbolState.symbol,
       side: orderSide,
-      limitPrice: marketState.markPrice,
+      limitPrice: entryLimit,
       qty,
       placedTs: now,
       expiresTs: now + ONE_HOUR_MS,
@@ -721,21 +729,7 @@ export class BotEngine {
 
     const now = this.now();
     if (now >= pendingOrder.expiresTs) {
-      if (pendingOrder.sentToExchange && this.deps.demoTradeClient) {
-        await this.deps.demoTradeClient.cancelOrder({
-          symbol: symbolState.symbol,
-          orderId: pendingOrder.orderId,
-          orderLinkId: pendingOrder.orderLinkId
-        });
-      }
-
-      symbolState.pendingOrder = null;
-      symbolState.demo = null;
-      symbolState.fsmState = 'IDLE';
-      this.resetBaseline(symbolState, marketState);
-      this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'EXPIRED', order: pendingOrder });
-      this.updateSummaryCounts();
-      this.persistSnapshot();
+      await this.cancelSymbolPendingOrder(symbolState, marketState, 'EXPIRED');
       return;
     }
 
@@ -1077,7 +1071,7 @@ export class BotEngine {
     }
 
     const cancelledOrder = symbolState.pendingOrder;
-    if (this.state.config?.mode === 'demo' && status === 'CANCELLED') {
+    if (this.state.config?.mode === 'demo') {
       const removed = this.demoQueue.removePendingJob(symbolState.symbol);
       if (!removed && cancelledOrder.sentToExchange && this.deps.demoTradeClient) {
         await this.deps.demoTradeClient.cancelOrder({
@@ -1100,6 +1094,30 @@ export class BotEngine {
 
   private roundQty(qty: number): number {
     return Math.round(qty * 1000) / 1000;
+  }
+
+  private roundPriceLikeMark(price: number, markPrice: number): number {
+    if (!Number.isFinite(price)) {
+      return markPrice;
+    }
+
+    const precision = Math.max(4, this.getDecimalPlaces(markPrice));
+    return Number(price.toFixed(precision));
+  }
+
+  private getDecimalPlaces(value: number): number {
+    if (!Number.isFinite(value)) {
+      return 8;
+    }
+
+    const normalized = value.toString().toLowerCase();
+    if (normalized.includes('e-')) {
+      const exponent = Number(normalized.split('e-')[1]);
+      return Number.isFinite(exponent) ? Math.min(8, Math.max(0, exponent)) : 8;
+    }
+
+    const decimalPart = normalized.split('.')[1] ?? '';
+    return Math.min(8, Math.max(0, decimalPart.length));
   }
 
   private canEvaluateAtCurrentGate(symbolState: SymbolRuntimeState, now: number): boolean {

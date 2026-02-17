@@ -20,6 +20,7 @@ const aggressiveConfig: BotConfig = {
   leverage: 20,
   tpRoiPct: 1.5,
   slRoiPct: 0.8,
+  entryOffsetPct: 0,
   maxActiveSymbols: 5,
   dailyLossLimitUSDT: 0,
   maxConsecutiveLosses: 0
@@ -78,6 +79,41 @@ describe('ProfileService', () => {
       expect(list.activeProfile).toBe('balanced');
       expect(list.names).toEqual(['aggressive', 'balanced', 'default']);
       expect(await service.get('aggressive')).toEqual({ ...aggressiveConfig, leverage: 5 });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes missing entryOffsetPct in imported legacy profile to default 0.01', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'profile-service-legacy-test-'));
+    const service = new ProfileService(path.join(tempDir, 'profiles.json'));
+
+    try {
+      await service.import({
+        activeProfile: 'legacy',
+        profiles: {
+          legacy: {
+            mode: 'paper',
+            direction: 'both',
+            tf: 1,
+            holdSeconds: 3,
+            signalCounterThreshold: 2,
+            priceUpThrPct: 0.5,
+            oiUpThrPct: 50,
+            oiCandleThrPct: 0,
+            marginUSDT: 100,
+            leverage: 10,
+            tpRoiPct: 1,
+            slRoiPct: 0.7,
+            maxActiveSymbols: 5,
+            dailyLossLimitUSDT: 0,
+            maxConsecutiveLosses: 0
+          }
+        }
+      });
+
+      const profile = await service.get('legacy');
+      expect(profile?.entryOffsetPct).toBe(0.01);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

@@ -21,6 +21,7 @@ const defaultConfig: BotConfig = {
   leverage: 2,
   tpRoiPct: 1,
   slRoiPct: 1,
+  entryOffsetPct: 0,
   maxActiveSymbols: 5,
   dailyLossLimitUSDT: 0,
   maxConsecutiveLosses: 0
@@ -92,6 +93,37 @@ describe('BotEngine paper execution', () => {
     expect(orderUpdates).toHaveLength(1);
     expect(orderUpdates[0].status).toBe('PLACED');
     expect(positionUpdates).toEqual([]);
+  });
+
+  it('applies entryOffsetPct to paper entry limit for LONG and keeps mark-cross fill rule', () => {
+    const orderUpdates: OrderUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: (payload) => orderUpdates.push(payload),
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, entryOffsetPct: 0.1, signalCounterThreshold: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, ts: now });
+
+    const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
+    expect(pendingOrder?.limitPrice).toBe(101.898);
+
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.9, openInterestValue: 1011, ts: now });
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
+
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.898, openInterestValue: 1012, ts: now });
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('POSITION_OPEN');
+    expect(orderUpdates.map((entry) => entry.status)).toEqual(['PLACED', 'FILLED']);
   });
 
 
@@ -626,6 +658,36 @@ describe('BotEngine demo execution', () => {
     expect(engine.getSymbolState('ETHUSDT')?.overrideGateOnce).toBe(true);
   });
 
+  it('manual cancel after send calls demo cancel and resets baseline/override', async () => {
+    const demoClient = new FakeDemoTradeClient();
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+
+    const engine = new BotEngine({
+      now: () => now,
+      demoTradeClient: demoClient,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, mode: 'demo' });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    await flush();
+
+    const cancelled = await engine.cancelPendingOrder('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    expect(cancelled).toBe(true);
+    expect(demoClient.cancelCalls).toHaveLength(1);
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
+    expect(engine.getSymbolState('BTCUSDT')?.overrideGateOnce).toBe(true);
+  });
+
   it('auto-expire after 1 hour triggers cancel call', async () => {
     const demoClient = new FakeDemoTradeClient();
     const orderUpdates: OrderUpdatePayload[] = [];
@@ -654,6 +716,32 @@ describe('BotEngine demo execution', () => {
 
     expect(demoClient.cancelCalls).toHaveLength(1);
     expect(orderUpdates.map((entry) => entry.status)).toContain('EXPIRED');
+    expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
+    expect(engine.getSymbolState('BTCUSDT')?.overrideGateOnce).toBe(true);
+  });
+
+  it('uses offset limit price for demo create order payload', async () => {
+    const demoClient = new FakeDemoTradeClient();
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      demoTradeClient: demoClient,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, mode: 'demo', entryOffsetPct: 0.1, signalCounterThreshold: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, ts: now });
+    await flush();
+
+    expect(demoClient.createCalls).toHaveLength(1);
+    expect(demoClient.createCalls[0].price).toBe('101.898');
   });
 
   it('polling transitions pending to filled to position open', async () => {
