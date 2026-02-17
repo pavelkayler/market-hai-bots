@@ -622,7 +622,12 @@ export function BotPage({
       URL.revokeObjectURL(url);
       setStatus('Universe download started');
     } catch (err) {
-      setError((err as Error).message);
+      const apiError = err as ApiRequestError;
+      if (apiError.code) {
+        setError(`Universe download failed (${apiError.code}): ${apiError.message}`);
+        return;
+      }
+      setError(apiError.message);
     }
   };
 
@@ -962,6 +967,12 @@ export function BotPage({
   };
 
   const disableSettings = botState.running;
+  const universeExists = typeof universeState.createdAt === 'number';
+  const universeSymbolCount = universeState.symbols?.length ?? 0;
+  const universeContractFiltered = universeState.filteredOut?.expiringOrNonPerp ?? 0;
+  const universeMetricFiltered = universeState.filteredOut?.byMetricThreshold ?? 0;
+  const universeDataUnavailable = universeState.filteredOut?.dataUnavailable ?? 0;
+  const universeIsEmpty = universeExists && universeSymbolCount === 0;
 
   const formatEntryReason = (reason: EntryReason | null | undefined): string => {
     if (!reason) {
@@ -975,7 +986,7 @@ export function BotPage({
   };
 
   return (
-    <Row className="g-3">
+    <Row className="g-2 ui-dense">
       <Col md={12}>
         <Card>
           <Card.Header>Dashboard</Card.Header>
@@ -1061,7 +1072,7 @@ export function BotPage({
         <Card>
           <Card.Header>Universe</Card.Header>
           <Card.Body>
-            <Row className="g-2 mb-3">
+            <Row className="g-2 mb-2">
               <Col md={6}>
                 <Form.Label>minVolPct (%, 24h range)</Form.Label>
                 <Form.Control type="number" step={0.01} placeholder="10" value={minVolPct} onChange={(event) => setMinVolPct(Number(event.target.value))} />
@@ -1073,7 +1084,7 @@ export function BotPage({
                 <Form.Text muted>Example: 5,000,000 means {'>='} $5M turnover in last 24h.</Form.Text>
               </Col>
             </Row>
-            <div className="d-flex gap-2 flex-wrap mb-3">
+            <div className="d-flex gap-2 flex-wrap mb-2">
               <Button onClick={() => void handleUniverseAction('create')}>Create</Button>
               <Button variant="secondary" onClick={() => void handleUniverseAction('refresh')}>
                 Refresh
@@ -1097,7 +1108,7 @@ export function BotPage({
               <div>Symbols: {universeState.symbols?.length ?? 0}</div>
               <div>Excluded: {excludedSymbols.length}</div>
               <div>Contract filter: USDT Linear Perpetual only</div>
-              <details className="mt-2">
+              <details className="mt-1 ui-dense-disclosure">
                 <summary>How volatility is computed</summary>
                 <div className="mt-1">
                   {universeState.metricDefinition ?? 'turnover24hUSDT from Bybit 24h ticker; vol24hRangePct=(high24h-low24h)/low24h*100 (not candle volatility)'}
@@ -1106,13 +1117,26 @@ export function BotPage({
               {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? (
                 <div>Filtered out (non-perp/expiring): {universeState.filteredOut.expiringOrNonPerp}</div>
               ) : null}
+              {typeof universeState.filteredOut?.byMetricThreshold === 'number' ? <div>Filtered out (turnover/vol thresholds): {universeState.filteredOut.byMetricThreshold}</div> : null}
+              {typeof universeState.filteredOut?.dataUnavailable === 'number' ? <div>Filtered out (ticker data unavailable): {universeState.filteredOut.dataUnavailable}</div> : null}
             </div>
+
+            {universeIsEmpty ? (
+              <Alert variant="warning" className="mb-2 py-2">
+                <div><strong>Universe built but 0 symbols passed filters.</strong></div>
+                <ul className="mb-0 ps-3">
+                  <li>Contract filter excluded {universeContractFiltered}.</li>
+                  <li>Turnover/volatility filters excluded {universeMetricFiltered}.</li>
+                  <li>Data unavailable for {universeDataUnavailable}.</li>
+                </ul>
+              </Alert>
+            ) : null}
 
             <div className="d-flex gap-2 flex-wrap mt-3">
               <Button variant="outline-primary" onClick={() => setShowUniverseSymbols((value) => !value)}>
                 Universe Symbols
               </Button>
-              <Button variant="outline-success" onClick={() => void handleDownloadUniverseJson()}>
+              <Button variant="outline-success" onClick={() => void handleDownloadUniverseJson()} disabled={!universeExists}>
                 Download universe.json
               </Button>
               <Button variant="outline-secondary" onClick={() => void handleCopySymbols()}>
@@ -1122,7 +1146,7 @@ export function BotPage({
 
             <Collapse in={showUniverseSymbols}>
               <div className="mt-3">
-                {!universeState.ready ? <Alert variant="warning">Universe is not ready. Create it first.</Alert> : null}
+                {!universeExists ? <Alert variant="warning" className="py-2">Universe has not been created yet.</Alert> : null}
                 <Row className="g-2 mb-2">
                   <Col md={12}>
                     <Form.Control
@@ -1151,6 +1175,15 @@ export function BotPage({
                         <td className="text-center">{entry.forcedActive ? <Badge bg="warning" text="dark">forced</Badge> : <Badge bg="secondary">no</Badge>}</td>
                       </tr>
                     ))}
+                    {paginatedUniverseSymbols.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="text-center text-muted">
+                          {universeExists
+                            ? 'No symbols in universe. Adjust minTurnover/minVolPct or review filter counts above.'
+                            : 'Create a universe to populate symbols.'}
+                        </td>
+                      </tr>
+                    ) : null}
                   </tbody>
                 </Table>
                 <div className="d-flex align-items-center justify-content-between">

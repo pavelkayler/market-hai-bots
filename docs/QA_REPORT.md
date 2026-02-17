@@ -55,3 +55,31 @@
 - Backend typecheck: pass.
 - Frontend build: pass.
 - Root scripts (`test`, `build:frontend`): pass.
+
+---
+
+## QA Report — Release Readiness (Task 47/48/49 follow-up)
+
+## Scope executed
+- Verified universe empty-build behavior is persisted and operator-visible through create/get/download.
+- Verified frontend messaging no longer shows "Create it first" when a universe exists but is empty.
+- Verified compact layout adjustments for Universe card and table density.
+- Updated docs for invariants/API/QA/settings troubleshooting consistency.
+
+## Fixes applied
+1. Backend universe semantics
+   - Empty build now remains a persisted `ready=true` universe state.
+   - Added additive empty diagnostics counters (`byMetricThreshold`, `dataUnavailable`) alongside `expiringOrNonPerp`.
+   - `/api/universe/download` now returns persisted state whenever it exists; missing state returns `UNIVERSE_NOT_FOUND`.
+2. Frontend UX
+   - Empty universe now shows explicit operator message with reason counts.
+   - Universe symbols table renders a clear empty-state row.
+   - Download button enabled only when a persisted universe exists.
+3. Docs alignment
+   - Updated invariants to reflect signal-counter primary gating and percent conventions.
+   - Documented empty-universe + download semantics in API and QA runbook.
+   - Added troubleshooting order for 0-symbol universe outcomes.
+
+## Validation status
+- Backend tests: pass.
+- Frontend build: pass.

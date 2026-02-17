@@ -13,7 +13,13 @@ Use this as an operator runbook. Each step includes expected outcome.
    - Expect stable sort and pagination; search narrows results immediately.
 5. Click **Download universe.json**.
    - Expect JSON file download with canonical fields (`ready`, `filters`, `contractFilter`, `symbols`).
-6. Click **Clear Universe**.
+6. Create an intentionally strict universe (high `minTurnover` and/or high `minVolPct`) so 0 symbols pass.
+   - Expect `createdAt` present, empty-state message (`Universe built but 0 symbols passed filters.`), and reason counts shown.
+   - Expect **Download universe.json** to still work for this empty persisted state.
+7. Layout smoke:
+   - Universe card fits without large blank vertical gaps.
+   - Universe/table rows appear dense and aligned; no overlap/clipping.
+8. Click **Clear Universe**.
    - Expect `ready=false` and symbols table cleared.
 
 ## B) Bot lifecycle / snapshot behavior

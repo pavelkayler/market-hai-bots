@@ -785,17 +785,74 @@ describe('server routes', () => {
       contractFilter: 'USDT_LINEAR_PERPETUAL_ONLY',
       filters: { minVolPct: 5, minTurnover: 10000000 },
       metricDefinition: expect.any(String),
+      filteredOut: {
+        expiringOrNonPerp: 0,
+        byMetricThreshold: 0,
+        dataUnavailable: 0
+      },
       symbols: [expect.objectContaining({ symbol: 'BTCUSDT' })]
     });
 
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it('GET /api/universe/download returns UNIVERSE_NOT_READY when missing', async () => {
+  it('GET /api/universe/download returns UNIVERSE_NOT_FOUND when missing', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/universe/download' });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ ok: false, error: 'UNIVERSE_NOT_READY' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ ok: false, error: 'UNIVERSE_NOT_FOUND' });
+  });
+
+  it('persists empty universe as ready and allows get/download', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-empty-'));
+    const universeFilePath = path.join(tempDir, 'data', 'universe.json');
+
+    app = buildIsolatedServer({
+      universeFilePath,
+      marketClient: new FakeMarketClient(
+        [
+          { symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 },
+          { symbol: 'ETHUSDT', qtyStep: 0.01, minOrderQty: 0.01, maxOrderQty: 1000 }
+        ],
+        new Map([
+          [
+            'BTCUSDT',
+            { symbol: 'BTCUSDT', turnover24h: 1000, highPrice24h: 101, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }
+          ]
+        ])
+      )
+    });
+
+    const createResponse = await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 50, minTurnover: 10000000 } });
+    expect(createResponse.statusCode).toBe(200);
+
+    const getResponse = await app.inject({ method: 'GET', url: '/api/universe' });
+    expect(getResponse.statusCode).toBe(200);
+    expect(getResponse.json()).toMatchObject({
+      ok: true,
+      ready: true,
+      symbols: [],
+      filteredOut: {
+        expiringOrNonPerp: 0,
+        byMetricThreshold: 1,
+        dataUnavailable: 1
+      },
+      contractFilter: 'USDT_LINEAR_PERPETUAL_ONLY'
+    });
+
+    const downloadResponse = await app.inject({ method: 'GET', url: '/api/universe/download' });
+    expect(downloadResponse.statusCode).toBe(200);
+    expect(downloadResponse.json()).toMatchObject({
+      ready: true,
+      symbols: [],
+      filteredOut: {
+        expiringOrNonPerp: 0,
+        byMetricThreshold: 1,
+        dataUnavailable: 1
+      }
+    });
+
+    await rm(tempDir, { recursive: true, force: true });
   });
 
 

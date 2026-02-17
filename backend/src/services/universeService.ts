@@ -71,12 +71,14 @@ export class UniverseService {
       totalSymbols: built.totalFetched,
       validSymbols: built.validCount,
       filteredOut: {
-        expiringOrNonPerp: built.totalFetched - built.validCount
+        expiringOrNonPerp: built.totalFetched - built.validCount,
+        byMetricThreshold: built.metricFilteredCount,
+        dataUnavailable: built.dataUnavailableCount
       },
       contractFilter: UNIVERSE_CONTRACT_FILTER
     };
 
-    this.state = this.applyReadyStateForContractFilter(nextState);
+    this.state = this.normalizeBuiltState(nextState);
     await this.persist(this.state);
 
     return { state: this.state, totalFetched: built.totalFetched, forcedActive: 0 };
@@ -103,12 +105,14 @@ export class UniverseService {
       totalSymbols: built.totalFetched,
       validSymbols: built.validCount,
       filteredOut: {
-        expiringOrNonPerp: built.totalFetched - built.validCount
+        expiringOrNonPerp: built.totalFetched - built.validCount,
+        byMetricThreshold: built.metricFilteredCount,
+        dataUnavailable: built.dataUnavailableCount
       },
       contractFilter: UNIVERSE_CONTRACT_FILTER
     };
 
-    this.state = this.applyReadyStateForContractFilter(nextState);
+    this.state = this.normalizeBuiltState(nextState);
     await this.persist(this.state);
 
     return { state: this.state, forcedActive: forced.forcedCount };
@@ -156,6 +160,8 @@ export class UniverseService {
     entries: UniverseEntry[];
     totalFetched: number;
     validCount: number;
+    metricFilteredCount: number;
+    dataUnavailableCount: number;
     tickersBySymbol: Map<string, TickerLinear>;
     instrumentBySymbol: Map<string, InstrumentLinear>;
   }> {
@@ -164,10 +170,13 @@ export class UniverseService {
     const instrumentBySymbol = new Map(instruments.map((instrument) => [instrument.symbol, instrument]));
     const entries: UniverseEntry[] = [];
     const validInstruments = instruments.filter((instrument) => isUsdtLinearPerpetualInstrument(instrument));
+    let metricFilteredCount = 0;
+    let dataUnavailableCount = 0;
 
     for (const instrument of validInstruments) {
       const ticker = tickersBySymbol.get(instrument.symbol);
       if (!ticker) {
+        dataUnavailableCount += 1;
         continue;
       }
 
@@ -175,11 +184,13 @@ export class UniverseService {
       const highPrice24h = ticker.highPrice24h;
       const lowPrice24h = ticker.lowPrice24h;
       if (!isFiniteNumber(turnover24hUSDT) || !isFiniteNumber(highPrice24h) || !isFiniteNumber(lowPrice24h)) {
+        dataUnavailableCount += 1;
         continue;
       }
 
       const vol24hRangePct = computeVol24hRangePct(highPrice24h, lowPrice24h);
       if (!isFiniteNumber(vol24hRangePct)) {
+        dataUnavailableCount += 1;
         continue;
       }
 
@@ -197,10 +208,20 @@ export class UniverseService {
           minOrderQty: instrument.minOrderQty,
           maxOrderQty: instrument.maxOrderQty
         });
+      } else {
+        metricFilteredCount += 1;
       }
     }
 
-    return { entries, totalFetched: instruments.length, validCount: validInstruments.length, tickersBySymbol, instrumentBySymbol };
+    return {
+      entries,
+      totalFetched: instruments.length,
+      validCount: validInstruments.length,
+      metricFilteredCount,
+      dataUnavailableCount,
+      tickersBySymbol,
+      instrumentBySymbol
+    };
   }
 
   private mergeForcedActive(
@@ -299,29 +320,24 @@ export class UniverseService {
       return !!instrument && isUsdtLinearPerpetualInstrument(instrument);
     });
 
-    return this.applyReadyStateForContractFilter({
+    return this.normalizeBuiltState({
       ...state,
       symbols: validEntries,
       totalSymbols,
       validSymbols: validEntries.length,
       filteredOut: {
-        expiringOrNonPerp: Math.max(0, totalSymbols - validEntries.length)
+        expiringOrNonPerp: Math.max(0, totalSymbols - validEntries.length),
+        byMetricThreshold: state.filteredOut?.byMetricThreshold,
+        dataUnavailable: state.filteredOut?.dataUnavailable
       },
       contractFilter: UNIVERSE_CONTRACT_FILTER
     });
   }
 
-  private applyReadyStateForContractFilter(state: UniverseState): UniverseState {
-    if ((state.totalSymbols ?? 0) > 0 && (state.validSymbols ?? 0) === 0) {
-      return {
-        ...state,
-        ready: false,
-        notReadyReason: 'No symbols matched contract filter USDT_LINEAR_PERPETUAL_ONLY'
-      };
-    }
-
+  private normalizeBuiltState(state: UniverseState): UniverseState {
     return {
       ...state,
+      ready: true,
       notReadyReason: undefined
     };
   }
@@ -401,7 +417,11 @@ export class UniverseService {
       validSymbols: isFiniteNumber(parsed.validSymbols) ? parsed.validSymbols : undefined,
       filteredOut:
         parsed.filteredOut && isFiniteNumber(parsed.filteredOut.expiringOrNonPerp)
-          ? { expiringOrNonPerp: parsed.filteredOut.expiringOrNonPerp }
+          ? {
+              expiringOrNonPerp: parsed.filteredOut.expiringOrNonPerp,
+              byMetricThreshold: isFiniteNumber(parsed.filteredOut.byMetricThreshold) ? parsed.filteredOut.byMetricThreshold : undefined,
+              dataUnavailable: isFiniteNumber(parsed.filteredOut.dataUnavailable) ? parsed.filteredOut.dataUnavailable : undefined
+            }
           : undefined,
       contractFilter: parsed.contractFilter === UNIVERSE_CONTRACT_FILTER ? parsed.contractFilter : undefined,
       notReadyReason: typeof parsed.notReadyReason === 'string' ? parsed.notReadyReason : undefined

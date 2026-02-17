@@ -1,0 +1,34 @@
+.ui-dense .card-header {
+  padding: 0.5rem 0.75rem;
+}
+
+.ui-dense .card-body {
+  padding: 0.75rem;
+}
+
+.ui-dense .row {
+  --bs-gutter-y: 0.5rem;
+}
+
+.ui-dense .table > :not(caption) > * > * {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+.ui-dense .form-text {
+  font-size: 0.8rem;
+}
+
+.ui-dense .btn {
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+
+.ui-dense .alert {
+  margin-bottom: 0.5rem;
+}
+
+.ui-dense .ui-dense-disclosure summary {
+  font-size: 0.9rem;
+  cursor: pointer;
+}

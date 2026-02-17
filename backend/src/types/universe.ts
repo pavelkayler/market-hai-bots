@@ -25,6 +25,8 @@ export type UniverseState = {
   validSymbols?: number;
   filteredOut?: {
     expiringOrNonPerp: number;
+    byMetricThreshold?: number;
+    dataUnavailable?: number;
   };
   contractFilter?: 'USDT_LINEAR_PERPETUAL_ONLY';
   notReadyReason?: string;

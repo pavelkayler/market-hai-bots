@@ -13,7 +13,16 @@ WS: `/ws`
   - Returns `{ "ok": false, "error": "UNIVERSE_NOT_READY" }` when no universe is available yet.
 - `GET /api/universe`
 - `GET /api/universe/download` (returns the persisted `UniverseState` JSON directly)
+  - Returns `{ "ok": false, "error": "UNIVERSE_NOT_FOUND" }` (404) only when no universe has ever been created/persisted.
+  - If universe exists but has `symbols=[]`, download still returns 200 with the stored state.
 - `POST /api/universe/clear`
+
+Universe empty semantics (v1):
+- `ready=true` means the build process completed successfully, even if `symbols` is empty.
+- Empty result debugging fields are returned/additive under `filteredOut`:
+  - `expiringOrNonPerp`
+  - `byMetricThreshold`
+  - `dataUnavailable`
 
 ### Bot
 - `POST /api/bot/start`

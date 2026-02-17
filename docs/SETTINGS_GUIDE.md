@@ -132,6 +132,15 @@ Check WS `symbol:update.topReasons` and bot logs:
 - `MAX_ACTIVE_REACHED`
 - `GUARDRAIL_PAUSED`
 
+### “Universe built but 0 symbols passed filters”
+
+Troubleshoot in this order:
+1. Lower `minTurnover` first (most restrictive in quiet sessions).
+2. Lower `minVolPct` (remember: `3` means 3%, not 0.03).
+3. Check contract filter impact (`expiringOrNonPerp`): v1 allows only USDT linear perpetual symbols.
+4. Check `dataUnavailable` count: missing/invalid ticker fields can exclude symbols.
+5. Download `universe.json` and inspect `filteredOut` counters before widening bot-risk settings.
+
 ## Operator QA checklist (Task 26)
 
 1. Build universe with `minTurnover`/`minVolPct`.
