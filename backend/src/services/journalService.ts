@@ -12,7 +12,8 @@ export type JournalEvent =
   | 'POSITION_CLOSED'
   | 'BOT_PAUSE'
   | 'BOT_RESUME'
-  | 'BOT_KILL';
+  | 'BOT_KILL'
+  | 'SYSTEM_RESET_ALL';
 
 export type JournalEntry = {
   ts: number;

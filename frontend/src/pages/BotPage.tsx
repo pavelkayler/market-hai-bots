@@ -26,6 +26,7 @@ import {
   pauseBot,
   refreshUniverse,
   removeUniverseExclusion,
+  resetAllRuntimeTables,
   resetBotStats,
   resumeBot,
   saveProfile,
@@ -147,6 +148,21 @@ const ActiveSymbolRow = memo(function ActiveSymbolRow({ item, onCancel }: Active
   );
 });
 
+const EMPTY_BOT_STATS: BotStats = {
+  totalTrades: 0,
+  wins: 0,
+  losses: 0,
+  winratePct: 0,
+  pnlUSDT: 0,
+  avgWinUSDT: null,
+  avgLossUSDT: null,
+  lossStreak: 0,
+  todayPnlUSDT: 0,
+  guardrailPauseReason: null,
+  long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
+  short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 }
+};
+
 const defaultSettings: BotSettings = {
   mode: 'paper',
   direction: 'both',
@@ -234,20 +250,7 @@ export function BotPage({
 }: Props) {
   const [minVolPct, setMinVolPct] = useState<number>(10);
   const [minTurnover, setMinTurnover] = useState<number>(10_000_000);
-  const [botStats, setBotStats] = useState<BotStats>({
-    totalTrades: 0,
-    wins: 0,
-    losses: 0,
-    winratePct: 0,
-    pnlUSDT: 0,
-    avgWinUSDT: null,
-    avgLossUSDT: null,
-    lossStreak: 0,
-    todayPnlUSDT: 0,
-    guardrailPauseReason: null,
-    long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
-    short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 }
-  });
+  const [botStats, setBotStats] = useState<BotStats>(EMPTY_BOT_STATS);
   const [settings, setSettings] = useState<BotSettings>(loadSettings());
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>('default');
@@ -788,6 +791,39 @@ export function BotPage({
     }
   };
 
+  const handleClearAllTables = async () => {
+    if (
+      !window.confirm(
+        'Clear runtime data? This clears runtime symbol state, orders/positions, journal tail, bot stats, universe, exclusions, and replay state. Profiles are kept.'
+      )
+    ) {
+      return;
+    }
+
+    setError('');
+    try {
+      await resetAllRuntimeTables();
+      setSymbolMap({});
+      setJournalEntries([]);
+      setDashboardEntries([]);
+      setBotStats(EMPTY_BOT_STATS);
+      setExcludedSymbols([]);
+      const [nextUniverse, nextReplayState] = await Promise.all([getUniverse(), getReplayState()]);
+      setUniverseState(nextUniverse);
+      setReplayState(nextReplayState);
+      await syncRest();
+      setStatus('Runtime tables cleared. Profiles were preserved.');
+    } catch (err) {
+      const apiError = err as ApiRequestError;
+      if (apiError.code === 'BOT_RUNNING') {
+        alert('Stop the bot first.');
+      } else {
+        alert(apiError.message);
+      }
+      setError(apiError.message);
+    }
+  };
+
   const formatPnl = (value: number): string => value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const winPct = botStats.totalTrades > 0 ? (botStats.wins / botStats.totalTrades) * 100 : 0;
@@ -1070,6 +1106,9 @@ export function BotPage({
             <div className="d-flex gap-2">
               <Button size="sm" variant="outline-secondary" onClick={() => void refreshBotStats()}>
                 Refresh
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => void handleClearAllTables()} disabled={botState.running}>
+                Clear all tables
               </Button>
               <Button size="sm" variant="outline-danger" onClick={() => void handleResetStats()}>
                 Reset

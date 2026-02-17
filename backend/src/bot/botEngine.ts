@@ -565,6 +565,29 @@ export class BotEngine {
     this.deps.snapshotStore?.clear();
   }
 
+  clearPersistedRuntime(): void {
+    this.clearSnapshotState();
+  }
+
+  resetRuntimeStateForAllSymbols(): void {
+    for (const [symbol, symbolState] of this.symbols.entries()) {
+      this.symbols.set(symbol, {
+        ...this.buildEmptySymbolState(symbol),
+        baseline: symbolState.baseline ? { ...symbolState.baseline } : null,
+        prevCandleOi: symbolState.prevCandleOi,
+        lastCandleOi: symbolState.lastCandleOi,
+        lastCandleBucketStart: symbolState.lastCandleBucketStart
+      });
+    }
+
+    this.state = {
+      ...this.state,
+      queueDepth: 0
+    };
+    this.updateSummaryCounts();
+    this.persistSnapshot();
+  }
+
   getSymbolState(symbol: string): SymbolRuntimeState | undefined {
     const symbolState = this.symbols.get(symbol);
     if (!symbolState) {

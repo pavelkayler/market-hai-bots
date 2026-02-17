@@ -295,6 +295,169 @@ describe('server routes', () => {
     expect(resetResponse.json()).toEqual({ ok: true });
   });
 
+
+  it('POST /api/reset/all rejects when bot is running', async () => {
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 20_000_000,
+              highPrice24h: 102,
+              lowPrice24h: 100,
+              openInterest: 1,
+              openInterestValue: 100
+            }
+          ]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 0, minTurnover: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper',
+        direction: 'both',
+        tf: 1,
+        holdSeconds: 1,
+        signalCounterThreshold: 1,
+        priceUpThrPct: 0.1,
+        oiUpThrPct: 0.1,
+        oiCandleThrPct: 0,
+        marginUSDT: 100,
+        leverage: 2,
+        tpRoiPct: 1,
+        slRoiPct: 1,
+        entryOffsetPct: 0
+      }
+    });
+
+    const response = await app.inject({ method: 'POST', url: '/api/reset/all', payload: {} });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ ok: false, error: 'BOT_RUNNING' });
+  });
+
+  it('POST /api/reset/all clears runtime data while preserving profiles', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'reset-all-route-test-'));
+    const universeFilePath = path.join(tempDir, 'universe.json');
+    const runtimeSnapshotFilePath = path.join(tempDir, 'runtime.json');
+    const profileFilePath = path.join(tempDir, 'profiles.json');
+    const journalFilePath = path.join(tempDir, 'journal.ndjson');
+    const universeExclusionsFilePath = path.join(tempDir, 'universe-exclusions.json');
+
+    await app.close();
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 20_000_000,
+              highPrice24h: 102,
+              lowPrice24h: 100,
+              openInterest: 1,
+              openInterestValue: 100
+            }
+          ]
+        ])
+      ),
+      universeFilePath,
+      runtimeSnapshotFilePath,
+      profileFilePath,
+      journalFilePath,
+      universeExclusionsFilePath
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 0, minTurnover: 1 } });
+    await app.inject({ method: 'POST', url: '/api/universe/exclusions/add', payload: { symbol: 'BTCUSDT' } });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper',
+        direction: 'both',
+        tf: 1,
+        holdSeconds: 1,
+        signalCounterThreshold: 1,
+        priceUpThrPct: 0.1,
+        oiUpThrPct: 0.1,
+        oiCandleThrPct: 0,
+        marginUSDT: 100,
+        leverage: 2,
+        tpRoiPct: 1,
+        slRoiPct: 1,
+        entryOffsetPct: 0
+      }
+    });
+    await app.inject({ method: 'POST', url: '/api/bot/pause', payload: {} });
+    await app.inject({ method: 'POST', url: '/api/bot/stop', payload: {} });
+
+    const resetResponse = await app.inject({ method: 'POST', url: '/api/reset/all', payload: {} });
+    expect(resetResponse.statusCode).toBe(200);
+    expect(resetResponse.json()).toEqual({
+      ok: true,
+      cleared: {
+        stats: true,
+        journal: true,
+        runtime: true,
+        exclusions: true,
+        universe: true,
+        replay: true
+      }
+    });
+
+    const statsResponse = await app.inject({ method: 'GET', url: '/api/bot/stats' });
+    expect(statsResponse.json()).toMatchObject({
+      ok: true,
+      stats: {
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        pnlUSDT: 0,
+        todayPnlUSDT: 0,
+        long: { trades: 0 },
+        short: { trades: 0 }
+      }
+    });
+
+    const exclusionsResponse = await app.inject({ method: 'GET', url: '/api/universe/exclusions' });
+    expect(exclusionsResponse.statusCode).toBe(200);
+    expect(exclusionsResponse.json()).toEqual({ ok: true, excluded: [] });
+
+    const journalTailResponse = await app.inject({ method: 'GET', url: '/api/journal/tail?limit=10' });
+    expect(journalTailResponse.statusCode).toBe(200);
+    expect(journalTailResponse.json()).toEqual({ ok: true, entries: [] });
+
+    const resumeResponse = await app.inject({ method: 'POST', url: '/api/bot/resume', payload: {} });
+    expect(resumeResponse.statusCode).toBe(400);
+    expect(resumeResponse.json()).toEqual({ ok: false, error: 'NO_SNAPSHOT' });
+
+    const replayStateResponse = await app.inject({ method: 'GET', url: '/api/replay/state' });
+    expect(replayStateResponse.statusCode).toBe(200);
+    expect(replayStateResponse.json()).toMatchObject({
+      recording: false,
+      replaying: false
+    });
+
+    const universeResponse = await app.inject({ method: 'GET', url: '/api/universe' });
+    expect(universeResponse.statusCode).toBe(200);
+    expect(universeResponse.json()).toEqual({ ok: false, ready: false });
+
+    const profilesResponse = await app.inject({ method: 'GET', url: '/api/profiles' });
+    expect(profilesResponse.statusCode).toBe(200);
+    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['default'] });
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   it('POST /api/bot/start returns UNIVERSE_NOT_READY when universe does not exist', async () => {
     const response = await app.inject({
       method: 'POST',

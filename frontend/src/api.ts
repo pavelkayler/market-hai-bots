@@ -108,6 +108,11 @@ export async function resetBotStats(): Promise<{ ok: true }> {
   return request('/api/bot/stats/reset', { method: 'POST', body: JSON.stringify({}) });
 }
 
+
+export async function resetAllRuntimeTables(): Promise<{ ok: true; cleared: { stats: boolean; journal: boolean; runtime: boolean; exclusions: boolean; universe: boolean; replay: boolean } }> {
+  return request('/api/reset/all', { method: 'POST', body: JSON.stringify({}) });
+}
+
 export async function startBot(settings?: BotSettings | null): Promise<unknown> {
   return request('/api/bot/start', { method: 'POST', body: JSON.stringify(settings ?? null) });
 }
