@@ -23,6 +23,8 @@ export type RuntimeSnapshot = {
   savedAt: number;
   paused: boolean;
   running: boolean;
+  runningSinceTs?: number | null;
+  activeUptimeMs?: number;
   config: BotConfig | null;
   symbols: Record<string, RuntimeSnapshotSymbol>;
   stats?: BotStats;

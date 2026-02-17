@@ -36,6 +36,7 @@ import {
   uploadProfiles
 } from '../api';
 import type { BotSettings, BotState, BotStats, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
+import { formatDuration } from '../utils/time';
 
 type LogLine = {
   ts: number;
@@ -201,7 +202,9 @@ export function BotPage({
     avgLossUSDT: null,
     lossStreak: 0,
     todayPnlUSDT: 0,
-    guardrailPauseReason: null
+    guardrailPauseReason: null,
+    long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
+    short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 }
   });
   const [settings, setSettings] = useState<BotSettings>(loadSettings());
   const [profileNames, setProfileNames] = useState<string[]>([]);
@@ -337,12 +340,16 @@ export function BotPage({
   }, [refreshBotStats, botState.activeOrders, botState.openPositions]);
 
   useEffect(() => {
+    if (!botState.running && botState.activeOrders === 0 && botState.openPositions === 0) {
+      return;
+    }
+
     const interval = window.setInterval(() => {
       void refreshBotStats();
     }, 10000);
 
     return () => window.clearInterval(interval);
-  }, [refreshBotStats]);
+  }, [botState.activeOrders, botState.openPositions, botState.running, refreshBotStats]);
 
   useEffect(() => {
     if (!universeState.filters) {
@@ -766,6 +773,7 @@ export function BotPage({
                 <div><strong>Mode:</strong> {botState.mode ?? '-'}</div>
                 <div><strong>TF:</strong> {botState.tf ?? '-'}</div>
                 <div><strong>Direction:</strong> {botState.direction ?? '-'}</div>
+                <div><strong>Uptime (active):</strong> {formatDuration(botState.uptimeMs)}</div>
               </Col>
               <Col md={3}>
                 <div><strong>Queue depth:</strong> {botState.queueDepth}</div>

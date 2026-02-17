@@ -423,7 +423,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       queueDepth: state.queueDepth,
       activeOrders: state.activeOrders,
       openPositions: state.openPositions,
-      startedAt: state.startedAt
+      startedAt: state.startedAt,
+      uptimeMs: state.uptimeMs
     };
   });
 

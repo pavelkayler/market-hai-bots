@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, ListGroup } from 'react-bootstrap';
 import { Link } from 'react-router-dom';
 
-import { getDoctor } from '../api';
-import type { BotState, DoctorResponse } from '../types';
+import { getBotStats, getDoctor } from '../api';
+import type { BotState, BotStats, DoctorResponse } from '../types';
+import { formatDuration } from '../utils/time';
 
 type Props = {
   restHealthy: boolean;
@@ -18,6 +19,20 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
   const [doctor, setDoctor] = useState<DoctorResponse | null>(null);
   const [doctorError, setDoctorError] = useState('');
   const [doctorLoading, setDoctorLoading] = useState(false);
+  const [botStats, setBotStats] = useState<BotStats>({
+    totalTrades: 0,
+    wins: 0,
+    losses: 0,
+    winratePct: 0,
+    pnlUSDT: 0,
+    avgWinUSDT: null,
+    avgLossUSDT: null,
+    lossStreak: 0,
+    todayPnlUSDT: 0,
+    guardrailPauseReason: null,
+    long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
+    short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 }
+  });
 
   const selectedMode = botState.mode ?? botState.lastConfig?.mode ?? null;
 
@@ -34,9 +49,31 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
     }
   };
 
+  const refreshBotStats = async () => {
+    try {
+      const response = await getBotStats();
+      setBotStats(response.stats);
+    } catch {
+      // no-op
+    }
+  };
+
   useEffect(() => {
     void refreshDoctor();
+    void refreshBotStats();
   }, []);
+
+  useEffect(() => {
+    if (!botState.running && botState.activeOrders === 0 && botState.openPositions === 0) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshBotStats();
+    }, 12000);
+
+    return () => window.clearInterval(interval);
+  }, [botState.activeOrders, botState.openPositions, botState.running]);
 
   const warnings = useMemo(() => {
     if (!doctor) {
@@ -83,6 +120,7 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
             <ListGroup.Item>Queue depth: {botState.queueDepth}</ListGroup.Item>
             <ListGroup.Item>Active orders: {botState.activeOrders}</ListGroup.Item>
             <ListGroup.Item>Open positions: {botState.openPositions}</ListGroup.Item>
+            <ListGroup.Item>Uptime (active): {formatDuration(botState.uptimeMs)}</ListGroup.Item>
             <ListGroup.Item>
               Snapshot: <Badge bg={botState.hasSnapshot ? 'success' : 'secondary'}>{botState.hasSnapshot ? 'hasSnapshot=true' : 'none'}</Badge>
             </ListGroup.Item>
@@ -99,6 +137,36 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
             </Button>
           </div>
           <Link to="/bot">Go to bot controls</Link>
+        </Card.Body>
+      </Card>
+
+      <Card className="mb-3">
+        <Card.Header className="d-flex justify-content-between align-items-center">
+          <span>Results</span>
+          <Button size="sm" onClick={() => void refreshBotStats()}>
+            Refresh
+          </Button>
+        </Card.Header>
+        <Card.Body>
+          <div>Total trades: {botStats.totalTrades}</div>
+          <div>Wins: {botStats.wins}</div>
+          <div>Losses: {botStats.losses}</div>
+          <div>Winrate: {botStats.winratePct.toFixed(2)}%</div>
+          <div>PnL (USDT): {botStats.pnlUSDT.toFixed(2)}</div>
+          <div>Today PnL (USDT): {botStats.todayPnlUSDT.toFixed(2)}</div>
+          <div>Loss streak: {botStats.lossStreak}</div>
+          <div>Guardrail pause reason: {botStats.guardrailPauseReason ?? '-'}</div>
+          <div>Avg win (USDT): {botStats.avgWinUSDT === null ? '-' : botStats.avgWinUSDT.toFixed(2)}</div>
+          <div>Avg loss (USDT): {botStats.avgLossUSDT === null ? '-' : botStats.avgLossUSDT.toFixed(2)}</div>
+          <div>
+            Last closed:{' '}
+            {botStats.lastClosed
+              ? `${new Date(botStats.lastClosed.ts).toLocaleString()} ${botStats.lastClosed.symbol} ${botStats.lastClosed.pnlUSDT.toFixed(2)}`
+              : '-'}
+          </div>
+          <hr />
+          <div><strong>LONG</strong> — Trades: {botStats.long.trades}, Winrate: {botStats.long.winratePct.toFixed(2)}%, PnL (USDT): {botStats.long.pnlUSDT.toFixed(2)}</div>
+          <div><strong>SHORT</strong> — Trades: {botStats.short.trades}, Winrate: {botStats.short.winratePct.toFixed(2)}%, PnL (USDT): {botStats.short.pnlUSDT.toFixed(2)}</div>
         </Card.Body>
       </Card>
 

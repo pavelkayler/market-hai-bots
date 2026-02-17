@@ -262,7 +262,8 @@ describe('server routes', () => {
       queueDepth: 0,
       activeOrders: 0,
       openPositions: 0,
-      startedAt: null
+      startedAt: null,
+      uptimeMs: 0
     });
   });
 
@@ -282,7 +283,9 @@ describe('server routes', () => {
         avgLossUSDT: null,
         lossStreak: 0,
         todayPnlUSDT: 0,
-        guardrailPauseReason: null
+        guardrailPauseReason: null,
+        long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
+        short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 }
       }
     });
 

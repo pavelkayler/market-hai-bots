@@ -36,10 +36,21 @@ export type BotState = {
   paused: boolean;
   hasSnapshot: boolean;
   startedAt: number | null;
+  runningSinceTs: number | null;
+  activeUptimeMs: number;
+  uptimeMs: number;
   config: BotConfig | null;
   queueDepth: number;
   activeOrders: number;
   openPositions: number;
+};
+
+type BotStatsSideBreakdown = {
+  trades: number;
+  wins: number;
+  losses: number;
+  winratePct: number;
+  pnlUSDT: number;
 };
 
 export type SymbolFsmState = 'IDLE' | 'HOLDING_LONG' | 'HOLDING_SHORT' | 'ENTRY_PENDING' | 'POSITION_OPEN';
@@ -109,6 +120,8 @@ export type BotStats = {
   lossStreak: number;
   todayPnlUSDT: number;
   guardrailPauseReason: string | null;
+  long: BotStatsSideBreakdown;
+  short: BotStatsSideBreakdown;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -135,6 +148,14 @@ const DEFAULT_MAX_ACTIVE_SYMBOLS = 5;
 const DEFAULT_ENTRY_OFFSET_PCT = 0.01;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
+
+const createEmptySideBreakdown = (): BotStatsSideBreakdown => ({
+  trades: 0,
+  wins: 0,
+  losses: 0,
+  winratePct: 0,
+  pnlUSDT: 0
+});
 
 export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | null => {
   const tf = raw.tf;
@@ -209,6 +230,9 @@ export class BotEngine {
     paused: false,
     hasSnapshot: false,
     startedAt: null,
+    runningSinceTs: null,
+    activeUptimeMs: 0,
+    uptimeMs: 0,
     config: null,
     queueDepth: 0,
     activeOrders: 0,
@@ -224,7 +248,9 @@ export class BotEngine {
     avgLossUSDT: null,
     lossStreak: 0,
     todayPnlUSDT: 0,
-    guardrailPauseReason: null
+    guardrailPauseReason: null,
+    long: createEmptySideBreakdown(),
+    short: createEmptySideBreakdown()
   };
   private winPnlSum = 0;
   private lossPnlSum = 0;
@@ -240,7 +266,9 @@ export class BotEngine {
   }
 
   getState(): BotState {
-    return { ...this.state };
+    const now = this.now();
+    const uptimeMs = this.state.activeUptimeMs + (this.state.runningSinceTs === null ? 0 : Math.max(0, now - this.state.runningSinceTs));
+    return { ...this.state, uptimeMs };
   }
 
   getRuntimeSymbols(): string[] {
@@ -248,7 +276,12 @@ export class BotEngine {
   }
 
   getStats(): BotStats {
-    return this.stats.lastClosed ? { ...this.stats, lastClosed: { ...this.stats.lastClosed } } : { ...this.stats };
+    const stats = {
+      ...this.stats,
+      long: { ...this.stats.long },
+      short: { ...this.stats.short }
+    };
+    return this.stats.lastClosed ? { ...stats, lastClosed: { ...this.stats.lastClosed } } : stats;
   }
 
   resetStats(): void {
@@ -262,7 +295,9 @@ export class BotEngine {
       avgLossUSDT: null,
       lossStreak: 0,
       todayPnlUSDT: 0,
-      guardrailPauseReason: null
+      guardrailPauseReason: null,
+      long: createEmptySideBreakdown(),
+      short: createEmptySideBreakdown()
     };
     this.winPnlSum = 0;
     this.lossPnlSum = 0;
@@ -323,38 +358,46 @@ export class BotEngine {
   }
 
   start(config: BotConfig): void {
+    const now = this.now();
     this.state = {
       ...this.state,
       running: true,
       paused: false,
-      startedAt: this.now(),
+      startedAt: now,
+      runningSinceTs: now,
       config
     };
     this.persistSnapshot();
   }
 
   stop(): void {
+    this.finalizeActiveUptime();
     this.state = {
       ...this.state,
       running: false,
-      paused: false
+      paused: false,
+      runningSinceTs: null
     };
     this.persistSnapshot();
   }
 
   pause(): void {
+    this.finalizeActiveUptime();
     this.state = {
       ...this.state,
-      paused: true
+      paused: true,
+      runningSinceTs: null
     };
     this.persistSnapshot();
   }
 
   resume(canRun: boolean): boolean {
+    const now = this.now();
     this.state = {
       ...this.state,
       paused: false,
-      running: canRun ? true : this.state.running
+      running: canRun ? true : this.state.running,
+      runningSinceTs: canRun ? now : this.state.runningSinceTs
     };
     this.persistSnapshot();
     return true;
@@ -388,6 +431,9 @@ export class BotEngine {
       paused: true,
       hasSnapshot: true,
       startedAt: null,
+      runningSinceTs: null,
+      activeUptimeMs: snapshot.activeUptimeMs ?? 0,
+      uptimeMs: 0,
       config: snapshot.config
     };
 
@@ -403,6 +449,8 @@ export class BotEngine {
         lossStreak: snapshot.stats.lossStreak ?? 0,
         todayPnlUSDT: snapshot.stats.todayPnlUSDT ?? 0,
         guardrailPauseReason: snapshot.stats.guardrailPauseReason ?? null,
+        long: snapshot.stats.long ?? createEmptySideBreakdown(),
+        short: snapshot.stats.short ?? createEmptySideBreakdown(),
         ...(snapshot.stats.lastClosed ? { lastClosed: snapshot.stats.lastClosed } : {})
       };
       this.winPnlSum = snapshot.stats.wins * (snapshot.stats.avgWinUSDT ?? 0);
@@ -810,7 +858,7 @@ export class BotEngine {
       exitPrice: marketState.markPrice,
       pnlUSDT: 0
     });
-    this.recordClosedTrade(symbolState.symbol, 0);
+    this.recordClosedTrade(symbolState.symbol, closedPosition.side, 0);
     this.updateSummaryCounts();
     this.persistSnapshot();
   }
@@ -899,7 +947,7 @@ export class BotEngine {
       exitPrice: marketState.markPrice,
       pnlUSDT
     });
-    this.recordClosedTrade(symbolState.symbol, pnlUSDT);
+    this.recordClosedTrade(symbolState.symbol, position.side, pnlUSDT);
     this.updateSummaryCounts();
     this.persistSnapshot();
   }
@@ -999,13 +1047,15 @@ export class BotEngine {
       savedAt: this.now(),
       paused: this.state.paused,
       running: this.state.running,
+      runningSinceTs: this.state.runningSinceTs,
+      activeUptimeMs: this.state.activeUptimeMs,
       config: this.state.config,
       symbols: symbolSnapshots,
       stats: this.stats
     };
   }
 
-  private recordClosedTrade(symbol: string, pnlUSDT: number): void {
+  private recordClosedTrade(symbol: string, side: 'LONG' | 'SHORT', pnlUSDT: number): void {
     this.rotateDailyPnlBucket();
     this.stats.totalTrades += 1;
     this.stats.pnlUSDT += pnlUSDT;
@@ -1025,6 +1075,15 @@ export class BotEngine {
     this.stats.winratePct = this.stats.totalTrades > 0 ? (this.stats.wins / this.stats.totalTrades) * 100 : 0;
     this.stats.avgWinUSDT = this.stats.wins > 0 ? this.winPnlSum / this.stats.wins : null;
     this.stats.avgLossUSDT = this.stats.losses > 0 ? this.lossPnlSum / this.stats.losses : null;
+    const sideBucket = side === 'LONG' ? this.stats.long : this.stats.short;
+    sideBucket.trades += 1;
+    sideBucket.pnlUSDT += pnlUSDT;
+    if (pnlUSDT > 0) {
+      sideBucket.wins += 1;
+    } else if (pnlUSDT < 0) {
+      sideBucket.losses += 1;
+    }
+    sideBucket.winratePct = sideBucket.trades > 0 ? (sideBucket.wins / sideBucket.trades) * 100 : 0;
 
     const config = this.state.config;
     if (!config) {
@@ -1052,13 +1111,27 @@ export class BotEngine {
   }
 
   private pauseWithGuardrail(reason: string): void {
+    this.finalizeActiveUptime();
     this.state = {
       ...this.state,
       paused: true,
-      running: this.state.running
+      running: this.state.running,
+      runningSinceTs: null
     };
     this.stats.guardrailPauseReason = reason;
     this.deps.emitLog?.(`Guardrail pause: ${reason}`);
+  }
+
+  private finalizeActiveUptime(): void {
+    if (this.state.runningSinceTs === null) {
+      return;
+    }
+
+    const now = this.now();
+    this.state = {
+      ...this.state,
+      activeUptimeMs: this.state.activeUptimeMs + Math.max(0, now - this.state.runningSinceTs)
+    };
   }
 
   private async cancelSymbolPendingOrder(
