@@ -998,6 +998,66 @@ describe('server routes', () => {
     }
   });
 
+  it('GET /api/bot/state activity metrics stay numeric with maxActiveSymbols=9999', async () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const tickerStream = new FakeTickerStream();
+    app = buildIsolatedServer({
+      now: () => now,
+      tickerStream,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 12000000,
+              highPrice24h: 110,
+              lowPrice24h: 100,
+              markPrice: 100,
+              openInterestValue: 100000
+            }
+          ]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper',
+        direction: 'long',
+        tf: 1,
+        holdSeconds: 1,
+        signalCounterThreshold: 1,
+        priceUpThrPct: 1,
+        oiUpThrPct: 1,
+        oiCandleThrPct: 0,
+        marginUSDT: 100,
+        leverage: 2,
+        tpRoiPct: 1,
+        slRoiPct: 1,
+        entryOffsetPct: 0,
+        maxActiveSymbols: 9999
+      }
+    });
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
+
+    const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    const payload = response.json() as { queueDepth: number; activeOrders: number; openPositions: number };
+
+    expect(response.statusCode).toBe(200);
+    expect(typeof payload.queueDepth).toBe('number');
+    expect(typeof payload.activeOrders).toBe('number');
+    expect(typeof payload.openPositions).toBe('number');
+    expect(payload.activeOrders).toBe(1);
+  });
+
 
 
 

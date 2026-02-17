@@ -268,7 +268,29 @@ export class BotEngine {
   getState(): BotState {
     const now = this.now();
     const uptimeMs = this.state.activeUptimeMs + (this.state.runningSinceTs === null ? 0 : Math.max(0, now - this.state.runningSinceTs));
-    return { ...this.state, uptimeMs };
+    return {
+      ...this.state,
+      ...this.getActivityMetrics(),
+      uptimeMs
+    };
+  }
+
+  getActivityMetrics(): { queueDepth: number; activeOrders: number; openPositions: number } {
+    const queueDepth = Number.isFinite(this.state.queueDepth) && this.state.queueDepth > 0 ? Math.floor(this.state.queueDepth) : 0;
+    let activeOrders = 0;
+    let openPositions = 0;
+
+    for (const symbolState of this.symbols.values()) {
+      if (symbolState.pendingOrder) {
+        activeOrders += 1;
+      }
+
+      if (symbolState.position && Number.isFinite(symbolState.position.qty) && symbolState.position.qty > 0) {
+        openPositions += 1;
+      }
+    }
+
+    return { queueDepth, activeOrders, openPositions };
   }
 
   getRuntimeSymbols(): string[] {
@@ -967,22 +989,9 @@ export class BotEngine {
   }
 
   private updateSummaryCounts(): void {
-    let activeOrders = 0;
-    let openPositions = 0;
-
-    for (const symbolState of this.symbols.values()) {
-      if (symbolState.pendingOrder) {
-        activeOrders += 1;
-      }
-      if (symbolState.position) {
-        openPositions += 1;
-      }
-    }
-
     this.state = {
       ...this.state,
-      activeOrders,
-      openPositions
+      ...this.getActivityMetrics()
     };
   }
 

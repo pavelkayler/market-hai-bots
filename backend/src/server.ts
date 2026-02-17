@@ -121,6 +121,28 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
   };
 
+  const buildBroadcastBotState = () => {
+    const state = botEngine.getState();
+    return {
+      running: state.running,
+      paused: state.paused,
+      hasSnapshot: state.hasSnapshot,
+      lastConfig: state.config,
+      mode: state.config?.mode ?? null,
+      direction: state.config?.direction ?? null,
+      tf: state.config?.tf ?? null,
+      queueDepth: state.queueDepth,
+      activeOrders: state.activeOrders,
+      openPositions: state.openPositions,
+      startedAt: state.startedAt,
+      uptimeMs: state.uptimeMs
+    };
+  };
+
+  const broadcastBotState = (): void => {
+    broadcast('state', buildBroadcastBotState());
+  };
+
   const rotatePerfWindow = (nowMs: number): void => {
     if (nowMs - perfWindowStartedAtMs < perfWindowMs) {
       return;
@@ -245,6 +267,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     if (!symbolState) {
       return;
     }
+
+    broadcastBotState();
 
     symbolUpdateBroadcaster.broadcast(symbol, state, symbolState.fsmState, symbolState.baseline, symbolState.pendingOrder, symbolState.position);
   };
@@ -378,17 +402,20 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     botEngine.setUniverseEntries(universe.symbols);
     botEngine.start(config);
+    broadcastBotState();
 
     return { ok: true, ...botEngine.getState() };
   });
 
   app.post('/api/bot/stop', async () => {
     botEngine.stop();
+    broadcastBotState();
     return { ok: true, ...botEngine.getState() };
   });
 
   app.post('/api/bot/pause', async () => {
     botEngine.pause();
+    broadcastBotState();
     await appendOpsJournalEvent('BOT_PAUSE');
     return { ok: true, ...botEngine.getState() };
   });
@@ -406,31 +433,19 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     botEngine.resume(true);
+    broadcastBotState();
     await appendOpsJournalEvent('BOT_RESUME');
     return { ok: true, ...botEngine.getState() };
   });
 
   app.get('/api/bot/state', async () => {
-    const state = botEngine.getState();
-    return {
-      running: state.running,
-      paused: state.paused,
-      hasSnapshot: state.hasSnapshot,
-      lastConfig: state.config,
-      mode: state.config?.mode ?? null,
-      direction: state.config?.direction ?? null,
-      tf: state.config?.tf ?? null,
-      queueDepth: state.queueDepth,
-      activeOrders: state.activeOrders,
-      openPositions: state.openPositions,
-      startedAt: state.startedAt,
-      uptimeMs: state.uptimeMs
-    };
+    return buildBroadcastBotState();
   });
 
 
   app.post('/api/bot/kill', async () => {
     const cancelled = await botEngine.killSwitch((symbol) => marketHub.getState(symbol));
+    broadcastBotState();
     await appendOpsJournalEvent('BOT_KILL');
     return { ok: true, cancelled };
   });
@@ -787,17 +802,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         wsClients.delete(socket as { send: (payload: string) => unknown });
       });
 
-      const state = botEngine.getState();
       socket.send(
         JSON.stringify({
           type: 'state',
           ts: Date.now(),
-          payload: {
-            universeReady: false,
-            running: state.running,
-            mode: state.config?.mode ?? null,
-            queueDepth: state.queueDepth
-          }
+          payload: buildBroadcastBotState()
         })
       );
       wsFramesSent += 1;
