@@ -32,3 +32,12 @@
   font-size: 0.9rem;
   cursor: pointer;
 }
+
+.ui-dense .universe-panel .alert {
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+}
+
+.ui-dense .universe-panel .table {
+  margin-bottom: 0.4rem;
+}

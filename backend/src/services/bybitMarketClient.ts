@@ -30,6 +30,19 @@ export interface IBybitMarketClient {
   getTickersLinear(): Promise<Map<string, TickerLinear>>;
 }
 
+export type BybitApiErrorCode = 'TIMEOUT' | 'UNREACHABLE' | 'AUTH_ERROR' | 'RATE_LIMIT' | 'BAD_RESPONSE' | 'PARSE_ERROR';
+
+export class BybitApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code: BybitApiErrorCode,
+    public readonly retryable: boolean,
+    public readonly statusCode?: number
+  ) {
+    super(message);
+  }
+}
+
 type BybitListResponse = {
   retCode: number;
   retMsg: string;
@@ -53,7 +66,11 @@ const parseNumber = (value: unknown): number | null => {
 };
 
 export class BybitMarketClient implements IBybitMarketClient {
-  constructor(private readonly baseUrl = process.env.BYBIT_REST ?? 'https://api.bybit.com') {}
+  constructor(
+    private readonly baseUrl = process.env.BYBIT_REST ?? 'https://api.bybit.com',
+    private readonly timeoutMs = Number(process.env.UNIVERSE_UPSTREAM_TIMEOUT_MS ?? 8_000),
+    private readonly maxRetries = Number(process.env.UNIVERSE_UPSTREAM_MAX_RETRIES ?? 2)
+  ) {}
 
   async getInstrumentsLinearAll(): Promise<InstrumentLinear[]> {
     const all: InstrumentLinear[] = [];
@@ -67,7 +84,7 @@ export class BybitMarketClient implements IBybitMarketClient {
 
       const json = await this.get<BybitListResponse>(`/v5/market/instruments-info?${query.toString()}`);
       if (json.retCode !== 0) {
-        throw new Error(`Bybit instruments failed: ${json.retCode} ${json.retMsg}`);
+        throw this.errorFromRetCode('Bybit instruments failed', json.retCode, json.retMsg);
       }
 
       all.push(...parseInstrumentsInfo(json));
@@ -88,7 +105,7 @@ export class BybitMarketClient implements IBybitMarketClient {
     const json = await this.get<BybitListResponse>(`/v5/market/tickers?${query.toString()}`);
 
     if (json.retCode !== 0) {
-      throw new Error(`Bybit tickers failed: ${json.retCode} ${json.retMsg}`);
+      throw this.errorFromRetCode('Bybit tickers failed', json.retCode, json.retMsg);
     }
 
     const map = new Map<string, TickerLinear>();
@@ -122,12 +139,85 @@ export class BybitMarketClient implements IBybitMarketClient {
   }
 
   private async get<T>(path: string): Promise<T> {
-    const response = await request(`${this.baseUrl}${path}`, { method: 'GET' });
+    const timeoutMs = Number.isFinite(this.timeoutMs) && this.timeoutMs > 0 ? this.timeoutMs : 8_000;
+    const maxRetries = Number.isFinite(this.maxRetries) && this.maxRetries >= 0 ? Math.floor(this.maxRetries) : 2;
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw new Error(`Bybit request failed with status ${response.statusCode}`);
+    let attempt = 0;
+
+    while (attempt <= maxRetries) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await request(`${this.baseUrl}${path}`, { method: 'GET', signal: controller.signal });
+
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          const error = this.errorFromStatus(response.statusCode);
+          if (!error.retryable || attempt >= maxRetries) {
+            throw error;
+          }
+          attempt += 1;
+          continue;
+        }
+
+        try {
+          return (await response.body.json()) as T;
+        } catch {
+          const error = new BybitApiError('Bybit response parse error', 'PARSE_ERROR', false);
+          throw error;
+        }
+      } catch (error) {
+        const classified = this.classifyRequestError(error);
+        if (!classified.retryable || attempt >= maxRetries) {
+          throw classified;
+        }
+        attempt += 1;
+      } finally {
+        clearTimeout(timer);
+      }
     }
 
-    return response.body.json() as Promise<T>;
+    throw new BybitApiError('Bybit unreachable after retries', 'UNREACHABLE', true);
+  }
+
+  private classifyRequestError(error: unknown): BybitApiError {
+    if (error instanceof BybitApiError) {
+      return error;
+    }
+
+    const cause = error as { name?: string; code?: string; message?: string };
+    if (cause?.name === 'AbortError') {
+      return new BybitApiError('Bybit request timeout', 'TIMEOUT', true);
+    }
+
+    if (cause?.code && ['ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT'].includes(cause.code)) {
+      return new BybitApiError(`Bybit unreachable: ${cause.code}`, 'UNREACHABLE', true);
+    }
+
+    return new BybitApiError(cause?.message ?? 'Bybit request failed', 'BAD_RESPONSE', false);
+  }
+
+  private errorFromStatus(statusCode: number): BybitApiError {
+    if (statusCode === 401 || statusCode === 403) {
+      return new BybitApiError(`Bybit auth error: HTTP ${statusCode}`, 'AUTH_ERROR', false, statusCode);
+    }
+
+    if (statusCode === 429) {
+      return new BybitApiError('Bybit rate limited: HTTP 429', 'RATE_LIMIT', true, statusCode);
+    }
+
+    const retryable = statusCode >= 500;
+    return new BybitApiError(`Bybit request failed with status ${statusCode}`, 'BAD_RESPONSE', retryable, statusCode);
+  }
+
+  private errorFromRetCode(prefix: string, retCode: number, retMsg: string): BybitApiError {
+    if (retCode === 10003 || retCode === 10005 || retCode === 10007) {
+      return new BybitApiError(`${prefix}: ${retCode} ${retMsg}`, 'AUTH_ERROR', false);
+    }
+
+    if (retCode === 10006) {
+      return new BybitApiError(`${prefix}: ${retCode} ${retMsg}`, 'RATE_LIMIT', true);
+    }
+
+    return new BybitApiError(`${prefix}: ${retCode} ${retMsg}`, 'BAD_RESPONSE', false);
   }
 }

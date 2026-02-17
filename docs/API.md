@@ -8,13 +8,23 @@ WS: `/ws`
 ### Universe
 - `POST /api/universe/create` `{ "minVolPct": 10, "minTurnover": 10000000 }`
   - `minTurnover` is optional and defaults to `10000000` for backward compatibility.
+  - Success returns additive fields: `ok`, `ready`, `createdAt`, `filters`, `totals`, `diagnostics`, `upstreamStatus`.
+  - `totals` includes `{ totalSymbols, validSymbols, filteredOut }`.
+  - `diagnostics` includes `{ byMetricThreshold, dataUnavailable, contractFilter, upstreamStatus }`.
+  - Build-complete semantics: `ready=true` even when `symbols=[]` (all symbols filtered by rules).
+  - On upstream failure, returns HTTP `502` with `diagnostics.upstreamStatus="error"`, `diagnostics.upstreamError { code, message, hint, retryable }`, and `lastKnownUniverseAvailable`.
+  - Failed create attempts do **not** overwrite an existing persisted universe.
 - `POST /api/universe/refresh` `{ "minVolPct"?: 12, "minTurnover"?: 10000000 }`
   - Missing fields reuse currently stored universe filters.
   - Returns `{ "ok": false, "error": "UNIVERSE_NOT_READY" }` when no universe is available yet.
+  - Uses the same additive `totals` + `diagnostics` success fields and upstream failure payload as create.
+  - Failed refresh attempts do **not** overwrite an existing persisted universe.
 - `GET /api/universe`
+  - Includes additive upstream status fields: `upstreamStatus` (`ok|error`), optional `upstreamError`, and `lastKnownUniverseAvailable`.
 - `GET /api/universe/download` (returns the persisted `UniverseState` JSON directly)
   - Returns `{ "ok": false, "error": "UNIVERSE_NOT_FOUND" }` (404) only when no universe has ever been created/persisted.
   - If universe exists but has `symbols=[]`, download still returns 200 with the stored state.
+  - If the latest create/refresh failed upstream, download still serves the last successfully persisted universe.
 - `POST /api/universe/clear`
 
 Universe empty semantics (v1):

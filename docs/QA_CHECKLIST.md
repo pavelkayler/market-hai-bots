@@ -22,6 +22,21 @@ Use this as an operator runbook. Each step includes expected outcome.
 8. Click **Clear Universe**.
    - Expect `ready=false` and symbols table cleared.
 
+
+## A2) Universe network troubleshooting (new)
+1. Create a valid universe once (confirm `Download universe.json` works).
+2. Simulate upstream failure (`UNIVERSE_FORCE_UPSTREAM_ERROR=1`) and click **Refresh Universe**.
+   - Expect UI status: **"Upstream error (last build failed)"** with error code/hint.
+   - Expect UI to show `Last known universe: available`.
+3. Click **Download universe.json** after failed refresh.
+   - Expect download still succeeds with the previous persisted universe.
+4. Remove simulation flag and refresh again.
+   - Expect UI status returns to **Universe ready (N symbols)** or **Universe built but empty (0 symbols)**.
+5. Distinguish states in UI:
+   - **No universe yet**: no `createdAt`, never built.
+   - **Universe built but empty**: `ready=true` and `symbols=0`.
+   - **Upstream error**: `upstreamStatus=error` with code/hint; does not imply universe file loss.
+
 ## B) Bot lifecycle / snapshot behavior
 1. With universe ready, click **Start**.
    - Expect bot state `running=true`; settings become locked.

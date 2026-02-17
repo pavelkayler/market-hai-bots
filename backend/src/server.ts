@@ -782,6 +782,21 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const result = await universeService.create(body.minVolPct, body.minTurnover);
+    if (!result.ok) {
+      const lastKnownUniverseAvailable = !!result.state;
+      return reply.code(502).send({
+        ok: false,
+        ready: false,
+        createdAt: result.createdAt,
+        filters: result.filters,
+        totals: result.totals,
+        diagnostics: result.diagnostics,
+        upstreamStatus: result.diagnostics.upstreamStatus,
+        upstreamError: result.diagnostics.upstreamError,
+        lastKnownUniverseAvailable
+      });
+    }
+
     await universeExclusionsService.clear();
     const effectiveEntries = await getEffectiveUniverseEntries(result.state.symbols);
     const symbols = effectiveEntries.map((entry) => entry.symbol);
@@ -793,11 +808,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       createdAt: result.state.createdAt,
       filters: result.state.filters,
       metricDefinition: result.state.metricDefinition,
-      totalFetched: result.totalFetched,
+      ready: result.ready,
+      totals: result.totals,
       passed: result.state.symbols.length,
       forcedActive: result.forcedActive,
       contractFilter: result.state.contractFilter,
-      filteredOut: result.state.filteredOut
+      filteredOut: result.state.filteredOut,
+      diagnostics: result.diagnostics,
+      upstreamStatus: result.diagnostics.upstreamStatus
     };
 
     broadcast('universe:created', {
@@ -825,6 +843,21 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }
 
+    if (!result.ok) {
+      const lastKnownUniverseAvailable = !!result.state;
+      return reply.code(502).send({
+        ok: false,
+        ready: false,
+        refreshedAt: result.createdAt,
+        filters: result.filters,
+        totals: result.totals,
+        diagnostics: result.diagnostics,
+        upstreamStatus: result.diagnostics.upstreamStatus,
+        upstreamError: result.diagnostics.upstreamError,
+        lastKnownUniverseAvailable
+      });
+    }
+
     const effectiveEntries = await getEffectiveUniverseEntries(result.state.symbols);
     const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
@@ -836,10 +869,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       refreshedAt: result.state.createdAt,
       filters: result.state.filters,
       metricDefinition: result.state.metricDefinition,
+      ready: result.ready,
+      totals: result.totals,
       passed: result.state.symbols.length,
       forcedActive: result.forcedActive,
       contractFilter: result.state.contractFilter,
-      filteredOut: result.state.filteredOut
+      filteredOut: result.state.filteredOut,
+      diagnostics: result.diagnostics,
+      upstreamStatus: result.diagnostics.upstreamStatus
     };
 
     broadcast('universe:refreshed', {
@@ -934,15 +971,25 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.get('/api/universe', async () => {
     const state = await universeService.get();
+    const lastUpstreamError = universeService.getLastUpstreamError();
     if (!state) {
-      return { ok: false, ready: false };
+      return {
+        ok: false,
+        ready: false,
+        upstreamStatus: lastUpstreamError ? 'error' : 'ok',
+        upstreamError: lastUpstreamError ?? undefined,
+        lastKnownUniverseAvailable: false
+      };
     }
 
     const exclusions = await universeExclusionsService.get();
     return {
       ok: true,
       ...state,
-      excluded: exclusions.excluded
+      excluded: exclusions.excluded,
+      upstreamStatus: lastUpstreamError ? 'error' : 'ok',
+      upstreamError: lastUpstreamError ?? undefined,
+      lastKnownUniverseAvailable: true
     };
   });
 

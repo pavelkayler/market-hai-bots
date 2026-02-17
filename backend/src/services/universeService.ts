@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type { FastifyBaseLogger } from 'fastify';
 
-import type { IBybitMarketClient, InstrumentLinear, TickerLinear } from './bybitMarketClient.js';
+import { BybitApiError, type IBybitMarketClient, type InstrumentLinear, type TickerLinear } from './bybitMarketClient.js';
 import { isUsdtLinearPerpetualInstrument, UNIVERSE_CONTRACT_FILTER } from './universeContractFilter.js';
 import type { UniverseEntry, UniverseFilters, UniverseState } from '../types/universe.js';
 
@@ -39,6 +39,36 @@ const VOLATILITY_DEFINITION = 'vol24hRangePct = (high24h-low24h)/low24h*100 (gua
 const TURNOVER_DEFINITION = 'turnover24hUSDT = 24h turnover in USDT from Bybit ticker (turnover24h or turnover24hValue).' as const;
 const METRIC_DEFINITION = `${TURNOVER_DEFINITION} ${VOLATILITY_DEFINITION}` as const;
 
+export type UniverseUpstreamErrorCode = 'BYBIT_UNREACHABLE' | 'TIMEOUT' | 'BYBIT_AUTH_ERROR' | 'BYBIT_BAD_RESPONSE' | 'PARSE_ERROR' | 'UPSTREAM_RATE_LIMIT';
+
+export type UniverseUpstreamError = {
+  code: UniverseUpstreamErrorCode;
+  message: string;
+  hint: string;
+  retryable: boolean;
+};
+
+type UniverseOperationPayload = {
+  createdAt: number;
+  filters: UniverseFilters;
+  totals: {
+    totalSymbols: number;
+    validSymbols: number;
+    filteredOut: NonNullable<UniverseState['filteredOut']>;
+  };
+  diagnostics: {
+    byMetricThreshold: number;
+    dataUnavailable: number;
+    contractFilter: typeof UNIVERSE_CONTRACT_FILTER;
+    upstreamStatus: 'ok' | 'error';
+    upstreamError?: UniverseUpstreamError;
+  };
+};
+
+export type UniverseOperationResult =
+  | ({ ok: true; ready: true; state: UniverseState; forcedActive: number } & UniverseOperationPayload)
+  | ({ ok: false; ready: false; state: UniverseState | null; forcedActive: 0 } & UniverseOperationPayload);
+
 const computeVol24hRangePct = (highPrice24h: number, lowPrice24h: number): number | null => {
   if (lowPrice24h <= 0) {
     return null;
@@ -50,6 +80,7 @@ const computeVol24hRangePct = (highPrice24h: number, lowPrice24h: number): numbe
 export class UniverseService {
   private state: UniverseState | null = null;
   private instrumentsCache: { expiresAt: number; bySymbol: Map<string, InstrumentLinear> } | null = null;
+  private lastUpstreamError: UniverseUpstreamError | null = null;
 
   constructor(
     private readonly marketClient: IBybitMarketClient,
@@ -59,32 +90,77 @@ export class UniverseService {
     private readonly universeFilePath = path.resolve(process.cwd(), 'data/universe.json')
   ) {}
 
-  async create(minVolPct: number, minTurnover: number = MIN_TURNOVER): Promise<{ state: UniverseState; totalFetched: number; forcedActive: number }> {
-    const built = await this.buildFilteredUniverse(minVolPct, minTurnover);
+  async create(minVolPct: number, minTurnover: number = MIN_TURNOVER): Promise<UniverseOperationResult> {
+    const createdAt = Date.now();
+    const filters: UniverseFilters = { minTurnover, minVolPct };
+    const built = await this.buildFilteredUniverseSafe(minVolPct, minTurnover);
+    if (!built.ok) {
+      this.lastUpstreamError = built.upstreamError;
+      const current = this.state ?? (await this.loadFromDisk());
+      return {
+        ok: false,
+        ready: false,
+        state: current,
+        forcedActive: 0,
+        createdAt,
+        filters,
+        totals: {
+          totalSymbols: 0,
+          validSymbols: 0,
+          filteredOut: { expiringOrNonPerp: 0, byMetricThreshold: 0, dataUnavailable: 0 }
+        },
+        diagnostics: {
+          byMetricThreshold: 0,
+          dataUnavailable: 0,
+          contractFilter: UNIVERSE_CONTRACT_FILTER,
+          upstreamStatus: 'error',
+          upstreamError: built.upstreamError
+        }
+      };
+    }
 
     const nextState: UniverseState = {
-      createdAt: Date.now(),
-      filters: { minTurnover, minVolPct },
+      createdAt,
+      filters,
       metricDefinition: METRIC_DEFINITION,
-      symbols: built.entries,
+      symbols: built.built.entries,
       ready: true,
-      totalSymbols: built.totalFetched,
-      validSymbols: built.validCount,
+      totalSymbols: built.built.totalFetched,
+      validSymbols: built.built.validCount,
       filteredOut: {
-        expiringOrNonPerp: built.totalFetched - built.validCount,
-        byMetricThreshold: built.metricFilteredCount,
-        dataUnavailable: built.dataUnavailableCount
+        expiringOrNonPerp: built.built.totalFetched - built.built.validCount,
+        byMetricThreshold: built.built.metricFilteredCount,
+        dataUnavailable: built.built.dataUnavailableCount
       },
       contractFilter: UNIVERSE_CONTRACT_FILTER
     };
 
     this.state = this.normalizeBuiltState(nextState);
     await this.persist(this.state);
+    this.lastUpstreamError = null;
 
-    return { state: this.state, totalFetched: built.totalFetched, forcedActive: 0 };
+    return {
+      ok: true,
+      ready: true,
+      state: this.state,
+      forcedActive: 0,
+      createdAt,
+      filters,
+      totals: {
+        totalSymbols: built.built.totalFetched,
+        validSymbols: built.built.validCount,
+        filteredOut: this.state.filteredOut ?? { expiringOrNonPerp: 0, byMetricThreshold: 0, dataUnavailable: 0 }
+      },
+      diagnostics: {
+        byMetricThreshold: built.built.metricFilteredCount,
+        dataUnavailable: built.built.dataUnavailableCount,
+        contractFilter: UNIVERSE_CONTRACT_FILTER,
+        upstreamStatus: 'ok'
+      }
+    };
   }
 
-  async refresh(minVolPct?: number, minTurnover?: number): Promise<{ state: UniverseState; forcedActive: number } | null> {
+  async refresh(minVolPct?: number, minTurnover?: number): Promise<UniverseOperationResult | null> {
     const active = this.state ?? (await this.loadFromDisk());
     const effectiveMinVolPct = minVolPct ?? active?.filters.minVolPct;
     const effectiveMinTurnover = minTurnover ?? active?.filters.minTurnover;
@@ -93,29 +169,77 @@ export class UniverseService {
       return null;
     }
 
-    const built = await this.buildFilteredUniverse(effectiveMinVolPct, effectiveMinTurnover);
-    const forced = this.mergeForcedActive(built.entries, built.tickersBySymbol, built.instrumentBySymbol);
+    const createdAt = Date.now();
+    const filters: UniverseFilters = { minTurnover: effectiveMinTurnover, minVolPct: effectiveMinVolPct };
+    const built = await this.buildFilteredUniverseSafe(effectiveMinVolPct, effectiveMinTurnover);
+    if (!built.ok) {
+      this.lastUpstreamError = built.upstreamError;
+      return {
+        ok: false,
+        ready: false,
+        state: active,
+        forcedActive: 0,
+        createdAt,
+        filters,
+        totals: {
+          totalSymbols: 0,
+          validSymbols: 0,
+          filteredOut: { expiringOrNonPerp: 0, byMetricThreshold: 0, dataUnavailable: 0 }
+        },
+        diagnostics: {
+          byMetricThreshold: 0,
+          dataUnavailable: 0,
+          contractFilter: UNIVERSE_CONTRACT_FILTER,
+          upstreamStatus: 'error',
+          upstreamError: built.upstreamError
+        }
+      };
+    }
+    const forced = this.mergeForcedActive(built.built.entries, built.built.tickersBySymbol, built.built.instrumentBySymbol);
 
     const nextState: UniverseState = {
-      createdAt: Date.now(),
-      filters: { minTurnover: effectiveMinTurnover, minVolPct: effectiveMinVolPct },
+      createdAt,
+      filters,
       metricDefinition: METRIC_DEFINITION,
       symbols: forced.entries,
       ready: true,
-      totalSymbols: built.totalFetched,
-      validSymbols: built.validCount,
+      totalSymbols: built.built.totalFetched,
+      validSymbols: built.built.validCount,
       filteredOut: {
-        expiringOrNonPerp: built.totalFetched - built.validCount,
-        byMetricThreshold: built.metricFilteredCount,
-        dataUnavailable: built.dataUnavailableCount
+        expiringOrNonPerp: built.built.totalFetched - built.built.validCount,
+        byMetricThreshold: built.built.metricFilteredCount,
+        dataUnavailable: built.built.dataUnavailableCount
       },
       contractFilter: UNIVERSE_CONTRACT_FILTER
     };
 
     this.state = this.normalizeBuiltState(nextState);
     await this.persist(this.state);
+    this.lastUpstreamError = null;
 
-    return { state: this.state, forcedActive: forced.forcedCount };
+    return {
+      ok: true,
+      ready: true,
+      state: this.state,
+      forcedActive: forced.forcedCount,
+      createdAt,
+      filters,
+      totals: {
+        totalSymbols: built.built.totalFetched,
+        validSymbols: built.built.validCount,
+        filteredOut: this.state.filteredOut ?? { expiringOrNonPerp: 0, byMetricThreshold: 0, dataUnavailable: 0 }
+      },
+      diagnostics: {
+        byMetricThreshold: built.built.metricFilteredCount,
+        dataUnavailable: built.built.dataUnavailableCount,
+        contractFilter: UNIVERSE_CONTRACT_FILTER,
+        upstreamStatus: 'ok'
+      }
+    };
+  }
+
+  getLastUpstreamError(): UniverseUpstreamError | null {
+    return this.lastUpstreamError;
   }
 
   async get(): Promise<UniverseState | null> {
@@ -165,6 +289,9 @@ export class UniverseService {
     tickersBySymbol: Map<string, TickerLinear>;
     instrumentBySymbol: Map<string, InstrumentLinear>;
   }> {
+    if (process.env.UNIVERSE_FORCE_UPSTREAM_ERROR === '1') {
+      throw new BybitApiError('Forced upstream error for QA', 'UNREACHABLE', true);
+    }
     const [instruments, tickersBySymbol] = await Promise.all([this.marketClient.getInstrumentsLinearAll(), this.marketClient.getTickersLinear()]);
 
     const instrumentBySymbol = new Map(instruments.map((instrument) => [instrument.symbol, instrument]));
@@ -221,6 +348,48 @@ export class UniverseService {
       dataUnavailableCount,
       tickersBySymbol,
       instrumentBySymbol
+    };
+  }
+
+  private async buildFilteredUniverseSafe(minVolPct: number, minTurnover: number): Promise<{
+    ok: true;
+    built: Awaited<ReturnType<UniverseService['buildFilteredUniverse']>>;
+  } | {
+    ok: false;
+    upstreamError: UniverseUpstreamError;
+  }> {
+    try {
+      const built = await this.buildFilteredUniverse(minVolPct, minTurnover);
+      return { ok: true, built };
+    } catch (error) {
+      return { ok: false, upstreamError: this.classifyUpstreamError(error) };
+    }
+  }
+
+  private classifyUpstreamError(error: unknown): UniverseUpstreamError {
+    if (error instanceof BybitApiError) {
+      if (error.code === 'TIMEOUT') {
+        return { code: 'TIMEOUT', message: error.message, hint: 'Check internet and BYBIT_REST endpoint; retry after a short delay.', retryable: error.retryable };
+      }
+      if (error.code === 'UNREACHABLE') {
+        return { code: 'BYBIT_UNREACHABLE', message: error.message, hint: 'Bybit API is unreachable from this host. Verify DNS/firewall/proxy.', retryable: error.retryable };
+      }
+      if (error.code === 'AUTH_ERROR') {
+        return { code: 'BYBIT_AUTH_ERROR', message: error.message, hint: 'Verify API credentials and environment routing to the correct Bybit network.', retryable: error.retryable };
+      }
+      if (error.code === 'RATE_LIMIT') {
+        return { code: 'UPSTREAM_RATE_LIMIT', message: error.message, hint: 'Rate limit hit. Wait briefly and retry refresh.', retryable: error.retryable };
+      }
+      if (error.code === 'PARSE_ERROR') {
+        return { code: 'PARSE_ERROR', message: error.message, hint: 'Unexpected Bybit payload format. Retry and review backend logs.', retryable: error.retryable };
+      }
+    }
+
+    return {
+      code: 'BYBIT_BAD_RESPONSE',
+      message: (error as Error)?.message ?? 'Unexpected upstream failure',
+      hint: 'Bybit responded with invalid data or unexpected status. Retry and inspect backend logs.',
+      retryable: false
     };
   }
 

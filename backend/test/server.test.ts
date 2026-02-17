@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
 import { buildServer } from '../src/server.js';
 import type { TickerStream, TickerUpdate } from '../src/market/tickerStream.js';
-import type { IBybitMarketClient, InstrumentLinear, TickerLinear } from '../src/services/bybitMarketClient.js';
+import { BybitApiError, type IBybitMarketClient, type InstrumentLinear, type TickerLinear } from '../src/services/bybitMarketClient.js';
 import { ActiveSymbolSet } from '../src/services/universeService.js';
 
 class FakeMarketClient implements IBybitMarketClient {
@@ -24,6 +24,18 @@ class FakeMarketClient implements IBybitMarketClient {
 
   async getTickersLinear(): Promise<Map<string, TickerLinear>> {
     return this.tickers;
+  }
+}
+
+class FailingMarketClient implements IBybitMarketClient {
+  constructor(private readonly error: Error) {}
+
+  async getInstrumentsLinearAll(): Promise<InstrumentLinear[]> {
+    throw this.error;
+  }
+
+  async getTickersLinear(): Promise<Map<string, TickerLinear>> {
+    throw this.error;
   }
 }
 
@@ -465,7 +477,7 @@ describe('server routes', () => {
 
     const universeResponse = await app.inject({ method: 'GET', url: '/api/universe' });
     expect(universeResponse.statusCode).toBe(200);
-    expect(universeResponse.json()).toEqual({ ok: false, ready: false });
+    expect(universeResponse.json()).toMatchObject({ ok: false, ready: false });
 
     const profilesResponse = await app.inject({ method: 'GET', url: '/api/profiles' });
     expect(profilesResponse.statusCode).toBe(200);
@@ -658,11 +670,16 @@ describe('server routes', () => {
     expect(createResponse.statusCode).toBe(200);
     expect(createResponse.json()).toMatchObject({
       ok: true,
+      ready: true,
       filters: { minTurnover: 20000000, minVolPct: 5 },
       metricDefinition: expect.any(String),
-      totalFetched: 3,
+      totals: {
+        totalSymbols: 3,
+        validSymbols: 3
+      },
       passed: 0,
-      forcedActive: 0
+      forcedActive: 0,
+      upstreamStatus: 'ok'
     });
 
     const fileContent = JSON.parse(await readFile(universeFilePath, 'utf-8')) as {
@@ -724,7 +741,7 @@ describe('server routes', () => {
     expect(clearResponse.json()).toEqual({ ok: true });
 
     const getAfterClear = await app.inject({ method: 'GET', url: '/api/universe' });
-    expect(getAfterClear.json()).toEqual({ ok: false, ready: false });
+    expect(getAfterClear.json()).toMatchObject({ ok: false, ready: false });
 
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -851,6 +868,107 @@ describe('server routes', () => {
         dataUnavailable: 1
       }
     });
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('failed refresh does not overwrite existing persisted universe and keeps download available', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-refresh-fail-'));
+    const universeFilePath = path.join(tempDir, 'data', 'universe.json');
+    const healthyClient = new FakeMarketClient(
+      [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+      new Map([
+        ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 105, openInterestValue: 200000 }]
+      ])
+    );
+
+    app = buildIsolatedServer({ universeFilePath, marketClient: healthyClient });
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 5 } });
+
+    await app.close();
+    app = buildIsolatedServer({
+      universeFilePath,
+      marketClient: new FailingMarketClient(new BybitApiError('timeout', 'TIMEOUT', true))
+    });
+
+    const refreshResponse = await app.inject({ method: 'POST', url: '/api/universe/refresh', payload: {} });
+    expect(refreshResponse.statusCode).toBe(502);
+    expect(refreshResponse.json()).toMatchObject({
+      ok: false,
+      diagnostics: {
+        upstreamStatus: 'error',
+        upstreamError: { code: 'TIMEOUT', retryable: true }
+      },
+      lastKnownUniverseAvailable: true
+    });
+
+    const persisted = JSON.parse(await readFile(universeFilePath, 'utf-8')) as { symbols: Array<{ symbol: string }> };
+    expect(persisted.symbols.map((entry) => entry.symbol)).toEqual(['BTCUSDT']);
+
+    const downloadResponse = await app.inject({ method: 'GET', url: '/api/universe/download' });
+    expect(downloadResponse.statusCode).toBe(200);
+    expect(downloadResponse.json()).toMatchObject({
+      ready: true,
+      symbols: [expect.objectContaining({ symbol: 'BTCUSDT' })]
+    });
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('classifies upstream auth errors with stable code and retryable=false', async () => {
+    app = buildIsolatedServer({ marketClient: new FailingMarketClient(new BybitApiError('auth failed', 'AUTH_ERROR', false)) });
+
+    const response = await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 3 } });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({
+      ok: false,
+      diagnostics: {
+        upstreamStatus: 'error',
+        upstreamError: {
+          code: 'BYBIT_AUTH_ERROR',
+          retryable: false
+        }
+      },
+      lastKnownUniverseAvailable: false
+    });
+  });
+
+  it('failed create does not overwrite existing persisted universe', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'universe-create-fail-'));
+    const universeFilePath = path.join(tempDir, 'data', 'universe.json');
+
+    app = buildIsolatedServer({
+      universeFilePath,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'ETHUSDT', qtyStep: 0.01, minOrderQty: 0.01, maxOrderQty: 1000 }],
+        new Map([
+          ['ETHUSDT', { symbol: 'ETHUSDT', turnover24h: 15000000, highPrice24h: 105, lowPrice24h: 100, markPrice: 101, openInterestValue: 100000 }]
+        ])
+      )
+    });
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 4 } });
+
+    await app.close();
+    app = buildIsolatedServer({
+      universeFilePath,
+      marketClient: new FailingMarketClient(new BybitApiError('network down', 'UNREACHABLE', true))
+    });
+
+    const response = await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 4 } });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({
+      diagnostics: {
+        upstreamError: {
+          code: 'BYBIT_UNREACHABLE',
+          retryable: true
+        }
+      },
+      lastKnownUniverseAvailable: true
+    });
+
+    const downloadResponse = await app.inject({ method: 'GET', url: '/api/universe/download' });
+    expect(downloadResponse.statusCode).toBe(200);
+    expect(downloadResponse.json()).toMatchObject({ symbols: [expect.objectContaining({ symbol: 'ETHUSDT' })] });
 
     await rm(tempDir, { recursive: true, force: true });
   });
