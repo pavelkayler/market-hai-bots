@@ -39,6 +39,8 @@ export type BotConfig = {
   requireOiTwoCandles: boolean;
   maxSecondsIntoCandle: number;
   minSpreadBps: number;
+  maxSpreadBps: number;
+  maxTickStalenessMs: number;
   minNotionalUSDT: number;
 };
 
@@ -79,7 +81,10 @@ export type NoEntryReason = {
     | 'QTY_BELOW_MIN'
     | 'NOTIONAL_TOO_SMALL'
     | 'MAX_ACTIVE_REACHED'
-    | 'GUARDRAIL_PAUSED';
+    | 'GUARDRAIL_PAUSED'
+    | 'SPREAD_TOO_WIDE'
+    | 'NO_BIDASK'
+    | 'TICK_STALE';
   message: string;
   value?: number;
   threshold?: number;
@@ -179,6 +184,9 @@ export type BotStats = {
   long: BotStatsSideBreakdown;
   short: BotStatsSideBreakdown;
   reasonCounts: Record<EntryReason, number>;
+  signalsConfirmed: number;
+  signalsBySide: { long: number; short: number };
+  signalsByEntryReason: Record<EntryReason, number>;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -262,6 +270,8 @@ const DEFAULT_IMPULSE_MAX_AGE_BARS = 2;
 const DEFAULT_REQUIRE_OI_TWO_CANDLES = false;
 const DEFAULT_MAX_SECONDS_INTO_CANDLE = 45;
 const DEFAULT_MIN_SPREAD_BPS = 0;
+const DEFAULT_MAX_SPREAD_BPS = 0;
+const DEFAULT_MAX_TICK_STALENESS_MS = 0;
 const DEFAULT_MIN_NOTIONAL_USDT = 5;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
@@ -277,7 +287,10 @@ const NO_ENTRY_REASON_CODES: NoEntryReason['code'][] = [
   'QTY_BELOW_MIN',
   'NOTIONAL_TOO_SMALL',
   'MAX_ACTIVE_REACHED',
-  'GUARDRAIL_PAUSED'
+  'GUARDRAIL_PAUSED',
+  'SPREAD_TOO_WIDE',
+  'NO_BIDASK',
+  'TICK_STALE'
 ];
 
 const createEmptySideBreakdown = (): BotStatsSideBreakdown => ({
@@ -354,6 +367,11 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
       ? Math.max(0, Math.floor(raw.maxSecondsIntoCandle))
       : DEFAULT_MAX_SECONDS_INTO_CANDLE;
   const minSpreadBps = typeof raw.minSpreadBps === 'number' && Number.isFinite(raw.minSpreadBps) ? Math.max(0, raw.minSpreadBps) : DEFAULT_MIN_SPREAD_BPS;
+  const maxSpreadBps = typeof raw.maxSpreadBps === 'number' && Number.isFinite(raw.maxSpreadBps) ? Math.max(0, raw.maxSpreadBps) : DEFAULT_MAX_SPREAD_BPS;
+  const maxTickStalenessMs =
+    typeof raw.maxTickStalenessMs === 'number' && Number.isFinite(raw.maxTickStalenessMs)
+      ? Math.max(0, Math.floor(raw.maxTickStalenessMs))
+      : DEFAULT_MAX_TICK_STALENESS_MS;
   const minNotionalUSDT =
     typeof raw.minNotionalUSDT === 'number' && Number.isFinite(raw.minNotionalUSDT) ? Math.max(0, raw.minNotionalUSDT) : DEFAULT_MIN_NOTIONAL_USDT;
 
@@ -394,6 +412,8 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     requireOiTwoCandles,
     maxSecondsIntoCandle,
     minSpreadBps,
+    maxSpreadBps,
+    maxTickStalenessMs,
     minNotionalUSDT
   };
 };
@@ -429,7 +449,10 @@ export class BotEngine {
     guardrailPauseReason: null,
     long: createEmptySideBreakdown(),
     short: createEmptySideBreakdown(),
-    reasonCounts: createEmptyReasonCounts()
+    reasonCounts: createEmptyReasonCounts(),
+    signalsConfirmed: 0,
+    signalsBySide: { long: 0, short: 0 },
+    signalsByEntryReason: createEmptyReasonCounts()
   };
   private winPnlSum = 0;
   private lossPnlSum = 0;
@@ -502,6 +525,8 @@ export class BotEngine {
       long: { ...this.stats.long },
       short: { ...this.stats.short },
       reasonCounts: { ...this.stats.reasonCounts },
+      signalsBySide: { ...this.stats.signalsBySide },
+      signalsByEntryReason: { ...this.stats.signalsByEntryReason },
       ...(perSymbol.length > 0 ? { perSymbol } : {})
     };
     return this.stats.lastClosed ? { ...stats, lastClosed: { ...this.stats.lastClosed } } : stats;
@@ -521,7 +546,10 @@ export class BotEngine {
       guardrailPauseReason: null,
       long: createEmptySideBreakdown(),
       short: createEmptySideBreakdown(),
-      reasonCounts: createEmptyReasonCounts()
+      reasonCounts: createEmptyReasonCounts(),
+      signalsConfirmed: 0,
+      signalsBySide: { long: 0, short: 0 },
+      signalsByEntryReason: createEmptyReasonCounts()
     };
     this.winPnlSum = 0;
     this.lossPnlSum = 0;
@@ -699,6 +727,9 @@ export class BotEngine {
         long: snapshot.stats.long ?? createEmptySideBreakdown(),
         short: snapshot.stats.short ?? createEmptySideBreakdown(),
         reasonCounts: snapshot.stats.reasonCounts ?? createEmptyReasonCounts(),
+        signalsConfirmed: snapshot.stats.signalsConfirmed ?? 0,
+        signalsBySide: snapshot.stats.signalsBySide ?? { long: 0, short: 0 },
+        signalsByEntryReason: snapshot.stats.signalsByEntryReason ?? createEmptyReasonCounts(),
         ...(snapshot.stats.lastClosed ? { lastClosed: snapshot.stats.lastClosed } : {})
       };
       this.winPnlSum = snapshot.stats.wins * (snapshot.stats.avgWinUSDT ?? 0);
@@ -992,6 +1023,14 @@ export class BotEngine {
       return;
     }
 
+    this.stats.signalsConfirmed += 1;
+    if (candidate.side === 'LONG') {
+      this.stats.signalsBySide.long += 1;
+    } else {
+      this.stats.signalsBySide.short += 1;
+    }
+    this.stats.signalsByEntryReason[candidate.entryReason] += 1;
+
     this.deps.emitSignal({
       symbol,
       side: candidate.side,
@@ -1065,6 +1104,11 @@ export class BotEngine {
   }
 
   private tryPlaceEntryOrder(symbolState: SymbolRuntimeState, marketState: MarketState, side: 'LONG' | 'SHORT'): boolean {
+    if (!this.passesCurrentLiquidityGates(symbolState, marketState)) {
+      this.resetToIdle(symbolState);
+      return false;
+    }
+
     const leverage = this.state.config!.leverage;
     const entryNotional = this.state.config!.marginUSDT * leverage;
     if (entryNotional < this.state.config!.minNotionalUSDT) {
@@ -1123,6 +1167,47 @@ export class BotEngine {
     }
 
     this.placeConfirmedOrder(symbolState, marketState, side, qty);
+    return true;
+  }
+
+  private passesCurrentLiquidityGates(symbolState: SymbolRuntimeState, marketState: MarketState): boolean {
+    const maxSpreadBps = this.state.config!.maxSpreadBps;
+    if (maxSpreadBps > 0) {
+      if (marketState.bid === null || marketState.ask === null || marketState.spreadBps === null) {
+        this.recordNoEntryReason(symbolState, {
+          code: 'NO_BIDASK',
+          message: 'Bid/ask missing for spread gate.',
+          threshold: maxSpreadBps
+        });
+        return false;
+      }
+
+      if (marketState.spreadBps > maxSpreadBps) {
+        this.recordNoEntryReason(symbolState, {
+          code: 'SPREAD_TOO_WIDE',
+          message: 'Spread exceeds maxSpreadBps.',
+          value: marketState.spreadBps,
+          threshold: maxSpreadBps
+        });
+        return false;
+      }
+    }
+
+    const maxTickStalenessMs = this.state.config!.maxTickStalenessMs;
+    if (maxTickStalenessMs > 0) {
+      const lastTickTs = marketState.lastTickTs ?? marketState.ts;
+      const stalenessMs = Math.max(0, this.now() - lastTickTs);
+      if (stalenessMs > maxTickStalenessMs) {
+        this.recordNoEntryReason(symbolState, {
+          code: 'TICK_STALE',
+          message: 'Latest tick is stale for entry.',
+          value: stalenessMs,
+          threshold: maxTickStalenessMs
+        });
+        return false;
+      }
+    }
+
     return true;
   }
 

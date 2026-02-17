@@ -287,7 +287,10 @@ describe('server routes', () => {
         guardrailPauseReason: null,
         long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
         short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
-        reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
+        reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 },
+        signalsConfirmed: 0,
+        signalsBySide: { long: 0, short: 0 },
+        signalsByEntryReason: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
       }
     });
 
@@ -1248,7 +1251,7 @@ describe('server routes', () => {
         priceUpThrPct: 1, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
         entryOffsetPct: 0, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0, trendTfMinutes: 5, trendLookbackBars: 20,
         trendMinMovePct: 0.2, confirmWindowBars: 2, confirmMinContinuationPct: 0.1, impulseMaxAgeBars: 2, requireOiTwoCandles: false,
-        maxSecondsIntoCandle: 45, minSpreadBps: 0, minNotionalUSDT: 5
+        maxSecondsIntoCandle: 45, minSpreadBps: 0, maxSpreadBps: 0, maxTickStalenessMs: 0, minNotionalUSDT: 5
       }
     });
 
@@ -1290,7 +1293,7 @@ describe('server routes', () => {
         priceUpThrPct: 1, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
         entryOffsetPct: 0.1, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0, trendTfMinutes: 5, trendLookbackBars: 20,
         trendMinMovePct: 0, confirmWindowBars: 2, confirmMinContinuationPct: 0, impulseMaxAgeBars: 2, requireOiTwoCandles: false,
-        maxSecondsIntoCandle: 45, minSpreadBps: 0, minNotionalUSDT: 5
+        maxSecondsIntoCandle: 45, minSpreadBps: 0, maxSpreadBps: 0, maxTickStalenessMs: 0, minNotionalUSDT: 5
       }
     });
 
@@ -1389,6 +1392,8 @@ describe('universe exclusions routes', () => {
   confirmMinContinuationPct: 0.1, impulseMaxAgeBars: 2,
   requireOiTwoCandles: false, maxSecondsIntoCandle: 45,
   minSpreadBps: 0,
+  maxSpreadBps: 35,
+  maxTickStalenessMs: 2500,
   minNotionalUSDT: 5
     } });
 

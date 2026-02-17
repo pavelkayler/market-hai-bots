@@ -5,6 +5,11 @@ export type MarketState = {
   markPrice: number;
   openInterestValue: number;
   ts: number;
+  lastPrice?: number | null;
+  bid?: number | null;
+  ask?: number | null;
+  spreadBps?: number | null;
+  lastTickTs?: number;
 };
 
 type MarketHubOptions = {
@@ -99,7 +104,12 @@ export class MarketHub {
     const nextState: MarketState = {
       markPrice: update.markPrice,
       openInterestValue: update.openInterestValue,
-      ts: update.ts
+      ts: update.ts,
+      lastPrice: update.lastPrice ?? null,
+      bid: update.bid ?? null,
+      ask: update.ask ?? null,
+      spreadBps: update.spreadBps ?? null,
+      lastTickTs: update.lastTickTs ?? update.ts
     };
 
     this.states.set(update.symbol, nextState);

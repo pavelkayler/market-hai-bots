@@ -47,14 +47,24 @@ describe('MarketHub', () => {
     expect(hub.getState('BTCUSDT')).toEqual({
       markPrice: 100,
       openInterestValue: 250000,
-      ts: 123456
+      ts: 123456,
+      lastPrice: null,
+      bid: null,
+      ask: null,
+      spreadBps: null,
+      lastTickTs: 123456
     });
 
     expect(hub.getAllStates()).toEqual({
       BTCUSDT: {
         markPrice: 100,
         openInterestValue: 250000,
-        ts: 123456
+        ts: 123456,
+        lastPrice: null,
+        bid: null,
+        ask: null,
+        spreadBps: null,
+        lastTickTs: 123456
       }
     });
   });

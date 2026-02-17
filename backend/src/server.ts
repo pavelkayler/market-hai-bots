@@ -276,7 +276,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     broadcast('log', { message });
   };
 
-  const processMarketStateUpdate = (symbol: string, state: { markPrice: number; openInterestValue: number; ts: number }): void => {
+  const processMarketStateUpdate = (symbol: string, state: { markPrice: number; openInterestValue: number; ts: number; lastPrice: number | null; bid: number | null; ask: number | null; spreadBps: number | null; lastTickTs: number }): void => {
     rotatePerfWindow(Date.now());
     const startedAt = Date.now();
     evalRunCount += 1;

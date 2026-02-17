@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -33,6 +34,8 @@ const aggressiveConfig: BotConfig = {
   requireOiTwoCandles: false,
   maxSecondsIntoCandle: 45,
   minSpreadBps: 0,
+  maxSpreadBps: 35,
+  maxTickStalenessMs: 2500,
   minNotionalUSDT: 5
 };
 
@@ -122,6 +125,8 @@ describe('ProfileService', () => {
   confirmMinContinuationPct: 0.1, impulseMaxAgeBars: 2,
   requireOiTwoCandles: false, maxSecondsIntoCandle: 45,
   minSpreadBps: 0,
+  maxSpreadBps: 35,
+  maxTickStalenessMs: 2500,
   minNotionalUSDT: 5
           }
         }
@@ -129,6 +134,32 @@ describe('ProfileService', () => {
 
       const profile = await service.get('legacy');
       expect(profile?.entryOffsetPct).toBe(0.01);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('seeds starter profiles only when missing names', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'profile-service-seed-test-'));
+    const filePath = path.join(tempDir, 'profiles.json');
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        activeProfile: 'default',
+        profiles: {
+          default: aggressiveConfig,
+          fast_test_1m: { ...aggressiveConfig, leverage: 7 }
+        }
+      }),
+      'utf-8'
+    );
+    const service = new ProfileService(filePath);
+
+    try {
+      const fast = await service.get('fast_test_1m');
+      const overnight = await service.get('overnight_1m_safe');
+      expect(fast?.leverage).toBe(7);
+      expect(overnight).not.toBeNull();
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

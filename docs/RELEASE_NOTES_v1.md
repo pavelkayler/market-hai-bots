@@ -23,3 +23,8 @@
 - Microstructure/slippage modeling is simplified.
 - Demo close detection depends on polling cadence for open orders and positions.
 - Replay outcomes depend on recorded data quality and temporal density.
+
+
+## Recommended runs
+- **2-hour smoke**: `fast_test_1m` + guardrails ON.
+- **Overnight**: `overnight_1m_safe` + conservative `maxActiveSymbols` + `dailyLossLimitUSDT`.
