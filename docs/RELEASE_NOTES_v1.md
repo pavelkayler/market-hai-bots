@@ -24,6 +24,13 @@
 - Today PnL uses UTC day boundaries.
 - Export pack always contains `meta.json`; other files are included only when present (`universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`).
 
+
+## RC criteria
+- `npm run rc:check` passes (backend typecheck + backend tests + frontend build).
+- `npm run rc:smoke` passes and exits cleanly after timeout with backend/frontend startup logs.
+- Manual QA sections A-E are recorded in `docs/QA_REPORT_LATEST.md` with PASS/FAIL evidence.
+- Universe card state banner is mutually exclusive across READY / BUILT_EMPTY / UPSTREAM_ERROR / NO_UNIVERSE.
+
 ## Known limitations
 - No ML/autotune/optimizer in v1 (math-only deterministic rules).
 - Microstructure/slippage modeling is simplified.

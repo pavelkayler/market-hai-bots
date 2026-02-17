@@ -17,14 +17,16 @@ Percent convention: **`3` means `3%`** (not `0.03`).
 
 ### Universe result semantics
 - `ready=true` means build completed successfully, even when `symbols=[]`.
-- Distinguish states clearly:
-  - **No universe yet**: no persisted `createdAt`; download returns `404 UNIVERSE_NOT_FOUND`.
-  - **Built empty**: persisted universe exists with `ready=true`, `symbols=[]`.
-  - **Upstream failure**: create/refresh returns HTTP 502 with `upstreamError`; last good universe remains persisted and downloadable.
+- Distinguish states clearly (frontend state banner mapping):
+  - **NO_UNIVERSE**: no persisted file (`GET /api/universe` returns `ok=false`, `ready=false`, `lastKnownUniverseAvailable=false`); download returns `404 UNIVERSE_NOT_FOUND`.
+  - **BUILT_EMPTY**: persisted universe exists with `ready=true`, `symbols=[]`.
+  - **READY**: persisted universe exists with `ready=true`, `symbols.length > 0`.
+  - **UPSTREAM_ERROR**: create/refresh returns HTTP 502 with `upstreamError`; last good universe remains persisted and downloadable when `lastKnownUniverseAvailable=true`.
 - 502 payload includes additive fields:
   - `diagnostics.upstreamStatus="error"`
   - `diagnostics.upstreamError { code, message, hint, retryable }`
   - `lastKnownUniverseAvailable`
+- Download behavior: `GET /api/universe/download` is enabled whenever a persisted universe exists (including built-empty). It is unavailable only when no persisted universe exists.
 
 - Universe diagnostics now include additive breakdown fields on create/refresh/get payloads and persisted `universe.json`:
   - `diagnostics.totals { instrumentsTotal, tickersTotal, matchedTotal, validTotal }`

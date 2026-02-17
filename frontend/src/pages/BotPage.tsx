@@ -992,6 +992,20 @@ export function BotPage({
   const universeIsEmpty = universeExists && universeSymbolCount === 0;
   const universeHasUpstreamError = universeState.upstreamStatus === 'error' && !!universeState.upstreamError;
   const universeLastKnownAvailable = universeState.lastKnownUniverseAvailable ?? universeExists;
+  const universeStateBanner: 'READY' | 'BUILT_EMPTY' | 'UPSTREAM_ERROR' | 'NO_UNIVERSE' = universeHasUpstreamError
+    ? 'UPSTREAM_ERROR'
+    : !universeExists
+      ? 'NO_UNIVERSE'
+      : universeIsEmpty
+        ? 'BUILT_EMPTY'
+        : 'READY';
+  const universeBucketCounts = {
+    contractFilterExcluded: universeContractFiltered,
+    thresholdFiltered: universeDiagnosticsExcluded?.thresholdFiltered ?? universeMetricFiltered,
+    tickerMissing: universeDiagnosticsExcluded?.tickerMissing ?? 0,
+    dataUnavailable: universeDataUnavailable,
+    excluded: excludedSymbols.length
+  };
 
   const formatEntryReason = (reason: EntryReason | null | undefined): string => {
     if (!reason) {
@@ -1117,33 +1131,41 @@ export function BotPage({
                 Clear
               </Button>
             </div>
-            {universeHasUpstreamError ? (
-              <Alert variant="danger" className="py-2 mb-2 small">
-                <div><strong>Upstream error (last build failed)</strong></div>
-                <div>Code: {universeState.upstreamError?.code}</div>
-                <div>{universeState.upstreamError?.hint}</div>
-                <div>Last known universe: {universeLastKnownAvailable ? 'available' : 'not available'}</div>
-                <div>Last good universe is kept; download uses last good.</div>
-              </Alert>
-            ) : !universeExists ? (
-              <Alert variant="secondary" className="py-2 mb-2 small">
-                <strong>No universe yet.</strong> Use Create to build the first universe.
-              </Alert>
-            ) : universeIsEmpty ? (
-              <Alert variant="warning" className="py-2 mb-2 small">
-                <div><strong>Built empty (0 symbols passed filters).</strong></div>
-                <div>
-                  Top reasons: threshold filtered {universeDiagnosticsExcluded?.thresholdFiltered ?? universeMetricFiltered}, contract-filter excluded {universeContractFiltered}{(universeDiagnosticsExcluded?.tickerMissing ?? 0) > 0 ? `, tickerMissing ${universeDiagnosticsExcluded?.tickerMissing ?? 0}` : ''}.
-                </div>
-              </Alert>
-            ) : (
-              <Alert variant="success" className="py-2 mb-2 small">
-                <strong>Universe ready ({universeSymbolCount} symbols)</strong>
-              </Alert>
-            )}
+            <Alert
+              variant={universeStateBanner === 'READY' ? 'success' : universeStateBanner === 'BUILT_EMPTY' ? 'warning' : universeStateBanner === 'UPSTREAM_ERROR' ? 'danger' : 'secondary'}
+              className="py-2 mb-2 small"
+            >
+              {universeStateBanner === 'READY' ? (
+                <div><strong>READY · Universe ready ({universeSymbolCount} symbols)</strong></div>
+              ) : null}
+              {universeStateBanner === 'BUILT_EMPTY' ? (
+                <>
+                  <div><strong>BUILT_EMPTY · Built empty (0 symbols passed filters).</strong></div>
+                  <div>Contract rule: USDT Linear Perpetual only.</div>
+                  <div>
+                    Active filters: minTurnover {universeState.filters?.minTurnover?.toLocaleString() ?? '-'}, minVolPct {universeState.filters?.minVolPct ?? '-'}.
+                  </div>
+                  <div>
+                    Buckets: contractFilterExcluded {universeBucketCounts.contractFilterExcluded}, thresholdFiltered {universeBucketCounts.thresholdFiltered}, tickerMissing {universeBucketCounts.tickerMissing}, dataUnavailable {universeBucketCounts.dataUnavailable}, excluded {universeBucketCounts.excluded}.
+                  </div>
+                </>
+              ) : null}
+              {universeStateBanner === 'UPSTREAM_ERROR' ? (
+                <>
+                  <div><strong>UPSTREAM_ERROR · Upstream error (last build failed)</strong></div>
+                  <div>Code: {universeState.upstreamError?.code}</div>
+                  <div>{universeState.upstreamError?.hint}</div>
+                  <div>Last known universe: {universeLastKnownAvailable ? 'available' : 'not available'}</div>
+                  <div>Last good universe is kept; download uses last good.</div>
+                </>
+              ) : null}
+              {universeStateBanner === 'NO_UNIVERSE' ? (
+                <div><strong>NO_UNIVERSE · No universe yet.</strong> Use Create to build the first universe.</div>
+              ) : null}
+            </Alert>
 
             <div className="small text-muted">
-              <div>Created At: {universeState.createdAt ? new Date(universeState.createdAt).toLocaleString() : '-'}</div>
+              {universeExists ? <div>Created At: {new Date(universeState.createdAt as number).toLocaleString()}</div> : null}
               <div>Symbols: {universeSymbolCount}</div>
               <div>Excluded: {excludedSymbols.length}</div>
               <div>
@@ -1178,7 +1200,7 @@ export function BotPage({
               <Button variant="outline-primary" onClick={() => setShowUniverseSymbols((value) => !value)}>
                 Universe Symbols
               </Button>
-              <Button variant="outline-success" onClick={() => void handleDownloadUniverseJson()} disabled={!universeExists}>
+              <Button variant="outline-success" onClick={() => void handleDownloadUniverseJson()} disabled={!universeLastKnownAvailable}>
                 Download universe.json
               </Button>
               <Button variant="outline-secondary" onClick={() => void handleCopySymbols()}>

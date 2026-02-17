@@ -16,19 +16,23 @@ Percent convention: **`3` means 3%** (not `0.03`).
 
 ## Operator quick-start
 
+Use `docs/QA_CHECKLIST.md` for manual steps and record results in `docs/QA_REPORT_LATEST.md`.
+
 ### Run locally
 - Install deps: `npm i`
-- Backend: `npm --prefix backend run dev`
-- Frontend: `npm --prefix frontend run dev`
+- RC check (typecheck + backend tests + frontend build): `npm run rc:check`
+- RC smoke (rc:check + short backend/frontend boot sanity): `npm run rc:smoke`
+- Backend only: `npm --prefix backend run dev`
+- Frontend only: `npm --prefix frontend run dev`
 - Both: `npm run dev`
 
 ### Minimal operator flow
 1. **Universe create**
    - Set `minVolPct`/`minTurnover`, click Create.
    - Verify one of:
-     - `Universe ready (N symbols)`
-     - `Built empty (0 symbols passed filters)`
-     - `Upstream error (last build failed)` with last-good universe still downloadable.
+    - `READY · Universe ready (N symbols)`
+    - `BUILT_EMPTY · Built empty (0 symbols passed filters).`
+    - `UPSTREAM_ERROR · Upstream error (last build failed)` with last-good universe still downloadable.
 2. **Start bot and validate lifecycle**
    - Start in paper mode.
    - Confirm signal gating -> `ENTRY_PENDING` -> `POSITION_OPEN` -> `POSITION_CLOSED` journal/stat updates.
@@ -61,11 +65,11 @@ Universe definitions and units:
 
 When 0 symbols pass filters:
 - Universe build is still successful (`ready=true`) and is persisted.
-- UI shows **"Universe built but empty (0 symbols)"** and reason counters (`byMetricThreshold`, `dataUnavailable`).
+- UI shows **"BUILT_EMPTY · Built empty (0 symbols passed filters)."** and ordered buckets (`contractFilterExcluded`, `thresholdFiltered`, `tickerMissing`, `dataUnavailable`, `excluded`).
 - `Download universe.json` continues to work.
 
 When Bybit is unreachable / upstream fails:
-- Create/refresh returns upstream error details (`code`, `hint`, `retryable`) and UI shows **"Upstream error (last build failed)"**.
+- Create/refresh returns upstream error details (`code`, `hint`, `retryable`) and UI shows **"UPSTREAM_ERROR · Upstream error (last build failed)"**.
 - Last good persisted universe is preserved and still downloadable.
 - Operator steps:
   1. Verify network/DNS/firewall/proxy to Bybit endpoint.

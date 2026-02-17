@@ -6,8 +6,11 @@
     "dev:backend": "npm --prefix backend run dev",
     "dev:frontend": "npm --prefix frontend run dev",
     "dev": "concurrently -k \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "backend:typecheck": "npm --prefix backend run typecheck",
     "test": "npm --prefix backend test",
-    "build:frontend": "npm --prefix frontend run build"
+    "build:frontend": "npm --prefix frontend run build",
+    "rc:check": "npm run backend:typecheck && npm test && npm run build:frontend",
+    "rc:smoke": "npm run rc:check && node scripts/rc-smoke.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

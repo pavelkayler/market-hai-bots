@@ -17,7 +17,11 @@ Frontend: `http://localhost:5173` (Vite default)
 5. Start both from root:
    - `npm run dev`
 
-Useful checks:
+Release-candidate smoke commands:
+- `npm run rc:check` (backend typecheck + backend tests + frontend build)
+- `npm run rc:smoke` (runs `rc:check`, boots backend/frontend for ~12s sanity start, then exits cleanly)
+
+Useful direct checks:
 - Backend tests: `npm test`
 - Frontend production build: `npm --prefix frontend run build`
 - Backend typecheck: `npm --prefix backend run typecheck`
@@ -27,6 +31,7 @@ Useful checks:
 - REST/WS contract and error semantics: `docs/API.md`
 - Manual runbook: `docs/QA_CHECKLIST.md`
 - QA report template: `docs/QA_REPORT.md`
+- Latest QA run log: `docs/QA_REPORT_LATEST.md`
 - Release summary: `docs/RELEASE_NOTES_v1.md`
 
 ## Environment setup (demo mode)
