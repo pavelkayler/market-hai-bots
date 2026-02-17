@@ -13,8 +13,8 @@ Local web app:
 
 ### Filters
 - `turnover24hUSDT >= 10_000_000`
-- `vol24hPct >= minVolPct`
-  - `vol24hPct = (highPrice24h - lowPrice24h) / lowPrice24h * 100`
+- `vol24hRangePct >= minVolPct`
+  - `vol24hRangePct = (highPrice24h - lowPrice24h) / lowPrice24h * 100`
 - turnover/high/low source: Bybit v5 Market Tickers (last-price based).
 
 ### Active symbol preservation on refresh

@@ -35,7 +35,10 @@ export class ActiveSymbolSet {
 
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
-const computeVol24hPct = (highPrice24h: number, lowPrice24h: number): number | null => {
+const VOLATILITY_DEFINITION = '24h range % = (high24h-low24h)/low24h*100' as const;
+const TURNOVER_DEFINITION = '24h turnover in USDT from Bybit ticker (turnover24h or turnover24hValue)' as const;
+
+const computeVol24hRangePct = (highPrice24h: number, lowPrice24h: number): number | null => {
   if (lowPrice24h <= 0) {
     return null;
   }
@@ -61,6 +64,10 @@ export class UniverseService {
     const nextState: UniverseState = {
       createdAt: Date.now(),
       filters: { minTurnover, minVolPct },
+      metricDefinition: {
+        volDefinition: VOLATILITY_DEFINITION,
+        turnoverDefinition: TURNOVER_DEFINITION
+      },
       symbols: built.entries,
       ready: true,
       totalSymbols: built.totalFetched,
@@ -92,6 +99,10 @@ export class UniverseService {
     const nextState: UniverseState = {
       createdAt: Date.now(),
       filters: { minTurnover: effectiveMinTurnover, minVolPct: effectiveMinVolPct },
+      metricDefinition: {
+        volDefinition: VOLATILITY_DEFINITION,
+        turnoverDefinition: TURNOVER_DEFINITION
+      },
       symbols: forced.entries,
       ready: true,
       totalSymbols: built.totalFetched,
@@ -165,25 +176,27 @@ export class UniverseService {
         continue;
       }
 
-      const turnover24h = ticker.turnover24h;
+      const turnover24hUSDT = ticker.turnover24hUSDT ?? ticker.turnover24h;
       const highPrice24h = ticker.highPrice24h;
       const lowPrice24h = ticker.lowPrice24h;
-      if (!isFiniteNumber(turnover24h) || !isFiniteNumber(highPrice24h) || !isFiniteNumber(lowPrice24h)) {
+      if (!isFiniteNumber(turnover24hUSDT) || !isFiniteNumber(highPrice24h) || !isFiniteNumber(lowPrice24h)) {
         continue;
       }
 
-      const vol24hPct = computeVol24hPct(highPrice24h, lowPrice24h);
-      if (!isFiniteNumber(vol24hPct)) {
+      const vol24hRangePct = computeVol24hRangePct(highPrice24h, lowPrice24h);
+      if (!isFiniteNumber(vol24hRangePct)) {
         continue;
       }
 
-      if (turnover24h >= minTurnover && vol24hPct >= minVolPct) {
+      if (turnover24hUSDT >= minTurnover && vol24hRangePct >= minVolPct) {
         entries.push({
           symbol: instrument.symbol,
-          turnover24h,
+          turnover24hUSDT,
+          turnover24h: turnover24hUSDT,
           highPrice24h,
           lowPrice24h,
-          vol24hPct,
+          vol24hRangePct,
+          vol24hPct: vol24hRangePct,
           forcedActive: false,
           qtyStep: instrument.qtyStep,
           minOrderQty: instrument.minOrderQty,
@@ -226,9 +239,11 @@ export class UniverseService {
         this.logger.warn({ symbol: activeSymbol }, 'Active symbol missing from tickers during universe refresh');
         symbols.set(activeSymbol, {
           symbol: activeSymbol,
+          turnover24hUSDT: 0,
           turnover24h: 0,
           highPrice24h: 0,
           lowPrice24h: 0,
+          vol24hRangePct: 0,
           vol24hPct: 0,
           forcedActive: true,
           qtyStep: null,
@@ -239,20 +254,22 @@ export class UniverseService {
         continue;
       }
 
-      const turnover24h = ticker.turnover24h ?? 0;
+      const turnover24hUSDT = ticker.turnover24hUSDT ?? ticker.turnover24h ?? 0;
       const highPrice24h = ticker.highPrice24h ?? 0;
       const lowPrice24h = ticker.lowPrice24h ?? 0;
-      const vol24hPct =
+      const vol24hRangePct =
         isFiniteNumber(highPrice24h) && isFiniteNumber(lowPrice24h)
-          ? computeVol24hPct(highPrice24h, lowPrice24h) ?? 0
+          ? computeVol24hRangePct(highPrice24h, lowPrice24h) ?? 0
           : 0;
 
       symbols.set(activeSymbol, {
         symbol: activeSymbol,
-        turnover24h,
+        turnover24hUSDT,
+        turnover24h: turnover24hUSDT,
         highPrice24h,
         lowPrice24h,
-        vol24hPct,
+        vol24hRangePct,
+        vol24hPct: vol24hRangePct,
         forcedActive: true,
         qtyStep: instrument?.qtyStep ?? null,
         minOrderQty: instrument?.minOrderQty ?? null,
@@ -344,10 +361,10 @@ export class UniverseService {
       return (
         !!entry &&
         typeof entry.symbol === 'string' &&
-        isFiniteNumber(entry.turnover24h) &&
+        isFiniteNumber(entry.turnover24hUSDT ?? entry.turnover24h) &&
         isFiniteNumber(entry.highPrice24h) &&
         isFiniteNumber(entry.lowPrice24h) &&
-        isFiniteNumber(entry.vol24hPct) &&
+        isFiniteNumber(entry.vol24hRangePct ?? entry.vol24hPct) &&
         typeof entry.forcedActive === 'boolean' &&
         (entry.qtyStep === null || entry.qtyStep === undefined || isFiniteNumber(entry.qtyStep)) &&
         (entry.minOrderQty === null || entry.minOrderQty === undefined || isFiniteNumber(entry.minOrderQty)) &&
@@ -364,8 +381,17 @@ export class UniverseService {
       createdAt: parsed.createdAt,
       ready: parsed.ready,
       filters,
+      metricDefinition: {
+        volDefinition: typeof parsed.metricDefinition?.volDefinition === 'string' ? parsed.metricDefinition.volDefinition : VOLATILITY_DEFINITION,
+        turnoverDefinition:
+          typeof parsed.metricDefinition?.turnoverDefinition === 'string' ? parsed.metricDefinition.turnoverDefinition : TURNOVER_DEFINITION
+      },
       symbols: symbols.map((entry) => ({
         ...entry,
+        turnover24hUSDT: entry.turnover24hUSDT ?? entry.turnover24h,
+        turnover24h: entry.turnover24hUSDT ?? entry.turnover24h,
+        vol24hRangePct: entry.vol24hRangePct ?? entry.vol24hPct,
+        vol24hPct: entry.vol24hRangePct ?? entry.vol24hPct,
         qtyStep: entry.qtyStep ?? null,
         minOrderQty: entry.minOrderQty ?? null,
         maxOrderQty: entry.maxOrderQty ?? null

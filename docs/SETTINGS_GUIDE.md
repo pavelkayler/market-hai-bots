@@ -2,6 +2,21 @@
 
 Percent convention: **`3` means 3%** (not `0.03`).
 
+## Universe filters (24h metrics, v1)
+
+Universe uses only **24h ticker metrics**:
+- `minTurnover` compares against `turnover24hUSDT` (Bybit ticker `turnover24h` / `turnover24hValue`).
+- `minVolPct` compares against `vol24hRangePct` where:
+  - `vol24hRangePct = (highPrice24h - lowPrice24h) / lowPrice24h * 100`
+
+Important: last price change (for example `+0.31%`) is **not** volatility for Universe filtering.
+
+Example:
+- `highPrice24h=0.213`, `lowPrice24h=0.193`
+- `vol24hRangePct = (0.213-0.193)/0.193*100 = 10.36%`
+- so `minVolPct=10` passes, `minVolPct=12` fails.
+
+
 ## v1 execution math (paper)
 
 - `notional = marginUSDT * leverage`

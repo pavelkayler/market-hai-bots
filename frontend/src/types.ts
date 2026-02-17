@@ -116,9 +116,11 @@ export type UniverseFilters = {
 
 export type UniverseEntry = {
   symbol: string;
+  turnover24hUSDT: number;
   turnover24h: number;
   highPrice24h: number;
   lowPrice24h: number;
+  vol24hRangePct: number;
   vol24hPct: number;
   forcedActive: boolean;
 };
@@ -129,6 +131,10 @@ export type UniverseState = {
   createdAt?: number;
   filters?: UniverseFilters;
   symbols?: UniverseEntry[];
+  metricDefinition?: {
+    volDefinition: string;
+    turnoverDefinition: string;
+  };
   contractFilter?: 'USDT_LINEAR_PERPETUAL_ONLY';
   filteredOut?: {
     expiringOrNonPerp: number;

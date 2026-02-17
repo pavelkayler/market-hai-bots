@@ -1,8 +1,10 @@
 export type UniverseEntry = {
   symbol: string;
+  turnover24hUSDT: number;
   turnover24h: number;
   highPrice24h: number;
   lowPrice24h: number;
+  vol24hRangePct: number;
   vol24hPct: number;
   forcedActive: boolean;
   qtyStep: number | null;
@@ -15,6 +17,10 @@ export type UniverseState = {
   filters: {
     minTurnover: number;
     minVolPct: number;
+  };
+  metricDefinition?: {
+    volDefinition: string;
+    turnoverDefinition: string;
   };
   symbols: UniverseEntry[];
   ready: boolean;

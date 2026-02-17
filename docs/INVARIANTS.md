@@ -2,7 +2,7 @@
 
 1. Mark price everywhere.
 2. OI metric is openInterestValue.
-3. Universe filters: turnover24h>=10,000,000 and vol24hPct=(high-low)/low*100 >= minVolPct.
+3. Universe filters: turnover24h>=10,000,000 and vol24hRangePct=(high-low)/low*100 >= minVolPct.
 4. Universe is manual (create/refresh).
 5. Refresh preserves active symbols (pending/open position).
 6. Triggers are baseline-based.
