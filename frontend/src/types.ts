@@ -191,6 +191,14 @@ export type UniverseState = {
   };
   notReadyReason?: string;
   excluded?: string[];
+  upstreamStatus?: 'ok' | 'error';
+  upstreamError?: {
+    code: 'BYBIT_UNREACHABLE' | 'TIMEOUT' | 'BYBIT_AUTH_ERROR' | 'BYBIT_BAD_RESPONSE' | 'PARSE_ERROR' | 'UPSTREAM_RATE_LIMIT';
+    message: string;
+    hint: string;
+    retryable: boolean;
+  };
+  lastKnownUniverseAvailable?: boolean;
 };
 
 export type SymbolBaseline = {

@@ -83,3 +83,22 @@
 ## Validation status
 - Backend tests: pass.
 - Frontend build: pass.
+
+
+## QA Report — Task 50 hardening addendum
+
+## Scope executed
+- Added automated coverage for universe upstream failure handling and persistence safety.
+- Added operator-facing network troubleshooting expectations for Universe UI states.
+
+## New scenarios validated
+1. Existing persisted universe + upstream failure on refresh:
+   - API returns structured upstream error (`code`, `retryable`).
+   - Persisted `universe.json` remains unchanged and downloadable.
+2. Empty universe success path:
+   - Build completes with `ready=true`, `symbols=[]`, and remains downloadable.
+
+## Manual QA scenario (documented)
+- Use `UNIVERSE_FORCE_UPSTREAM_ERROR=1` after creating a valid universe, then refresh:
+  - UI shows upstream error block with last-known-universe availability.
+  - Download endpoint continues serving last persisted universe.

@@ -428,6 +428,10 @@ export function BotPage({
       await syncRest();
       setStatus(`Universe ${action} ok`);
     } catch (err) {
+      const snapshot = await getUniverse().catch(() => null);
+      if (snapshot) {
+        setUniverseState(snapshot);
+      }
       setError((err as Error).message);
     }
   };
@@ -973,6 +977,8 @@ export function BotPage({
   const universeMetricFiltered = universeState.filteredOut?.byMetricThreshold ?? 0;
   const universeDataUnavailable = universeState.filteredOut?.dataUnavailable ?? 0;
   const universeIsEmpty = universeExists && universeSymbolCount === 0;
+  const universeHasUpstreamError = universeState.upstreamStatus === 'error' && !!universeState.upstreamError;
+  const universeLastKnownAvailable = universeState.lastKnownUniverseAvailable ?? universeExists;
 
   const formatEntryReason = (reason: EntryReason | null | undefined): string => {
     if (!reason) {
@@ -990,7 +996,7 @@ export function BotPage({
       <Col md={12}>
         <Card>
           <Card.Header>Dashboard</Card.Header>
-          <Card.Body>
+          <Card.Body className="universe-panel">
             <Row className="g-3">
               <Col md={3}>
                 <div><strong>Trades:</strong> {botStats.totalTrades}</div>
@@ -1096,17 +1102,35 @@ export function BotPage({
                 Clear
               </Button>
             </div>
-            <div>
-              <div>Ready: {String(universeState.ready)}</div>
+            {universeHasUpstreamError ? (
+              <Alert variant="danger" className="py-2 mb-2 small">
+                <div><strong>Upstream error (last build failed)</strong></div>
+                <div>Code: {universeState.upstreamError?.code}</div>
+                <div>{universeState.upstreamError?.hint}</div>
+                <div>Last known universe: {universeLastKnownAvailable ? 'available' : 'not available'}</div>
+              </Alert>
+            ) : !universeExists ? (
+              <Alert variant="secondary" className="py-2 mb-2 small">
+                <strong>No universe yet.</strong> Use Create to build the first universe.
+              </Alert>
+            ) : universeIsEmpty ? (
+              <Alert variant="warning" className="py-2 mb-2 small">
+                <div><strong>Universe built but empty (0 symbols).</strong></div>
+                <div>Threshold filtered: {universeMetricFiltered}, data unavailable: {universeDataUnavailable}.</div>
+              </Alert>
+            ) : (
+              <Alert variant="success" className="py-2 mb-2 small">
+                <strong>Universe ready ({universeSymbolCount} symbols)</strong>
+              </Alert>
+            )}
+
+            <div className="small text-muted">
               <div>Created At: {universeState.createdAt ? new Date(universeState.createdAt).toLocaleString() : '-'}</div>
-              <div>
-                Filters:{' '}
-                {universeState.filters
-                  ? `minTurnover ${universeState.filters.minTurnover.toLocaleString()}, minVolPct ${universeState.filters.minVolPct}`
-                  : '-'}
-              </div>
-              <div>Symbols: {universeState.symbols?.length ?? 0}</div>
+              <div>Symbols: {universeSymbolCount}</div>
               <div>Excluded: {excludedSymbols.length}</div>
+              <div>
+                Filters: {universeState.filters ? `minTurnover ${universeState.filters.minTurnover.toLocaleString()}, minVolPct ${universeState.filters.minVolPct}` : '-'}
+              </div>
               <div>Contract filter: USDT Linear Perpetual only</div>
               <details className="mt-1 ui-dense-disclosure">
                 <summary>How volatility is computed</summary>
@@ -1114,25 +1138,18 @@ export function BotPage({
                   {universeState.metricDefinition ?? 'turnover24hUSDT from Bybit 24h ticker; vol24hRangePct=(high24h-low24h)/low24h*100 (not candle volatility)'}
                 </div>
               </details>
-              {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? (
-                <div>Filtered out (non-perp/expiring): {universeState.filteredOut.expiringOrNonPerp}</div>
-              ) : null}
+              {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? <div>Filtered out (non-perp/expiring): {universeState.filteredOut.expiringOrNonPerp}</div> : null}
               {typeof universeState.filteredOut?.byMetricThreshold === 'number' ? <div>Filtered out (turnover/vol thresholds): {universeState.filteredOut.byMetricThreshold}</div> : null}
               {typeof universeState.filteredOut?.dataUnavailable === 'number' ? <div>Filtered out (ticker data unavailable): {universeState.filteredOut.dataUnavailable}</div> : null}
             </div>
 
             {universeIsEmpty ? (
-              <Alert variant="warning" className="mb-2 py-2">
-                <div><strong>Universe built but 0 symbols passed filters.</strong></div>
-                <ul className="mb-0 ps-3">
-                  <li>Contract filter excluded {universeContractFiltered}.</li>
-                  <li>Turnover/volatility filters excluded {universeMetricFiltered}.</li>
-                  <li>Data unavailable for {universeDataUnavailable}.</li>
-                </ul>
+              <Alert variant="warning" className="mb-2 py-2 small">
+                Contract filter excluded {universeContractFiltered}; turnover/vol filters excluded {universeMetricFiltered}; data unavailable {universeDataUnavailable}.
               </Alert>
             ) : null}
 
-            <div className="d-flex gap-2 flex-wrap mt-3">
+            <div className="d-flex gap-2 flex-wrap mt-2">
               <Button variant="outline-primary" onClick={() => setShowUniverseSymbols((value) => !value)}>
                 Universe Symbols
               </Button>
@@ -1145,8 +1162,7 @@ export function BotPage({
             </div>
 
             <Collapse in={showUniverseSymbols}>
-              <div className="mt-3">
-                {!universeExists ? <Alert variant="warning" className="py-2">Universe has not been created yet.</Alert> : null}
+              <div className="mt-2">
                 <Row className="g-2 mb-2">
                   <Col md={12}>
                     <Form.Control
@@ -1180,7 +1196,7 @@ export function BotPage({
                         <td colSpan={6} className="text-center text-muted">
                           {universeExists
                             ? 'No symbols in universe. Adjust minTurnover/minVolPct or review filter counts above.'
-                            : 'Create a universe to populate symbols.'}
+                            : 'No universe yet. Create one to populate symbols.'}
                         </td>
                       </tr>
                     ) : null}

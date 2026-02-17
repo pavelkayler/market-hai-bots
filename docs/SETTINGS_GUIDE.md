@@ -21,6 +21,27 @@ Universe uses only **24h ticker metrics**:
 
 Important: top-bar last price change (for example CoinGlass `+0.31%`) is candle/change momentum, **not** this 24h range metric.
 
+Universe definitions and units:
+- `minTurnover` unit: **USDT over last 24h** (`turnover24hUSDT`).
+  - Example: if `turnover24hUSDT = 8,500,000` and `minTurnover = 10,000,000`, symbol is filtered out.
+- `minVolPct` unit: **percent** of 24h range (not decimal).
+  - Formula: `vol24hRangePct = (highPrice24h - lowPrice24h) / lowPrice24h * 100`.
+  - Example: `high=110`, `low=100` => `vol24hRangePct = 10`; `minVolPct=3` passes, `minVolPct=12` fails.
+
+When 0 symbols pass filters:
+- Universe build is still successful (`ready=true`) and is persisted.
+- UI shows **"Universe built but empty (0 symbols)"** and reason counters (`byMetricThreshold`, `dataUnavailable`).
+- `Download universe.json` continues to work.
+
+When Bybit is unreachable / upstream fails:
+- Create/refresh returns upstream error details (`code`, `hint`, `retryable`) and UI shows **"Upstream error (last build failed)"**.
+- Last good persisted universe is preserved and still downloadable.
+- Operator steps:
+  1. Verify network/DNS/firewall/proxy to Bybit endpoint.
+  2. Verify `BYBIT_REST` target and environment routing.
+  3. Retry after short backoff (especially for `UPSTREAM_RATE_LIMIT`).
+  4. For local QA, set `UNIVERSE_FORCE_UPSTREAM_ERROR=1` to simulate failure; unset to resume normal behavior.
+
 Example:
 - `highPrice24h=0.21324`, `lowPrice24h=0.19316`
 - `vol24hRangePct = (0.21324-0.19316)/0.19316*100 ≈ 10.39%`
