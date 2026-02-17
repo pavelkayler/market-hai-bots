@@ -189,6 +189,25 @@ export type UniverseState = {
     byMetricThreshold?: number;
     dataUnavailable?: number;
   };
+  diagnostics?: {
+    totals: {
+      instrumentsTotal: number;
+      tickersTotal: number;
+      matchedTotal: number;
+      validTotal: number;
+    };
+    excluded: {
+      nonPerp: number;
+      expiring: number;
+      nonLinear: number;
+      nonTrading: number;
+      nonUSDT: number;
+      tickerMissing: number;
+      thresholdFiltered: number;
+      parseError: number;
+      unknown: number;
+    };
+  };
   notReadyReason?: string;
   excluded?: string[];
   upstreamStatus?: 'ok' | 'error';

@@ -48,6 +48,7 @@ describe('Bybit parsers', () => {
         settleCoin: 'USDT',
         quoteCoin: 'USDT',
         baseCoin: 'BTC',
+        deliveryTime: null,
         qtyStep: 0.001,
         minOrderQty: 0.001,
         maxOrderQty: 100

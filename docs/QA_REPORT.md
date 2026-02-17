@@ -21,6 +21,10 @@ Paste concise output summaries under each command.
 
 ## Manual checklist results (from `docs/QA_CHECKLIST.md`)
 - Section A (Universe states): PASS/FAIL + evidence
+  - Non-zero universe build (fixture/moderate thresholds): Expected vs Observed
+  - Built-empty from ticker-missing fixture: Expected vs Observed
+  - Built-empty from all-non-perp fixture: Expected vs Observed
+  - Upstream failure keeps last-good + download uses last-good: Expected vs Observed
 - Section B (Start→close flow): PASS/FAIL + evidence
 - Section C (Pause/Resume/Kill): PASS/FAIL + evidence
 - Section D (Ops journaling + export): PASS/FAIL + evidence

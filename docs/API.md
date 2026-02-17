@@ -26,6 +26,11 @@ Percent convention: **`3` means `3%`** (not `0.03`).
   - `diagnostics.upstreamError { code, message, hint, retryable }`
   - `lastKnownUniverseAvailable`
 
+- Universe diagnostics now include additive breakdown fields on create/refresh/get payloads and persisted `universe.json`:
+  - `diagnostics.totals { instrumentsTotal, tickersTotal, matchedTotal, validTotal }`
+  - `diagnostics.excluded { nonPerp, expiring, nonLinear, nonTrading, nonUSDT, tickerMissing, thresholdFiltered, parseError, unknown }`
+  - Legacy additive fields remain (`filteredOut`, `diagnostics.byMetricThreshold`, `diagnostics.dataUnavailable`).
+
 ## Bot lifecycle
 - `POST /api/bot/start`
 - `POST /api/bot/stop`
