@@ -14,6 +14,8 @@
 - Universe create/refresh reliability hardening: bounded retries + timeout classification (`BYBIT_UNREACHABLE`, `TIMEOUT`, `BYBIT_AUTH_ERROR`, `UPSTREAM_RATE_LIMIT`, parse/bad-response), plus "last good universe preserved" behavior on upstream failure.
 - Universe diagnostics upgraded with contract/ticker/threshold buckets and instrument↔ticker match totals (`instrumentsTotal`, `tickersTotal`, `matchedTotal`, `validTotal`) persisted in `universe.json` for restart-safe debugging.
 - Compact operator layout pass: denser card/table spacing with unchanged controls/help text.
+- V1 Step 3/3 QA closure: checklist/report/docs aligned as single source of truth, including export header contract and operator state strings.
+- Starter preset hardening: `fast_test_1m` and `overnight_1m_safe` guardrails remain non-zero by default, with `entryOffsetPct=0.01` preserved for paper-testing readiness.
 
 ## Invariants
 - Percent inputs follow: `3` means `3%`.

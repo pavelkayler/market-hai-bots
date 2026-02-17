@@ -69,7 +69,7 @@ const OVERNIGHT_1M_SAFE_PROFILE: BotConfig = {
   priceUpThrPct: 0.6,
   oiUpThrPct: 0.8,
   oiCandleThrPct: 0.3,
-  entryOffsetPct: 0.02,
+  entryOffsetPct: 0.01,
   tpRoiPct: 3.0,
   slRoiPct: 1.8,
   maxActiveSymbols: 2,
