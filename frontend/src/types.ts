@@ -1,6 +1,7 @@
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
 export type BotTf = 1 | 3 | 5;
+export type EntryReason = 'LONG_CONTINUATION' | 'SHORT_CONTINUATION' | 'SHORT_DIVERGENCE';
 
 export type BotSettings = {
   mode: BotMode;
@@ -95,6 +96,7 @@ export type BotStats = {
   guardrailPauseReason: string | null;
   long: BotStatsSideBreakdown;
   short: BotStatsSideBreakdown;
+  reasonCounts: Record<EntryReason, number>;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -153,8 +155,12 @@ export type PendingOrder = {
   side: 'Buy' | 'Sell';
   limitPrice: number;
   qty: number;
-  createdTs: number;
+  placedTs?: number;
+  createdTs?: number;
   expiresTs: number;
+  tpPrice?: number;
+  slPrice?: number;
+  sentToExchange?: boolean;
 };
 
 export type Position = {
@@ -197,6 +203,11 @@ export type SymbolUpdatePayload = {
   pendingOrder: PendingOrder | null;
   position: Position | null;
   topReasons?: NoEntryReason[];
+  entryReason?: EntryReason | null;
+  priceDeltaPct?: number | null;
+  oiDeltaPct?: number | null;
+  signalCount24h?: number;
+  signalCounterThreshold?: number;
 };
 
 export type QueueUpdatePayload = {

@@ -85,6 +85,8 @@ export type NoEntryReason = {
   threshold?: number;
 };
 
+export type EntryReason = 'LONG_CONTINUATION' | 'SHORT_CONTINUATION' | 'SHORT_DIVERGENCE';
+
 export type SymbolBaseline = {
   basePrice: number;
   baseOiValue: number;
@@ -125,6 +127,10 @@ export type SymbolRuntimeState = {
   } | null;
   noEntryReasonCounts: Map<NoEntryReason['code'], number>;
   lastNoEntryReasons: NoEntryReason[];
+  entryReason: EntryReason | null;
+  lastPriceDeltaPct: number | null;
+  lastOiDeltaPct: number | null;
+  lastSignalCount24h: number;
 };
 
 export type SignalPayload = {
@@ -134,6 +140,7 @@ export type SignalPayload = {
   oiValue: number;
   priceDeltaPct: number;
   oiDeltaPct: number;
+  entryReason: EntryReason;
 };
 
 export type OrderUpdatePayload = {
@@ -171,6 +178,7 @@ export type BotStats = {
   guardrailPauseReason: string | null;
   long: BotStatsSideBreakdown;
   short: BotStatsSideBreakdown;
+  reasonCounts: Record<EntryReason, number>;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -249,7 +257,7 @@ const DEFAULT_TREND_TF: 5 | 15 = 5;
 const DEFAULT_TREND_LOOKBACK_BARS = 20;
 const DEFAULT_TREND_MIN_MOVE_PCT = 0.2;
 const DEFAULT_CONFIRM_WINDOW_BARS = 2;
-const DEFAULT_CONFIRM_MIN_CONTINUATION_PCT = 0.1;
+const DEFAULT_CONFIRM_MIN_CONTINUATION_PCT = 0;
 const DEFAULT_IMPULSE_MAX_AGE_BARS = 2;
 const DEFAULT_REQUIRE_OI_TWO_CANDLES = false;
 const DEFAULT_MAX_SECONDS_INTO_CANDLE = 45;
@@ -278,6 +286,12 @@ const createEmptySideBreakdown = (): BotStatsSideBreakdown => ({
   losses: 0,
   winratePct: 0,
   pnlUSDT: 0
+});
+
+const createEmptyReasonCounts = (): Record<EntryReason, number> => ({
+  LONG_CONTINUATION: 0,
+  SHORT_CONTINUATION: 0,
+  SHORT_DIVERGENCE: 0
 });
 
 export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | null => {
@@ -414,7 +428,8 @@ export class BotEngine {
     todayPnlUSDT: 0,
     guardrailPauseReason: null,
     long: createEmptySideBreakdown(),
-    short: createEmptySideBreakdown()
+    short: createEmptySideBreakdown(),
+    reasonCounts: createEmptyReasonCounts()
   };
   private winPnlSum = 0;
   private lossPnlSum = 0;
@@ -486,6 +501,7 @@ export class BotEngine {
       ...this.stats,
       long: { ...this.stats.long },
       short: { ...this.stats.short },
+      reasonCounts: { ...this.stats.reasonCounts },
       ...(perSymbol.length > 0 ? { perSymbol } : {})
     };
     return this.stats.lastClosed ? { ...stats, lastClosed: { ...this.stats.lastClosed } } : stats;
@@ -504,7 +520,8 @@ export class BotEngine {
       todayPnlUSDT: 0,
       guardrailPauseReason: null,
       long: createEmptySideBreakdown(),
-      short: createEmptySideBreakdown()
+      short: createEmptySideBreakdown(),
+      reasonCounts: createEmptyReasonCounts()
     };
     this.winPnlSum = 0;
     this.lossPnlSum = 0;
@@ -645,7 +662,11 @@ export class BotEngine {
         noEntryReasonCounts: new Map(),
         lastNoEntryReasons: (state.lastNoEntryReasons ?? []).filter((entry): entry is NoEntryReason =>
           NO_ENTRY_REASON_CODES.includes(entry.code as NoEntryReason['code'])
-        )
+        ),
+        entryReason: state.entryReason ?? null,
+        lastPriceDeltaPct: state.lastPriceDeltaPct ?? null,
+        lastOiDeltaPct: state.lastOiDeltaPct ?? null,
+        lastSignalCount24h: state.lastSignalCount24h ?? 0
       });
     }
 
@@ -677,6 +698,7 @@ export class BotEngine {
         guardrailPauseReason: snapshot.stats.guardrailPauseReason ?? null,
         long: snapshot.stats.long ?? createEmptySideBreakdown(),
         short: snapshot.stats.short ?? createEmptySideBreakdown(),
+        reasonCounts: snapshot.stats.reasonCounts ?? createEmptyReasonCounts(),
         ...(snapshot.stats.lastClosed ? { lastClosed: snapshot.stats.lastClosed } : {})
       };
       this.winPnlSum = snapshot.stats.wins * (snapshot.stats.avgWinUSDT ?? 0);
@@ -759,7 +781,11 @@ export class BotEngine {
       oiCandleDeltaPctHistory: [...symbolState.oiCandleDeltaPctHistory],
       armedSignal: symbolState.armedSignal ? { ...symbolState.armedSignal } : null,
       noEntryReasonCounts: new Map(symbolState.noEntryReasonCounts),
-      lastNoEntryReasons: [...symbolState.lastNoEntryReasons]
+      lastNoEntryReasons: [...symbolState.lastNoEntryReasons],
+      entryReason: symbolState.entryReason,
+      lastPriceDeltaPct: symbolState.lastPriceDeltaPct,
+      lastOiDeltaPct: symbolState.lastOiDeltaPct,
+      lastSignalCount24h: symbolState.lastSignalCount24h
     };
   }
 
@@ -841,6 +867,12 @@ export class BotEngine {
       return;
     }
 
+    if (!this.enforceStateInvariant(symbolState, 'pre-market-update', marketState)) {
+      this.updateSummaryCounts();
+      this.persistSnapshot();
+      return;
+    }
+
     const now = this.now();
     this.updateTrendState(symbolState, marketState.markPrice, now);
 
@@ -896,8 +928,10 @@ export class BotEngine {
     }
 
     const { priceDeltaPct, oiDeltaPct } = this.computeDeltas(symbolState.baseline, marketState);
-    const side = this.getEligibleSide(symbolState, priceDeltaPct, oiDeltaPct);
-    if (!side) {
+    symbolState.lastPriceDeltaPct = priceDeltaPct;
+    symbolState.lastOiDeltaPct = oiDeltaPct;
+    const candidate = this.getEligibleSignal(symbolState, priceDeltaPct, oiDeltaPct);
+    if (!candidate) {
       this.recordNoEntryReason(symbolState, {
         code: 'SIGNAL_COUNTER_NOT_MET',
         message: 'Signal conditions not met.',
@@ -912,12 +946,12 @@ export class BotEngine {
     const trendDeltaPct = this.getTrendDeltaPct(symbolState, this.state.config.trendTfMinutes, this.state.config.trendLookbackBars);
     if (trendDeltaPct !== null) {
       const trendBlocked =
-        (side === 'LONG' && trendDeltaPct <= -this.state.config.trendMinMovePct) ||
-        (side === 'SHORT' && trendDeltaPct >= this.state.config.trendMinMovePct);
+        (candidate.side === 'LONG' && trendDeltaPct <= -this.state.config.trendMinMovePct) ||
+        (candidate.side === 'SHORT' && trendDeltaPct >= this.state.config.trendMinMovePct);
       if (trendBlocked) {
         this.recordNoEntryReason(symbolState, {
-          code: side === 'LONG' ? 'TREND_BLOCK_LONG' : 'TREND_BLOCK_SHORT',
-          message: `Trend ${this.state.config.trendTfMinutes}m blocks ${side}.`,
+          code: candidate.side === 'LONG' ? 'TREND_BLOCK_LONG' : 'TREND_BLOCK_SHORT',
+          message: `Trend ${this.state.config.trendTfMinutes}m blocks ${candidate.side}.`,
           value: trendDeltaPct,
           threshold: this.state.config.trendMinMovePct
         });
@@ -941,8 +975,10 @@ export class BotEngine {
     }
 
     const signalCount24h = this.recordSignalEventAndGetCount(symbolState, now);
+    symbolState.lastSignalCount24h = signalCount24h;
     const confirmed = signalCount24h >= this.state.config.signalCounterThreshold;
-    symbolState.fsmState = side === 'LONG' ? 'HOLDING_LONG' : 'HOLDING_SHORT';
+    symbolState.fsmState = candidate.side === 'LONG' ? 'HOLDING_LONG' : 'HOLDING_SHORT';
+    symbolState.entryReason = candidate.entryReason;
     symbolState.holdStartTs = now;
 
     if (!confirmed) {
@@ -958,26 +994,29 @@ export class BotEngine {
 
     this.deps.emitSignal({
       symbol,
-      side,
+      side: candidate.side,
       markPrice: marketState.markPrice,
       oiValue: marketState.openInterestValue,
       priceDeltaPct,
-      oiDeltaPct
+      oiDeltaPct,
+      entryReason: candidate.entryReason
     });
 
+    this.stats.reasonCounts[candidate.entryReason] += 1;
+
     if (this.state.config.confirmMinContinuationPct <= 0) {
-      this.tryPlaceEntryOrder(symbolState, marketState, side);
+      this.tryPlaceEntryOrder(symbolState, marketState, candidate.side);
       this.persistSnapshot();
       return;
     }
 
     symbolState.armedSignal = {
-      side,
+      side: candidate.side,
       triggerMark: marketState.markPrice,
       triggerBucketStart: this.computeTfBucketStart(now),
       continuationWindowEndBucketStart: this.computeTfBucketStart(now) + this.state.config.tf * 60_000 * this.state.config.confirmWindowBars
     };
-    symbolState.fsmState = side === 'LONG' ? 'ARMED_LONG' : 'ARMED_SHORT';
+    symbolState.fsmState = candidate.side === 'LONG' ? 'ARMED_LONG' : 'ARMED_SHORT';
     this.persistSnapshot();
   }
 
@@ -1163,7 +1202,11 @@ export class BotEngine {
       oiCandleDeltaPctHistory: [],
       armedSignal: null,
       noEntryReasonCounts: new Map(),
-      lastNoEntryReasons: []
+      lastNoEntryReasons: [],
+      entryReason: null,
+      lastPriceDeltaPct: null,
+      lastOiDeltaPct: null,
+      lastSignalCount24h: 0
     };
   }
 
@@ -1546,7 +1589,11 @@ export class BotEngine {
         trend15mPrevClose: symbolState.trendCandles15m.at(-2)?.close ?? null,
         trend15mLastClose: symbolState.trendCandles15m.at(-1)?.close ?? null,
         armedSignal: symbolState.armedSignal,
-        lastNoEntryReasons: symbolState.lastNoEntryReasons
+        lastNoEntryReasons: symbolState.lastNoEntryReasons,
+        entryReason: symbolState.entryReason,
+        lastPriceDeltaPct: symbolState.lastPriceDeltaPct,
+        lastOiDeltaPct: symbolState.lastOiDeltaPct,
+        lastSignalCount24h: symbolState.lastSignalCount24h
       };
     }
 
@@ -1773,27 +1820,38 @@ export class BotEngine {
     return true;
   }
 
-  private getEligibleSide(symbolState: SymbolRuntimeState, priceDeltaPct: number, oiDeltaPct: number): 'LONG' | 'SHORT' | null {
+  private getEligibleSignal(
+    symbolState: SymbolRuntimeState,
+    priceDeltaPct: number,
+    oiDeltaPct: number
+  ): { side: 'LONG' | 'SHORT'; entryReason: EntryReason } | null {
     const direction = this.state.config!.direction;
     const longTrue = this.isLongConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
     const shortDivergenceTrue = this.isShortDivergenceConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
     const shortContinuationTrue = this.isShortContinuationConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
 
     if (direction === 'both') {
-      if (shortDivergenceTrue || shortContinuationTrue) {
-        return 'SHORT';
+      if (shortDivergenceTrue) {
+        return { side: 'SHORT', entryReason: 'SHORT_DIVERGENCE' };
+      }
+      if (shortContinuationTrue) {
+        return { side: 'SHORT', entryReason: 'SHORT_CONTINUATION' };
       }
       if (longTrue) {
-        return 'LONG';
+        return { side: 'LONG', entryReason: 'LONG_CONTINUATION' };
       }
       return null;
     }
 
     if (direction === 'long') {
-      return longTrue ? 'LONG' : null;
+      return longTrue ? { side: 'LONG', entryReason: 'LONG_CONTINUATION' } : null;
     }
 
-    return shortDivergenceTrue || shortContinuationTrue ? 'SHORT' : null;
+    if (shortDivergenceTrue) {
+      return { side: 'SHORT', entryReason: 'SHORT_DIVERGENCE' };
+    }
+
+    return shortContinuationTrue ? { side: 'SHORT', entryReason: 'SHORT_CONTINUATION' } : null;
   }
 
   private isLongConditionTrue(symbolState: SymbolRuntimeState, priceDeltaPct: number, oiDeltaPct: number): boolean {
@@ -1956,5 +2014,32 @@ export class BotEngine {
   private resetToIdle(symbolState: SymbolRuntimeState): void {
     symbolState.fsmState = 'IDLE';
     symbolState.holdStartTs = null;
+  }
+
+  private enforceStateInvariant(symbolState: SymbolRuntimeState, context: string, marketState: MarketState): boolean {
+    const isSignalState =
+      symbolState.fsmState === 'HOLDING_LONG' ||
+      symbolState.fsmState === 'HOLDING_SHORT' ||
+      symbolState.fsmState === 'ARMED_LONG' ||
+      symbolState.fsmState === 'ARMED_SHORT';
+    const invariantHolds =
+      (isSignalState && !symbolState.pendingOrder && !symbolState.position) ||
+      (symbolState.fsmState === 'ENTRY_PENDING' && !!symbolState.pendingOrder && !symbolState.position) ||
+      (symbolState.fsmState === 'POSITION_OPEN' && !!symbolState.position) ||
+      (symbolState.fsmState === 'IDLE');
+    if (invariantHolds) {
+      return true;
+    }
+
+    this.deps.emitLog?.(
+      `FSM invariant violated (${context}) for ${symbolState.symbol}: state=${symbolState.fsmState}, pendingOrder=${symbolState.pendingOrder ? 'yes' : 'no'}, position=${symbolState.position ? 'yes' : 'no'}`
+    );
+    symbolState.pendingOrder = null;
+    symbolState.position = null;
+    symbolState.demo = null;
+    symbolState.armedSignal = null;
+    this.resetToIdle(symbolState);
+    this.resetBaseline(symbolState, marketState);
+    return false;
   }
 }

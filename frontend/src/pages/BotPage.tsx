@@ -39,7 +39,7 @@ import {
   stopReplay,
   uploadProfiles
 } from '../api';
-import type { BotPerSymbolStats, BotSettings, BotState, BotStats, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
+import type { BotPerSymbolStats, BotSettings, BotState, BotStats, EntryReason, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
 import { useSort } from '../hooks/useSort';
 import type { SortState } from '../utils/sort';
 import { formatDuration } from '../utils/time';
@@ -112,7 +112,8 @@ const EMPTY_BOT_STATS: BotStats = {
   todayPnlUSDT: 0,
   guardrailPauseReason: null,
   long: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
-  short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 }
+  short: { trades: 0, wins: 0, losses: 0, winratePct: 0, pnlUSDT: 0 },
+  reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
 };
 
 const defaultSettings: BotSettings = {
@@ -205,6 +206,7 @@ export function BotPage({
   const [replayFiles, setReplayFiles] = useState<string[]>([]);
   const [journalLimit, setJournalLimit] = useState<number>(200);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [showPhaseHelp, setShowPhaseHelp] = useState<boolean>(false);
   const [dashboardEntries, setDashboardEntries] = useState<JournalEntry[]>([]);
   const [dashboardFetchedAt, setDashboardFetchedAt] = useState<number | null>(null);
   const profileUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -850,14 +852,14 @@ export function BotPage({
       { label: 'Status', sortKey: 'status', accessor: () => 'ENTRY_PENDING' },
       { label: 'Qty', sortKey: 'qty', accessor: (row) => row.pendingOrder?.qty ?? null, align: 'end' },
       { label: 'Limit', sortKey: 'limitPrice', accessor: (row) => row.pendingOrder?.limitPrice ?? null, align: 'end' },
-      { label: 'TP', sortKey: 'tpPrice', accessor: (row) => row.position?.tpPrice ?? null, align: 'end' },
-      { label: 'SL', sortKey: 'slPrice', accessor: (row) => row.position?.slPrice ?? null, align: 'end' },
-      { label: 'Created', sortKey: 'createdTs', accessor: (row) => row.pendingOrder?.createdTs ?? null, align: 'end' },
+      { label: 'TP', sortKey: 'tpPrice', accessor: (row) => row.pendingOrder?.tpPrice ?? null, align: 'end' },
+      { label: 'SL', sortKey: 'slPrice', accessor: (row) => row.pendingOrder?.slPrice ?? null, align: 'end' },
+      { label: 'Placed', sortKey: 'placedTs', accessor: (row) => row.pendingOrder?.placedTs ?? row.pendingOrder?.createdTs ?? null, align: 'end' },
       { label: 'Expires', sortKey: 'expiresTs', accessor: (row) => row.pendingOrder?.expiresTs ?? null, align: 'end' }
     ],
     []
   );
-  const { sortState: orderSortState, sortedRows: sortedOrderRows, setSortKey: setOrderSortKey } = useSort(orderRows, { key: 'createdTs', dir: 'desc' }, {
+  const { sortState: orderSortState, sortedRows: sortedOrderRows, setSortKey: setOrderSortKey } = useSort(orderRows, { key: 'placedTs', dir: 'desc' }, {
     tableId: 'orders',
     getSortValue: (row, key) => orderColumns.find((column) => column.sortKey === key)?.accessor(row)
   });
@@ -922,6 +924,17 @@ export function BotPage({
   };
 
   const disableSettings = botState.running;
+
+  const formatEntryReason = (reason: EntryReason | null | undefined): string => {
+    if (!reason) {
+      return '—';
+    }
+
+    return reason
+      .split('_')
+      .map((part) => `${part[0]}${part.slice(1).toLowerCase()}`)
+      .join(' ');
+  };
 
   return (
     <Row className="g-3">
@@ -1619,6 +1632,56 @@ export function BotPage({
 
       <Col md={12}>
         <Card className="mb-3">
+          <Card.Header className="d-flex justify-content-between align-items-center">
+            <span>Phase monitor</span>
+            <Button size="sm" variant="link" onClick={() => setShowPhaseHelp((value) => !value)}>
+              What does this mean?
+            </Button>
+          </Card.Header>
+          <Card.Body>
+            <Collapse in={showPhaseHelp}>
+              <div className="mb-3 small text-muted">
+                <div><strong>Signal</strong>: HOLDING/ARMED means confirmation is accumulating (no order, no position).</div>
+                <div><strong>Order</strong>: ENTRY_PENDING means pending entry exists.</div>
+                <div><strong>Position</strong>: POSITION_OPEN means entry filled and TP/SL are active.</div>
+              </div>
+            </Collapse>
+            <Table bordered striped size="sm" className="mb-0">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Phase</th>
+                  <th>Reason</th>
+                  <th>Signal details</th>
+                  <th>Order details</th>
+                  <th>Position details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trackedSymbols.map((item) => {
+                  const isSignal = item.state === 'HOLDING_LONG' || item.state === 'HOLDING_SHORT' || item.state === 'ARMED_LONG' || item.state === 'ARMED_SHORT';
+                  const isOrder = item.state === 'ENTRY_PENDING';
+                  const isPosition = item.state === 'POSITION_OPEN';
+                  const signalDetails = item.baseline
+                    ? `base ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0}/${item.signalCounterThreshold ?? 0}`
+                    : '—';
+                  return (
+                    <tr key={`phase-${item.symbol}`}>
+                      <td>{item.symbol}</td>
+                      <td>{item.state}</td>
+                      <td>{formatEntryReason(item.entryReason)}</td>
+                      <td>{isSignal ? signalDetails : '—'}</td>
+                      <td>{isOrder && item.pendingOrder ? `${item.pendingOrder.side} @ ${item.pendingOrder.limitPrice} qty ${item.pendingOrder.qty} exp ${new Date(item.pendingOrder.expiresTs).toLocaleTimeString()} (${item.pendingOrder.sentToExchange ? 'sent' : 'queued'})` : '—'}</td>
+                      <td>{isPosition && item.position ? `${item.position.side} entry ${item.position.entryPrice} TP ${item.position.tpPrice} SL ${item.position.slPrice} qty ${item.position.qty}` : '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </Table>
+          </Card.Body>
+        </Card>
+
+        <Card className="mb-3">
           <Card.Header>No entry reasons (top)</Card.Header>
           <Card.Body>
             {noEntryRows.length === 0 ? <div className="text-muted">No no-entry reasons yet.</div> : null}
@@ -1627,6 +1690,15 @@ export function BotPage({
                 <strong>{row.symbol}</strong>: {(row.topReasons ?? []).slice(0, 3).map((reason) => `${reason.code}${typeof reason.value === 'number' ? `=${reason.value.toFixed(3)}` : ''}${typeof reason.threshold === 'number' ? ` (thr ${reason.threshold})` : ''}`).join(', ')}
               </div>
             ))}
+          </Card.Body>
+        </Card>
+
+        <Card className="mb-3">
+          <Card.Header>Top entry reasons (confirmed)</Card.Header>
+          <Card.Body>
+            <div>Long continuation: {botStats.reasonCounts.LONG_CONTINUATION}</div>
+            <div>Short continuation: {botStats.reasonCounts.SHORT_CONTINUATION}</div>
+            <div>Short divergence: {botStats.reasonCounts.SHORT_DIVERGENCE}</div>
           </Card.Body>
         </Card>
 
@@ -1647,12 +1719,12 @@ export function BotPage({
                   <tr key={`order-${item.symbol}`}>
                     <td>{item.symbol}</td>
                     <td>{item.pendingOrder?.side ?? '-'}</td>
-                    <td>ENTRY_PENDING</td>
+                    <td>{item.pendingOrder?.sentToExchange ? 'sent' : 'queued'}</td>
                     <td className="text-end">{item.pendingOrder?.qty ?? '-'}</td>
                     <td className="text-end">{item.pendingOrder?.limitPrice ?? '-'}</td>
-                    <td className="text-end">{item.position?.tpPrice ?? '-'}</td>
-                    <td className="text-end">{item.position?.slPrice ?? '-'}</td>
-                    <td className="text-end">{item.pendingOrder?.createdTs ? new Date(item.pendingOrder.createdTs).toLocaleTimeString() : '-'}</td>
+                    <td className="text-end">{item.pendingOrder?.tpPrice ?? '-'}</td>
+                    <td className="text-end">{item.pendingOrder?.slPrice ?? '-'}</td>
+                    <td className="text-end">{item.pendingOrder?.placedTs ? new Date(item.pendingOrder.placedTs).toLocaleTimeString() : '-'}</td>
                     <td className="text-end">{item.pendingOrder?.expiresTs ? new Date(item.pendingOrder.expiresTs).toLocaleTimeString() : '-'}</td>
                     <td>
                       <Button size="sm" variant="outline-danger" disabled={!item.pendingOrder} onClick={() => handleCancelOrder(item.symbol)}>
@@ -1689,8 +1761,8 @@ export function BotPage({
                     <td>{item.position?.side ?? '-'}</td>
                     <td className="text-end">{item.position?.qty ?? '-'}</td>
                     <td className="text-end">{item.position?.entryPrice ?? '-'}</td>
-                    <td className="text-end">{item.position?.tpPrice ?? '-'}</td>
-                    <td className="text-end">{item.position?.slPrice ?? '-'}</td>
+                    <td className="text-end">{item.pendingOrder?.tpPrice ?? '-'}</td>
+                    <td className="text-end">{item.pendingOrder?.slPrice ?? '-'}</td>
                     <td className="text-end">{item.position?.lastPnlUSDT === undefined ? '-' : item.position.lastPnlUSDT.toFixed(4)}</td>
                     <td className="text-end">{item.position?.openedTs ? new Date(item.position.openedTs).toLocaleTimeString() : '-'}</td>
                   </tr>

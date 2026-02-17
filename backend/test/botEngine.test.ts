@@ -355,6 +355,135 @@ describe('BotEngine paper execution', () => {
     expect(signals[0]?.side).toBe('SHORT');
   });
 
+
+  it('tags divergence short with entry reason and increments stats reason counter', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, ts: now });
+
+    expect(signals[0]?.entryReason).toBe('SHORT_DIVERGENCE');
+    expect(engine.getSymbolState('BTCUSDT')?.entryReason).toBe('SHORT_DIVERGENCE');
+    expect(engine.getStats().reasonCounts.SHORT_DIVERGENCE).toBe(1);
+  });
+
+  it('does not emit short divergence reason when direction=long', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'long', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, ts: now });
+
+    expect(signals).toHaveLength(0);
+    expect(engine.getStats().reasonCounts.SHORT_DIVERGENCE).toBe(0);
+  });
+
+  it('holding short state keeps position and order empty', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 2, priceUpThrPct: 1, oiUpThrPct: 4 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, ts: now });
+
+    const symbolState = engine.getSymbolState('BTCUSDT');
+    expect(symbolState?.fsmState).toBe('HOLDING_SHORT');
+    expect(symbolState?.pendingOrder).toBeNull();
+    expect(symbolState?.position).toBeNull();
+  });
+
+  it('position open state includes position details', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+
+    const symbolState = engine.getSymbolState('BTCUSDT');
+    expect(symbolState?.fsmState).toBe('POSITION_OPEN');
+    expect(symbolState?.position).not.toBeNull();
+  });
+
+  it('resets invalid ENTRY_PENDING snapshot state to IDLE without crashing', () => {
+    const logs: string[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      emitLog: (line) => logs.push(line)
+    });
+
+    engine.restoreFromSnapshot({
+      savedAt: now,
+      paused: false,
+      running: true,
+      config: { ...defaultConfig, signalCounterThreshold: 1 },
+      symbols: {
+        BTCUSDT: {
+          fsmState: 'ENTRY_PENDING',
+          baseline: { basePrice: 100, baseOiValue: 1000, baseTs: now },
+          blockedUntilTs: 0,
+          overrideGateOnce: false,
+          pendingOrder: null,
+          position: null,
+          demo: null
+        }
+      }
+    });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1001, ts: now });
+    const state = engine.getSymbolState('BTCUSDT');
+    expect(state?.fsmState).toBe('IDLE');
+    expect(logs.some((line) => line.includes('FSM invariant violated'))).toBe(true);
+  });
+
   it('uses signalCounterThreshold with TF-bucket dedup over rolling 24h', () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const engine = new BotEngine({
