@@ -484,6 +484,45 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return { ok: true };
   });
 
+  app.post('/api/reset/all', async (_request, reply) => {
+    const botState = botEngine.getState();
+    if (botState.running) {
+      return reply.code(400).send({ ok: false, error: 'BOT_RUNNING' });
+    }
+
+    await replayService.stopRecording();
+    await replayService.stopReplay();
+
+    botEngine.stop();
+    botEngine.resetStats();
+    botEngine.resetRuntimeStateForAllSymbols();
+
+    await appendOpsJournalEvent('SYSTEM_RESET_ALL');
+    await journalService.clear();
+    await universeExclusionsService.clear();
+    await universeService.clear();
+    await marketHub.setUniverseSymbols([]);
+    botEngine.setUniverseSymbols([]);
+    symbolUpdateBroadcaster.setTrackedSymbols([]);
+    symbolUpdateBroadcaster.reset();
+    rotatePerfWindow(Date.now());
+    botEngine.clearPersistedRuntime();
+
+    broadcastBotState();
+
+    return {
+      ok: true,
+      cleared: {
+        stats: true,
+        journal: true,
+        runtime: true,
+        exclusions: true,
+        universe: true,
+        replay: true
+      }
+    };
+  });
+
   app.get('/api/doctor', async () => {
     const universe = await universeService.get();
     const replay = replayService.getState();
