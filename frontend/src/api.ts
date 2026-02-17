@@ -199,14 +199,32 @@ export async function downloadJournal(format: 'ndjson' | 'json' | 'csv'): Promis
 }
 
 
-export async function downloadExportPack(): Promise<Blob> {
+export async function exportPack(): Promise<{ blob: Blob; fileName: string }> {
   const response = await fetch(`${API_BASE}/api/export/pack`);
   if (!response.ok) {
-    const body = (await response.json()) as { error?: string };
-    throw new ApiRequestError(body.error ?? `HTTP ${response.status}`, body.error);
+    let message = `HTTP ${response.status}`;
+    let code: string | undefined;
+    try {
+      const body = (await response.json()) as { error?: string | { code?: string; message?: string } };
+      if (typeof body.error === 'string') {
+        message = body.error;
+        code = body.error;
+      } else if (body.error && typeof body.error === 'object') {
+        message = body.error.message ?? body.error.code ?? message;
+        code = body.error.code;
+      }
+    } catch {
+      // non-json error payload
+    }
+
+    throw new ApiRequestError(`${message} (HTTP ${response.status})`, code);
   }
 
-  return response.blob();
+  const contentDisposition = response.headers.get('Content-Disposition') ?? '';
+  const matched = /filename="?([^";]+)"?/i.exec(contentDisposition);
+  const fileName = matched?.[1] ?? `export-pack-${new Date().toISOString().replaceAll(':', '-')}.zip`;
+
+  return { blob: await response.blob(), fileName };
 }
 
 export async function getDoctor(): Promise<DoctorResponse> {

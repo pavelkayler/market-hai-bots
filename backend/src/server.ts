@@ -16,6 +16,7 @@ import { ReplayService, type ReplaySpeed } from './replay/replayService.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
 import { JournalService, type JournalEntry } from './services/journalService.js';
 import { ProfileService } from './services/profileService.js';
+import { resolveStoragePaths } from './services/storagePaths.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
 import { UniverseExclusionsService } from './services/universeExclusionsService.js';
 import { SymbolUpdateBroadcaster, type SymbolUpdateMode } from './ws/symbolUpdateBroadcaster.js';
@@ -58,8 +59,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
   const marketClient = options.marketClient ?? new BybitMarketClient();
+  const storagePaths = resolveStoragePaths({
+    universePath: options.universeFilePath,
+    runtimePath: options.runtimeSnapshotFilePath,
+    profilesPath: options.profileFilePath,
+    journalPath: options.journalFilePath
+  });
   const activeSymbolSet = options.activeSymbolSet ?? new ActiveSymbolSet();
-  const universeService = new UniverseService(marketClient, activeSymbolSet, app.log, options.universeFilePath);
+  const universeService = new UniverseService(marketClient, activeSymbolSet, app.log, storagePaths.universePath);
   const universeExclusionsService = new UniverseExclusionsService(options.universeExclusionsFilePath ?? path.resolve(process.cwd(), 'data/universe_exclusions.json'));
   const wsClients = options.wsClients ?? new Set<{ send: (payload: string) => unknown }>();
   const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
@@ -71,10 +78,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       wsFramesSent += 1;
     }
   });
-  const snapshotStore = new FileSnapshotStore(options.runtimeSnapshotFilePath ?? path.resolve(process.cwd(), 'data/runtime.json'));
-  const journalPath = options.journalFilePath ?? path.resolve(process.cwd(), 'data/journal.ndjson');
+  const snapshotStore = new FileSnapshotStore(storagePaths.runtimePath);
+  const journalPath = storagePaths.journalPath;
   const journalService = new JournalService(journalPath);
-  const profileService = new ProfileService(options.profileFilePath ?? path.resolve(process.cwd(), 'data/profiles.json'));
+  const profileService = new ProfileService(storagePaths.profilesPath);
 
   const isDemoConfigured = (): boolean => {
     const apiKey = (process.env.DEMO_API_KEY ?? '').trim();
@@ -101,20 +108,21 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
   };
 
-  const appendOpsJournalEvent = async (event: JournalEntry['event']): Promise<void> => {
-    const mode = botEngine.getState().config?.mode;
-    if (!mode) {
-      return;
-    }
+  const appendOpsJournalEvent = async (event: JournalEntry['event'], data: Record<string, unknown> = {}): Promise<void> => {
+    const mode = botEngine.getState().config?.mode ?? 'paper';
 
-    await journalService.append({
-      ts: Date.now(),
-      mode,
-      symbol: 'SYSTEM',
-      event,
-      side: null,
-      data: {}
-    });
+    try {
+      await journalService.append({
+        ts: Date.now(),
+        mode,
+        symbol: 'SYSTEM',
+        event,
+        side: null,
+        data
+      });
+    } catch (error) {
+      app.log.warn({ err: error, event }, 'Failed to append ops journal event');
+    }
   };
 
   const broadcast = (type: string, payload: unknown): void => {
@@ -520,7 +528,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     botEngine.resetStats();
     botEngine.resetRuntimeStateForAllSymbols();
 
-    await appendOpsJournalEvent('SYSTEM_RESET_ALL');
     await journalService.clear();
     await universeExclusionsService.clear();
     await universeService.clear();
@@ -531,6 +538,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     rotatePerfWindow(Date.now());
     botEngine.clearPersistedRuntime();
 
+    await appendOpsJournalEvent('SYSTEM_RESET_ALL');
     broadcastBotState();
 
     return {
@@ -715,34 +723,85 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.get('/api/export/pack', async (request, reply) => {
-    const zip = new JSZip();
-    const missingFiles: string[] = [];
+    let journalExistedBeforeRequest = true;
+    try {
+      await stat(storagePaths.journalPath);
+    } catch {
+      journalExistedBeforeRequest = false;
+    }
 
-    const readOrEmpty = async (filePath: string): Promise<string> => {
+    await appendOpsJournalEvent('EXPORT_PACK_REQUESTED');
+
+    const zip = new JSZip();
+    const notes: string[] = [];
+    const counts: { journalLines?: number; universeSymbols?: number; profilesCount?: number } = {};
+
+    const readIfPresent = async (filePath: string, missingNote: string): Promise<string | null> => {
       try {
         return await readFile(filePath, 'utf-8');
       } catch {
-        missingFiles.push(path.basename(filePath));
-        return '';
+        notes.push(missingNote);
+        return null;
       }
     };
 
-    const universePath = options.universeFilePath ?? path.resolve(process.cwd(), 'data/universe.json');
-    const runtimePath = options.runtimeSnapshotFilePath ?? path.resolve(process.cwd(), 'data/runtime.json');
-    const profilesPath = options.profileFilePath ?? path.resolve(process.cwd(), 'data/profiles.json');
+    const universeRaw = await readIfPresent(storagePaths.universePath, 'universe.json missing (no persisted universe found)');
+    if (universeRaw !== null) {
+      zip.file('universe.json', universeRaw);
+      try {
+        const parsed = JSON.parse(universeRaw) as { symbols?: unknown };
+        if (Array.isArray(parsed.symbols)) {
+          counts.universeSymbols = parsed.symbols.length;
+        }
+      } catch {
+        // ignore malformed file for export counts
+      }
+    }
 
-    zip.file('universe.json', await readOrEmpty(universePath));
-    zip.file('profiles.json', await readOrEmpty(profilesPath));
-    zip.file('runtime.json', await readOrEmpty(runtimePath));
-    zip.file('journal.ndjson', await readOrEmpty(journalPath));
+    const profilesRaw = await readIfPresent(storagePaths.profilesPath, 'profiles.json missing (no persisted profiles found)');
+    if (profilesRaw !== null) {
+      zip.file('profiles.json', profilesRaw);
+      try {
+        const parsed = JSON.parse(profilesRaw) as { names?: unknown };
+        if (Array.isArray(parsed.names)) {
+          counts.profilesCount = parsed.names.length;
+        }
+      } catch {
+        // ignore malformed file for export counts
+      }
+    }
+
+    const runtimeRaw = await readIfPresent(storagePaths.runtimePath, 'runtime.json missing (no persisted runtime snapshot found)');
+    if (runtimeRaw !== null) {
+      zip.file('runtime.json', runtimeRaw);
+    }
+
+    const journalRaw = journalExistedBeforeRequest
+      ? await readIfPresent(storagePaths.journalPath, 'journal.ndjson missing (no journal file found)')
+      : null;
+    if (!journalExistedBeforeRequest) {
+      notes.push('journal.ndjson missing (no journal file found)');
+    } else if (journalRaw !== null) {
+      zip.file('journal.ndjson', journalRaw);
+      counts.journalLines = journalRaw.split('\n').filter((line) => line.trim().length > 0).length;
+    }
+
+    const appVersion = await getVersion();
 
     zip.file(
       'meta.json',
       JSON.stringify(
         {
-          ts: Date.now(),
-          version: await getVersion(),
-          missing: missingFiles
+          createdAt: Date.now(),
+          appVersion,
+          notes,
+          paths: {
+            universe: storagePaths.universePath,
+            profiles: storagePaths.profilesPath,
+            runtime: storagePaths.runtimePath,
+            journal: storagePaths.journalPath
+          },
+          counts
         },
         null,
         2
@@ -750,8 +809,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     );
 
     const payload = await zip.generateAsync({ type: 'nodebuffer' });
+    const safeTs = new Date().toISOString().replaceAll(':', '-');
     reply.header('Content-Type', 'application/zip');
-    reply.header('Content-Disposition', `attachment; filename=export-pack-${Date.now()}.zip`);
+    reply.header('Content-Disposition', `attachment; filename="export-pack_${safeTs}.zip"`);
     return reply.send(payload);
   });
 
