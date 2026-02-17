@@ -12,6 +12,11 @@ export type RuntimeSnapshotSymbol = {
   pendingOrder: PaperPendingOrder | null;
   position: PaperPosition | null;
   demo: DemoRuntimeState | null;
+  signalEvents?: number[];
+  lastSignalBucketKey?: number | null;
+  prevCandleOi?: number | null;
+  lastCandleOi?: number | null;
+  lastCandleBucketStart?: number | null;
 };
 
 export type RuntimeSnapshot = {

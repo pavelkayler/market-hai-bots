@@ -12,8 +12,10 @@ const aggressiveConfig: BotConfig = {
   direction: 'short',
   tf: 1,
   holdSeconds: 1,
+  signalCounterThreshold: 2,
   priceUpThrPct: 0.25,
   oiUpThrPct: 25,
+  oiCandleThrPct: 0,
   marginUSDT: 100,
   leverage: 20,
   tpRoiPct: 1.5,
@@ -66,6 +68,7 @@ describe('ProfileService', () => {
             direction: 'both',
             tf: 3,
             holdSeconds: 2,
+  signalCounterThreshold: 2,
             priceUpThrPct: 0.6
           }
         }

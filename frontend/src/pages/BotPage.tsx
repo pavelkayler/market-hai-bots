@@ -138,8 +138,10 @@ const defaultSettings: BotSettings = {
   direction: 'both',
   tf: 1,
   holdSeconds: 3,
+  signalCounterThreshold: 2,
   priceUpThrPct: 0.5,
   oiUpThrPct: 50,
+  oiCandleThrPct: 0,
   marginUSDT: 100,
   leverage: 10,
   tpRoiPct: 1,
@@ -1071,9 +1073,10 @@ export function BotPage({
             <Row className="g-2 mt-1">
               {(
                 [
-                  ['holdSeconds', 'holdSeconds'],
+                  ['signalCounterThreshold', 'signalCounterThreshold'],
                   ['priceUpThrPct', 'priceUpThrPct'],
                   ['oiUpThrPct', 'oiUpThrPct'],
+                  ['oiCandleThrPct', 'oiCandleThrPct'],
                   ['marginUSDT', 'marginUSDT'],
                   ['leverage', 'leverage'],
                   ['tpRoiPct', 'tpRoiPct'],
@@ -1091,6 +1094,14 @@ export function BotPage({
                     value={settings[key]}
                     onChange={(event) => persistSettings({ ...settings, [key]: Number(event.target.value) })}
                   />
+                  {key === 'signalCounterThreshold' ? (
+                    <Form.Text muted>
+                      Сколько раз сигнал должен повториться за последние 24ч (на символ), чтобы открыть сделку. Дедуп: не чаще 1 раза на TF-свечу.
+                    </Form.Text>
+                  ) : null}
+                  {key === 'oiCandleThrPct' ? (
+                    <Form.Text muted>Порог % изменения OI value между текущей и предыдущей TF-свечой (UTC). 0 = выключено.</Form.Text>
+                  ) : null}
                 </Col>
               ))}
             </Row>

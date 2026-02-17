@@ -6,9 +6,12 @@ export type BotSettings = {
   mode: BotMode;
   direction: BotDirection;
   tf: BotTf;
+  /** @deprecated confirmation now uses signalCounterThreshold */
   holdSeconds: number;
+  signalCounterThreshold: number;
   priceUpThrPct: number;
   oiUpThrPct: number;
+  oiCandleThrPct: number;
   marginUSDT: number;
   leverage: number;
   tpRoiPct: number;
