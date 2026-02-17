@@ -73,6 +73,7 @@ const buildIsolatedServer = (options: Parameters<typeof buildServer>[0] = {}) =>
     runtimeSnapshotFilePath: options.runtimeSnapshotFilePath ?? path.join(os.tmpdir(), `runtime-${suffix}.json`),
     journalFilePath: options.journalFilePath ?? path.join(os.tmpdir(), `journal-${suffix}.ndjson`),
     profileFilePath: options.profileFilePath ?? path.join(os.tmpdir(), `profiles-${suffix}.json`),
+    universeExclusionsFilePath: options.universeExclusionsFilePath ?? path.join(os.tmpdir(), `universe-exclusions-${suffix}.json`),
     ...options
   });
 };
@@ -1080,5 +1081,73 @@ describe('server routes', () => {
 
     await expect(access(runtimeSnapshotFilePath)).rejects.toBeTruthy();
     await rm(tempDir, { recursive: true, force: true });
+  });
+});
+
+describe('universe exclusions routes', () => {
+  let app = buildIsolatedServer();
+
+  afterEach(async () => {
+    await app.close();
+    app = buildIsolatedServer();
+  });
+
+  it('rejects exclusion updates while bot is running', async () => {
+    const marketClient: IBybitMarketClient = {
+      async getInstrumentsLinearAll() {
+        return [{ symbol: 'BTCUSDT', contractType: 'Perpetual', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 }];
+      },
+      async getTickersLinear() {
+        return new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+        ]);
+      }
+    };
+
+    await app.close();
+    app = buildIsolatedServer({ marketClient });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    await app.inject({ method: 'POST', url: '/api/bot/start', payload: {
+      mode: 'paper', direction: 'long', tf: 1, holdSeconds: 1, signalCounterThreshold: 1,
+      priceUpThrPct: 0.5, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
+      entryOffsetPct: 0, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0
+    } });
+
+    const response = await app.inject({ method: 'POST', url: '/api/universe/exclusions/add', payload: { symbol: 'BTCUSDT' } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ ok: false, error: 'BOT_RUNNING' });
+  });
+
+  it('filters excluded symbols from ticker subscriptions and create clears exclusions', async () => {
+    const tickerStream = new FakeTickerStream();
+    const marketClient: IBybitMarketClient = {
+      async getInstrumentsLinearAll() {
+        return [
+          { symbol: 'BTCUSDT', contractType: 'Perpetual', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 },
+          { symbol: 'ETHUSDT', contractType: 'Perpetual', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 }
+        ];
+      },
+      async getTickersLinear() {
+        return new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 13000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }],
+          ['ETHUSDT', { symbol: 'ETHUSDT', turnover24h: 12000000, highPrice24h: 210, lowPrice24h: 200, markPrice: 200, openInterestValue: 200000 }]
+        ]);
+      }
+    };
+
+    await app.close();
+    app = buildIsolatedServer({ marketClient, tickerStream });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    const exclude = await app.inject({ method: 'POST', url: '/api/universe/exclusions/add', payload: { symbol: 'BTCUSDT' } });
+    expect(exclude.statusCode).toBe(200);
+
+    const lastCall = tickerStream.setSymbolsCalls[tickerStream.setSymbolsCalls.length - 1] ?? [];
+    expect(lastCall).toEqual(['ETHUSDT']);
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    const exclusionsAfterCreate = await app.inject({ method: 'GET', url: '/api/universe/exclusions' });
+    expect(exclusionsAfterCreate.json()).toEqual({ ok: true, excluded: [] });
   });
 });

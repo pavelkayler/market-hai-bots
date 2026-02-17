@@ -9,6 +9,10 @@ type SymbolBroadcastPayload = {
   state: SymbolFsmState;
   markPrice: number;
   openInterestValue: number;
+  oiCandleValue: number | null;
+  oiPrevCandleValue: number | null;
+  oiCandleDeltaValue: number | null;
+  oiCandleDeltaPct: number | null;
   baseline: SymbolBaseline | null;
   pendingOrder: PaperPendingOrder | null;
   position: PaperPosition | null;
@@ -79,7 +83,18 @@ export class SymbolUpdateBroadcaster {
     state: SymbolFsmState,
     baseline: SymbolBaseline | null,
     pendingOrder: PaperPendingOrder | null,
-    position: PaperPosition | null
+    position: PaperPosition | null,
+    oiCandle: {
+      oiCandleValue: number | null;
+      oiPrevCandleValue: number | null;
+      oiCandleDeltaValue: number | null;
+      oiCandleDeltaPct: number | null;
+    } = {
+      oiCandleValue: null,
+      oiPrevCandleValue: null,
+      oiCandleDeltaValue: null,
+      oiCandleDeltaPct: null
+    }
   ): void {
     const now = Date.now();
     const lastSentAt = this.lastSentAtBySymbol.get(symbol) ?? 0;
@@ -94,6 +109,10 @@ export class SymbolUpdateBroadcaster {
       state,
       markPrice: marketState.markPrice,
       openInterestValue: marketState.openInterestValue,
+      oiCandleValue: oiCandle.oiCandleValue,
+      oiPrevCandleValue: oiCandle.oiPrevCandleValue,
+      oiCandleDeltaValue: oiCandle.oiCandleDeltaValue,
+      oiCandleDeltaPct: oiCandle.oiCandleDeltaPct,
       baseline,
       pendingOrder,
       position

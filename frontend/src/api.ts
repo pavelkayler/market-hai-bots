@@ -72,6 +72,25 @@ export async function getBotState(): Promise<BotState> {
   return request('/api/bot/state');
 }
 
+
+export async function getUniverseExclusions(): Promise<{ ok: true; excluded: string[] }> {
+  return request('/api/universe/exclusions');
+}
+
+export async function addUniverseExclusion(symbol: string): Promise<{ ok: true; excluded: string[] }> {
+  return request('/api/universe/exclusions/add', {
+    method: 'POST',
+    body: JSON.stringify({ symbol })
+  });
+}
+
+export async function removeUniverseExclusion(symbol: string): Promise<{ ok: true; excluded: string[] }> {
+  return request('/api/universe/exclusions/remove', {
+    method: 'POST',
+    body: JSON.stringify({ symbol })
+  });
+}
+
 export async function getBotStats(): Promise<{ ok: true; stats: BotStats }> {
   return request('/api/bot/stats');
 }

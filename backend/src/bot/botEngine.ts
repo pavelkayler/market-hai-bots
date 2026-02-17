@@ -127,6 +127,39 @@ export type BotStats = {
     symbol: string;
     pnlUSDT: number;
   };
+  perSymbol?: BotPerSymbolStats[];
+};
+
+type BotPerSymbolAccumulator = {
+  trades: number;
+  wins: number;
+  losses: number;
+  pnlUSDT: number;
+  longTrades: number;
+  longWins: number;
+  longLosses: number;
+  shortTrades: number;
+  shortWins: number;
+  shortLosses: number;
+  lastClosedTs: number | null;
+  lastClosedPnlUSDT: number | null;
+};
+
+export type BotPerSymbolStats = {
+  symbol: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  winratePct: number;
+  pnlUSDT: number;
+  longTrades: number;
+  longWins: number;
+  longLosses: number;
+  shortTrades: number;
+  shortWins: number;
+  shortLosses: number;
+  lastClosedTs?: number | null;
+  lastClosedPnlUSDT?: number | null;
 };
 
 type BotEngineDeps = {
@@ -255,6 +288,7 @@ export class BotEngine {
   private winPnlSum = 0;
   private lossPnlSum = 0;
   private todayPnlDayKey: string | null = null;
+  private readonly perSymbolStats = new Map<string, BotPerSymbolAccumulator>();
 
   constructor(private readonly deps: BotEngineDeps) {
     this.now = deps.now ?? Date.now;
@@ -298,10 +332,28 @@ export class BotEngine {
   }
 
   getStats(): BotStats {
+    const perSymbol = Array.from(this.perSymbolStats.entries()).map(([symbol, bucket]) => ({
+      symbol,
+      trades: bucket.trades,
+      wins: bucket.wins,
+      losses: bucket.losses,
+      winratePct: bucket.trades > 0 ? (bucket.wins / bucket.trades) * 100 : 0,
+      pnlUSDT: bucket.pnlUSDT,
+      longTrades: bucket.longTrades,
+      longWins: bucket.longWins,
+      longLosses: bucket.longLosses,
+      shortTrades: bucket.shortTrades,
+      shortWins: bucket.shortWins,
+      shortLosses: bucket.shortLosses,
+      lastClosedTs: bucket.lastClosedTs,
+      lastClosedPnlUSDT: bucket.lastClosedPnlUSDT
+    }));
+
     const stats = {
       ...this.stats,
       long: { ...this.stats.long },
-      short: { ...this.stats.short }
+      short: { ...this.stats.short },
+      ...(perSymbol.length > 0 ? { perSymbol } : {})
     };
     return this.stats.lastClosed ? { ...stats, lastClosed: { ...this.stats.lastClosed } } : stats;
   }
@@ -324,6 +376,7 @@ export class BotEngine {
     this.winPnlSum = 0;
     this.lossPnlSum = 0;
     this.todayPnlDayKey = null;
+    this.perSymbolStats.clear();
     this.persistSnapshot();
   }
 
@@ -459,6 +512,8 @@ export class BotEngine {
       config: snapshot.config
     };
 
+    this.perSymbolStats.clear();
+
     if (snapshot.stats) {
       this.stats = {
         totalTrades: snapshot.stats.totalTrades,
@@ -478,6 +533,23 @@ export class BotEngine {
       this.winPnlSum = snapshot.stats.wins * (snapshot.stats.avgWinUSDT ?? 0);
       this.lossPnlSum = snapshot.stats.losses * (snapshot.stats.avgLossUSDT ?? 0);
       this.todayPnlDayKey = new Date(this.now()).toISOString().slice(0, 10);
+      this.perSymbolStats.clear();
+      for (const entry of snapshot.stats.perSymbol ?? []) {
+        this.perSymbolStats.set(entry.symbol, {
+          trades: entry.trades,
+          wins: entry.wins,
+          losses: entry.losses,
+          pnlUSDT: entry.pnlUSDT,
+          longTrades: entry.longTrades,
+          longWins: entry.longWins,
+          longLosses: entry.longLosses,
+          shortTrades: entry.shortTrades,
+          shortWins: entry.shortWins,
+          shortLosses: entry.shortLosses,
+          lastClosedTs: entry.lastClosedTs ?? null,
+          lastClosedPnlUSDT: entry.lastClosedPnlUSDT ?? null
+        });
+      }
     }
 
     this.updateSummaryCounts();
@@ -1060,16 +1132,17 @@ export class BotEngine {
       activeUptimeMs: this.state.activeUptimeMs,
       config: this.state.config,
       symbols: symbolSnapshots,
-      stats: this.stats
+      stats: this.getStats()
     };
   }
 
   private recordClosedTrade(symbol: string, side: 'LONG' | 'SHORT', pnlUSDT: number): void {
+    const now = this.now();
     this.rotateDailyPnlBucket();
     this.stats.totalTrades += 1;
     this.stats.pnlUSDT += pnlUSDT;
     this.stats.todayPnlUSDT += pnlUSDT;
-    this.stats.lastClosed = { ts: this.now(), symbol, pnlUSDT };
+    this.stats.lastClosed = { ts: now, symbol, pnlUSDT };
 
     if (pnlUSDT > 0) {
       this.stats.wins += 1;
@@ -1093,6 +1166,49 @@ export class BotEngine {
       sideBucket.losses += 1;
     }
     sideBucket.winratePct = sideBucket.trades > 0 ? (sideBucket.wins / sideBucket.trades) * 100 : 0;
+
+    const perSymbol = this.perSymbolStats.get(symbol) ?? {
+      trades: 0,
+      wins: 0,
+      losses: 0,
+      pnlUSDT: 0,
+      longTrades: 0,
+      longWins: 0,
+      longLosses: 0,
+      shortTrades: 0,
+      shortWins: 0,
+      shortLosses: 0,
+      lastClosedTs: null,
+      lastClosedPnlUSDT: null
+    };
+
+    perSymbol.trades += 1;
+    perSymbol.pnlUSDT += pnlUSDT;
+    perSymbol.lastClosedTs = now;
+    perSymbol.lastClosedPnlUSDT = pnlUSDT;
+    if (pnlUSDT >= 0) {
+      perSymbol.wins += 1;
+    } else {
+      perSymbol.losses += 1;
+    }
+
+    if (side === 'LONG') {
+      perSymbol.longTrades += 1;
+      if (pnlUSDT >= 0) {
+        perSymbol.longWins += 1;
+      } else {
+        perSymbol.longLosses += 1;
+      }
+    } else {
+      perSymbol.shortTrades += 1;
+      if (pnlUSDT >= 0) {
+        perSymbol.shortWins += 1;
+      } else {
+        perSymbol.shortLosses += 1;
+      }
+    }
+
+    this.perSymbolStats.set(symbol, perSymbol);
 
     const config = this.state.config;
     if (!config) {
@@ -1305,7 +1421,10 @@ export class BotEngine {
       symbolState.prevCandleOi = symbolState.lastCandleOi;
       symbolState.lastCandleOi = oiValue;
       symbolState.lastCandleBucketStart = bucketStart;
+      return;
     }
+
+    symbolState.lastCandleOi = oiValue;
   }
 
   private computeOiCandleDeltaPct(symbolState: SymbolRuntimeState): number | null {
@@ -1314,6 +1433,36 @@ export class BotEngine {
     }
 
     return ((symbolState.lastCandleOi - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100;
+  }
+
+  getOiCandleSnapshot(symbol: string): {
+    oiCandleValue: number | null;
+    oiPrevCandleValue: number | null;
+    oiCandleDeltaValue: number | null;
+    oiCandleDeltaPct: number | null;
+  } {
+    const symbolState = this.symbols.get(symbol);
+    if (!symbolState) {
+      return {
+        oiCandleValue: null,
+        oiPrevCandleValue: null,
+        oiCandleDeltaValue: null,
+        oiCandleDeltaPct: null
+      };
+    }
+
+    const oiCandleValue = symbolState.lastCandleOi;
+    const oiPrevCandleValue = symbolState.prevCandleOi;
+    const oiCandleDeltaValue =
+      typeof oiCandleValue === 'number' && typeof oiPrevCandleValue === 'number' ? oiCandleValue - oiPrevCandleValue : null;
+    const oiCandleDeltaPct = this.computeOiCandleDeltaPct(symbolState);
+
+    return {
+      oiCandleValue,
+      oiPrevCandleValue,
+      oiCandleDeltaValue,
+      oiCandleDeltaPct
+    };
   }
 
   private recordSignalEventAndGetCount(symbolState: SymbolRuntimeState, now: number): number {

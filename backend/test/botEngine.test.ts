@@ -1249,3 +1249,116 @@ describe('BotEngine snapshot + pause/resume', () => {
     expect(withPosition.openPositions).toBe(1);
   });
 });
+
+describe('BotEngine per-symbol stats and candle OI', () => {
+  it('aggregates per-symbol stats and side breakdown on close', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, tpRoiPct: 0.5, slRoiPct: 0.5 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1100, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1101, ts: now }); // fill
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1102, ts: now }); // close win
+
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1200, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1201, ts: now }); // fill
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1190, ts: now }); // close loss
+
+    const row = engine.getStats().perSymbol?.find((entry) => entry.symbol === 'BTCUSDT');
+    expect(row).toBeTruthy();
+    expect(row?.trades).toBe(2);
+    expect(row?.wins).toBe(1);
+    expect(row?.losses).toBe(1);
+    expect(row?.longTrades).toBe(2);
+    expect(row?.shortTrades).toBe(0);
+  });
+
+  it('tracks oi candle current/previous and deltas across TF buckets', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['ETHUSDT']);
+    engine.start({ ...defaultConfig, tf: 3, signalCounterThreshold: 1 });
+
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 120_000;
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100.2, openInterestValue: 1100, ts: now });
+    expect(engine.getOiCandleSnapshot('ETHUSDT').oiCandleValue).toBe(1100);
+    expect(engine.getOiCandleSnapshot('ETHUSDT').oiPrevCandleValue).toBeNull();
+
+    now += 70_000; // cross 3m boundary
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100.3, openInterestValue: 1200, ts: now });
+
+    const snapshot = engine.getOiCandleSnapshot('ETHUSDT');
+    expect(snapshot.oiPrevCandleValue).toBe(1100);
+    expect(snapshot.oiCandleValue).toBe(1200);
+    expect(snapshot.oiCandleDeltaValue).toBe(100);
+    expect(snapshot.oiCandleDeltaPct).toBeCloseTo((100 / 1100) * 100, 6);
+  });
+
+  it('restores and resets per-symbol stats via snapshot', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'snapshot-per-symbol-'));
+    const store = new FileSnapshotStore(path.join(tempDir, 'runtime.json'));
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+
+    const source = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      snapshotStore: store
+    });
+
+    source.setUniverseSymbols(['BTCUSDT']);
+    source.start({ ...defaultConfig, signalCounterThreshold: 1 });
+    source.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    source.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1;
+    source.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+    now += 1;
+    source.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1022, ts: now });
+
+    const saved = store.load();
+    expect(saved?.stats?.perSymbol?.length).toBeGreaterThan(0);
+
+    const restored = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      snapshotStore: store
+    });
+
+    restored.restoreFromSnapshot(saved!);
+    expect(restored.getStats().perSymbol?.[0]?.symbol).toBe('BTCUSDT');
+
+    restored.resetStats();
+    expect(restored.getStats().perSymbol).toBeUndefined();
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+});

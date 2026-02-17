@@ -87,6 +87,10 @@ describe('SymbolUpdateBroadcaster', () => {
         state: string;
         markPrice: number;
         openInterestValue: number;
+        oiCandleValue: number | null;
+        oiPrevCandleValue: number | null;
+        oiCandleDeltaValue: number | null;
+        oiCandleDeltaPct: number | null;
         baseline: { basePrice: number; baseOiValue: number; baseTs: number };
         pendingOrder: null;
         position: null;
@@ -99,6 +103,10 @@ describe('SymbolUpdateBroadcaster', () => {
       state: 'HOLDING_LONG',
       markPrice: 101,
       openInterestValue: 310000,
+      oiCandleValue: null,
+      oiPrevCandleValue: null,
+      oiCandleDeltaValue: null,
+      oiCandleDeltaPct: null,
       baseline: { basePrice: 100, baseOiValue: 300000, baseTs: 500 },
       pendingOrder: null,
       position: null
