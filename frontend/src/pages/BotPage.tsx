@@ -237,8 +237,10 @@ export function BotPage({
   const universeColumns: ColumnDef<(typeof filteredUniverseSymbols)[number]>[] = useMemo(
     () => [
       { label: 'symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
-      { label: 'turnover24h', sortKey: 'turnover24h', accessor: (row) => row.turnover24h, align: 'end' },
-      { label: 'vol24hPct', sortKey: 'vol24hPct', accessor: (row) => row.vol24hPct, align: 'end' },
+      { label: 'turnover24hUSDT', sortKey: 'turnover24hUSDT', accessor: (row) => row.turnover24hUSDT, align: 'end' },
+      { label: 'vol24hRangePct', sortKey: 'vol24hRangePct', accessor: (row) => row.vol24hRangePct, align: 'end' },
+      { label: 'high24h', sortKey: 'highPrice24h', accessor: (row) => row.highPrice24h, align: 'end' },
+      { label: 'low24h', sortKey: 'lowPrice24h', accessor: (row) => row.lowPrice24h, align: 'end' },
       { label: 'forcedActive', sortKey: 'forcedActive', accessor: (row) => (row.forcedActive ? 1 : 0), align: 'center' }
     ],
     []
@@ -248,7 +250,7 @@ export function BotPage({
     sortState: universeSortState,
     sortedRows: sortedUniverseSymbols,
     setSortKey: setUniverseSortKey
-  } = useSort(filteredUniverseSymbols, { key: 'turnover24h', dir: 'desc' }, {
+  } = useSort(filteredUniverseSymbols, { key: 'turnover24hUSDT', dir: 'desc' }, {
     tableId: 'universe-symbols',
     getSortValue: (row, key) => universeColumns.find((column) => column.sortKey === key)?.accessor(row)
   });
@@ -1010,14 +1012,14 @@ export function BotPage({
           <Card.Body>
             <Row className="g-2 mb-3">
               <Col md={6}>
-                <Form.Label>minVolPct (%)</Form.Label>
+                <Form.Label>minVolPct (%, 24h range)</Form.Label>
                 <Form.Control type="number" step={0.01} placeholder="10" value={minVolPct} onChange={(event) => setMinVolPct(Number(event.target.value))} />
-                <Form.Text muted>24h range volatility filter (not 1m activity). Example: 10 means 10%.</Form.Text>
+                <Form.Text muted>Example: 10 means {'>='} 10% range (high-low)/low over last 24h.</Form.Text>
               </Col>
               <Col md={6}>
-                <Form.Label>minTurnover (USDT / 24h)</Form.Label>
+                <Form.Label>minTurnover (USDT, 24h)</Form.Label>
                 <Form.Control type="number" step={1} placeholder="5000000" value={minTurnover} onChange={(event) => setMinTurnover(Number(event.target.value))} />
-                <Form.Text muted>24h turnover filter. Example: 5,000,000.</Form.Text>
+                <Form.Text muted>Example: 5,000,000 means {'>='} $5M turnover in last 24h.</Form.Text>
               </Col>
             </Row>
             <div className="d-flex gap-2 flex-wrap mb-3">
@@ -1043,7 +1045,9 @@ export function BotPage({
               </div>
               <div>Symbols: {universeState.symbols?.length ?? 0}</div>
               <div>Excluded: {excludedSymbols.length}</div>
-              <div>Contract filter: USDT Linear PerPETUAL only</div>
+              <div>Contract filter: USDT Linear Perpetual only</div>
+              <div>Vol metric: {universeState.metricDefinition?.volDefinition ?? '24h range % = (high24h-low24h)/low24h*100'}</div>
+              <div>Turnover metric: {universeState.metricDefinition?.turnoverDefinition ?? '24h turnover in USDT from Bybit ticker'}</div>
               {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? (
                 <div>Filtered out (non-perp/expiring): {universeState.filteredOut.expiringOrNonPerp}</div>
               ) : null}
@@ -1085,8 +1089,10 @@ export function BotPage({
                     {paginatedUniverseSymbols.map((entry) => (
                       <tr key={entry.symbol}>
                         <td>{entry.symbol}</td>
-                        <td className="text-end">{entry.turnover24h.toLocaleString()}</td>
-                        <td className="text-end">{entry.vol24hPct.toFixed(2)}%</td>
+                        <td className="text-end">{entry.turnover24hUSDT.toLocaleString()}</td>
+                        <td className="text-end">{entry.vol24hRangePct.toFixed(2)}%</td>
+                        <td className="text-end">{entry.highPrice24h.toLocaleString()}</td>
+                        <td className="text-end">{entry.lowPrice24h.toLocaleString()}</td>
                         <td className="text-center">{entry.forcedActive ? <Badge bg="warning" text="dark">forced</Badge> : <Badge bg="secondary">no</Badge>}</td>
                       </tr>
                     ))}

@@ -6,6 +6,7 @@ import type { PaperPendingOrder, PaperPosition } from './paperTypes.js';
 import type { RuntimeSnapshot, RuntimeSnapshotSymbol, SnapshotStore } from './snapshotStore.js';
 import type { UniverseEntry } from '../types/universe.js';
 import { normalizeQty } from '../utils/qty.js';
+import { percentToFraction } from '../utils/percent.js';
 
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
@@ -1050,8 +1051,8 @@ export class BotEngine {
     }
 
     const entryPrice = side === 'LONG'
-      ? marketState.markPrice * (1 - Math.max(0, this.state.config!.entryOffsetPct) / 100)
-      : marketState.markPrice * (1 + Math.max(0, this.state.config!.entryOffsetPct) / 100);
+      ? marketState.markPrice * (1 - percentToFraction(Math.max(0, this.state.config!.entryOffsetPct)))
+      : marketState.markPrice * (1 + percentToFraction(Math.max(0, this.state.config!.entryOffsetPct)));
     const rawQty = entryNotional / entryPrice;
     const lotSize = this.lotSizeBySymbol.get(symbolState.symbol);
     const qty = lotSize && lotSize.qtyStep !== null && lotSize.minOrderQty !== null
@@ -1174,10 +1175,11 @@ export class BotEngine {
     const now = this.now();
     const orderSide = side === 'LONG' ? 'Buy' : 'Sell';
     const off = Math.max(0, this.state.config.entryOffsetPct ?? DEFAULT_ENTRY_OFFSET_PCT);
-    const unroundedEntryLimit = side === 'LONG' ? marketState.markPrice * (1 - off / 100) : marketState.markPrice * (1 + off / 100);
+    const entryOffsetFraction = percentToFraction(off);
+    const unroundedEntryLimit = side === 'LONG' ? marketState.markPrice * (1 - entryOffsetFraction) : marketState.markPrice * (1 + entryOffsetFraction);
     const entryLimit = this.roundPriceLikeMark(unroundedEntryLimit, marketState.markPrice);
-    const tpMovePct = this.state.config.tpRoiPct / this.state.config.leverage / 100;
-    const slMovePct = this.state.config.slRoiPct / this.state.config.leverage / 100;
+    const tpMovePct = percentToFraction(this.state.config.tpRoiPct / this.state.config.leverage);
+    const slMovePct = percentToFraction(this.state.config.slRoiPct / this.state.config.leverage);
 
     const pendingOrder: PaperPendingOrder = {
       symbol: symbolState.symbol,
@@ -1371,8 +1373,8 @@ export class BotEngine {
 
     const filledOrder = symbolState.pendingOrder;
     const side = filledOrder.side === 'Buy' ? 'LONG' : 'SHORT';
-    const tpMovePct = this.state.config.tpRoiPct / this.state.config.leverage / 100;
-    const slMovePct = this.state.config.slRoiPct / this.state.config.leverage / 100;
+    const tpMovePct = percentToFraction(this.state.config.tpRoiPct / this.state.config.leverage);
+    const slMovePct = percentToFraction(this.state.config.slRoiPct / this.state.config.leverage);
 
     const position: PaperPosition = {
       symbol: symbolState.symbol,

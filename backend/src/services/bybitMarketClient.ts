@@ -17,6 +17,7 @@ export type InstrumentLinear = {
 
 export type TickerLinear = {
   symbol: string;
+  turnover24hUSDT: number | null;
   turnover24h: number | null;
   highPrice24h: number | null;
   lowPrice24h: number | null;
@@ -104,7 +105,12 @@ export class BybitMarketClient implements IBybitMarketClient {
 
       map.set(symbol, {
         symbol,
-        turnover24h: parseNumber((row as { turnover24h?: unknown }).turnover24h),
+        turnover24hUSDT:
+          parseNumber((row as { turnover24h?: unknown }).turnover24h) ??
+          parseNumber((row as { turnover24hValue?: unknown }).turnover24hValue),
+        turnover24h:
+          parseNumber((row as { turnover24h?: unknown }).turnover24h) ??
+          parseNumber((row as { turnover24hValue?: unknown }).turnover24hValue),
         highPrice24h: parseNumber((row as { highPrice24h?: unknown }).highPrice24h),
         lowPrice24h: parseNumber((row as { lowPrice24h?: unknown }).lowPrice24h),
         markPrice: parseNumber((row as { markPrice?: unknown }).markPrice),
