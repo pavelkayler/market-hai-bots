@@ -1138,9 +1138,14 @@ export function BotPage({
             <div>Avg loss (USDT): {botStats.avgLossUSDT === null ? '-' : formatPnl(botStats.avgLossUSDT)}</div>
             <div>
               Last closed:{' '}
-              {botStats.lastClosed
-                ? `${new Date(botStats.lastClosed.ts).toLocaleString()} ${botStats.lastClosed.symbol} ${formatPnl(botStats.lastClosed.netPnlUSDT)} (${botStats.lastClosed.reason})`
-                : '-'}
+              {botStats.lastClosed ? (
+                <span className="font-monospace">
+                  {new Date(botStats.lastClosed.ts).toLocaleString()} {botStats.lastClosed.symbol} {botStats.lastClosed.side}{' '}
+                  net {formatPnl(botStats.lastClosed.netPnlUSDT)} | fees {formatPnl(botStats.lastClosed.feesUSDT)} ({botStats.lastClosed.reason})
+                </span>
+              ) : (
+                '-'
+              )}
             </div>
           </Card.Body>
 

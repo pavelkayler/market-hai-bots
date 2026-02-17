@@ -142,6 +142,13 @@ export type PositionUpdatePayload = {
   exitPrice?: number;
   pnlUSDT?: number;
   closeReason?: string;
+  realizedGrossPnlUSDT?: number;
+  feesUSDT?: number;
+  realizedNetPnlUSDT?: number;
+  entryFeeUSDT?: number;
+  exitFeeUSDT?: number;
+  entryFeeRate?: number;
+  exitFeeRate?: number;
 };
 
 export type BotStats = {
@@ -164,6 +171,8 @@ export type BotStats = {
     grossPnlUSDT: number;
     feesUSDT: number;
     netPnlUSDT: number;
+    entryFeeUSDT?: number;
+    exitFeeUSDT?: number;
     reason: string;
     pnlUSDT?: number;
   };
@@ -288,6 +297,10 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     if (typeof raw[key] !== 'number' || !Number.isFinite(raw[key])) {
       return null;
     }
+  }
+
+  if ((raw.tpRoiPct as number) <= 0 || (raw.slRoiPct as number) <= 0 || (raw.marginUSDT as number) <= 0 || (raw.leverage as number) <= 0) {
+    return null;
   }
 
   return {
@@ -1072,8 +1085,8 @@ export class BotEngine {
     const off = Math.max(0, this.state.config.entryOffsetPct ?? DEFAULT_ENTRY_OFFSET_PCT);
     const unroundedEntryLimit = side === 'LONG' ? marketState.markPrice * (1 - off / 100) : marketState.markPrice * (1 + off / 100);
     const entryLimit = this.roundPriceLikeMark(unroundedEntryLimit, marketState.markPrice);
-    const tpMovePct = this.state.config.tpRoiPct / this.state.config.leverage;
-    const slMovePct = this.state.config.slRoiPct / this.state.config.leverage;
+    const tpMovePct = this.state.config.tpRoiPct / this.state.config.leverage / 100;
+    const slMovePct = this.state.config.slRoiPct / this.state.config.leverage / 100;
 
     const pendingOrder: PaperPendingOrder = {
       symbol: symbolState.symbol,
@@ -1082,8 +1095,8 @@ export class BotEngine {
       qty,
       placedTs: now,
       expiresTs: now + ONE_HOUR_MS,
-      tpPrice: side === 'LONG' ? entryLimit * (1 + tpMovePct / 100) : entryLimit * (1 - tpMovePct / 100),
-      slPrice: side === 'LONG' ? entryLimit * (1 - slMovePct / 100) : entryLimit * (1 + slMovePct / 100),
+      tpPrice: side === 'LONG' ? entryLimit * (1 + tpMovePct) : entryLimit * (1 - tpMovePct),
+      slPrice: side === 'LONG' ? entryLimit * (1 - slMovePct) : entryLimit * (1 + slMovePct),
       orderLinkId: `${symbolState.symbol}-${now}`,
       sentToExchange: this.state.config.mode === 'paper'
     };
@@ -1267,16 +1280,16 @@ export class BotEngine {
 
     const filledOrder = symbolState.pendingOrder;
     const side = filledOrder.side === 'Buy' ? 'LONG' : 'SHORT';
-    const tpMovePct = this.state.config.tpRoiPct / this.state.config.leverage;
-    const slMovePct = this.state.config.slRoiPct / this.state.config.leverage;
+    const tpMovePct = this.state.config.tpRoiPct / this.state.config.leverage / 100;
+    const slMovePct = this.state.config.slRoiPct / this.state.config.leverage / 100;
 
     const position: PaperPosition = {
       symbol: symbolState.symbol,
       side,
       entryPrice: filledOrder.limitPrice,
       qty: filledOrder.qty,
-      tpPrice: side === 'LONG' ? filledOrder.limitPrice * (1 + tpMovePct / 100) : filledOrder.limitPrice * (1 - tpMovePct / 100),
-      slPrice: side === 'LONG' ? filledOrder.limitPrice * (1 - slMovePct / 100) : filledOrder.limitPrice * (1 + slMovePct / 100),
+      tpPrice: side === 'LONG' ? filledOrder.limitPrice * (1 + tpMovePct) : filledOrder.limitPrice * (1 - tpMovePct),
+      slPrice: side === 'LONG' ? filledOrder.limitPrice * (1 - slMovePct) : filledOrder.limitPrice * (1 + slMovePct),
       openedTs: now
     };
 
@@ -1310,19 +1323,28 @@ export class BotEngine {
     const closeReason = slHit ? 'SL' : 'TP';
     const exitPrice = slHit ? position.slPrice : position.tpPrice;
     const grossPnl = position.side === 'LONG' ? (exitPrice - position.entryPrice) * position.qty : (position.entryPrice - exitPrice) * position.qty;
-    const entryFeeUSDT = PAPER_FEES.makerFeeRate * position.qty * position.entryPrice;
-    const exitFeeUSDT = PAPER_FEES.takerFeeRate * position.qty * exitPrice;
+    // PAPER fee model: entry limit fills are treated as maker; TP/SL closes are taker for conservative expectancy.
+    const entryFeeRate = PAPER_FEES.makerFeeRate;
+    const exitFeeRate = PAPER_FEES.takerFeeRate;
+    const entryFeeUSDT = entryFeeRate * position.qty * position.entryPrice;
+    const exitFeeUSDT = exitFeeRate * position.qty * exitPrice;
     const feeTotalUSDT = entryFeeUSDT + exitFeeUSDT;
     const netPnlUSDT = grossPnl - feeTotalUSDT;
 
     const closedPosition: PaperPosition = {
       ...position,
       closeReason,
+      exitPrice,
+      realizedGrossPnlUSDT: grossPnl,
       grossPnlUSDT: grossPnl,
+      feesUSDT: feeTotalUSDT,
       entryFeeUSDT,
       exitFeeUSDT,
       feeTotalUSDT,
+      realizedNetPnlUSDT: netPnlUSDT,
       netPnlUSDT,
+      entryFeeRate,
+      exitFeeRate,
       lastPnlUSDT: netPnlUSDT
     };
 
@@ -1335,9 +1357,16 @@ export class BotEngine {
       position: closedPosition,
       exitPrice,
       pnlUSDT: netPnlUSDT,
-      closeReason
+      closeReason,
+      realizedGrossPnlUSDT: grossPnl,
+      feesUSDT: feeTotalUSDT,
+      realizedNetPnlUSDT: netPnlUSDT,
+      entryFeeUSDT,
+      exitFeeUSDT,
+      entryFeeRate,
+      exitFeeRate
     });
-    this.recordClosedTrade(symbolState.symbol, position.side, grossPnl, feeTotalUSDT, netPnlUSDT, closeReason);
+    this.recordClosedTrade(symbolState.symbol, position.side, grossPnl, feeTotalUSDT, netPnlUSDT, closeReason, entryFeeUSDT, exitFeeUSDT);
     this.updateSummaryCounts();
     this.persistSnapshot();
   }
@@ -1446,14 +1475,16 @@ export class BotEngine {
     grossPnlUSDT: number,
     feesUSDT: number,
     netPnlUSDT: number,
-    reason: string
+    reason: string,
+    entryFeeUSDT?: number,
+    exitFeeUSDT?: number
   ): void {
     const now = this.now();
     this.rotateDailyPnlBucket();
     this.stats.totalTrades += 1;
     this.stats.pnlUSDT += netPnlUSDT;
     this.stats.todayPnlUSDT += netPnlUSDT;
-    this.stats.lastClosed = { ts: now, symbol, side, grossPnlUSDT, feesUSDT, netPnlUSDT, reason };
+    this.stats.lastClosed = { ts: now, symbol, side, grossPnlUSDT, feesUSDT, netPnlUSDT, reason, entryFeeUSDT, exitFeeUSDT };
 
     if (netPnlUSDT > 0) {
       this.stats.wins += 1;
@@ -1497,24 +1528,24 @@ export class BotEngine {
     perSymbol.pnlUSDT += netPnlUSDT;
     perSymbol.lastClosedTs = now;
     perSymbol.lastClosedPnlUSDT = netPnlUSDT;
-    if (netPnlUSDT >= 0) {
+    if (netPnlUSDT > 0) {
       perSymbol.wins += 1;
-    } else {
+    } else if (netPnlUSDT < 0) {
       perSymbol.losses += 1;
     }
 
     if (side === 'LONG') {
       perSymbol.longTrades += 1;
-      if (netPnlUSDT >= 0) {
+      if (netPnlUSDT > 0) {
         perSymbol.longWins += 1;
-      } else {
+      } else if (netPnlUSDT < 0) {
         perSymbol.longLosses += 1;
       }
     } else {
       perSymbol.shortTrades += 1;
-      if (netPnlUSDT >= 0) {
+      if (netPnlUSDT > 0) {
         perSymbol.shortWins += 1;
-      } else {
+      } else if (netPnlUSDT < 0) {
         perSymbol.shortLosses += 1;
       }
     }

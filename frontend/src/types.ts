@@ -97,6 +97,8 @@ export type BotStats = {
     grossPnlUSDT: number;
     feesUSDT: number;
     netPnlUSDT: number;
+    entryFeeUSDT?: number;
+    exitFeeUSDT?: number;
     reason: string;
   };
   perSymbol?: BotPerSymbolStats[];
@@ -152,6 +154,15 @@ export type Position = {
   tpPrice: number;
   slPrice: number;
   openedTs: number;
+  closeReason?: string;
+  exitPrice?: number;
+  realizedGrossPnlUSDT?: number;
+  feesUSDT?: number;
+  realizedNetPnlUSDT?: number;
+  entryFeeUSDT?: number;
+  exitFeeUSDT?: number;
+  entryFeeRate?: number;
+  exitFeeRate?: number;
   lastPnlUSDT?: number;
 };
 

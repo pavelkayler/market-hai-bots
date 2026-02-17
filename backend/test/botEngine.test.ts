@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DemoCreateOrderParams, DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
 import { BotEngine, type BotConfig, type OrderUpdatePayload, type PositionUpdatePayload, type SignalPayload } from '../src/bot/botEngine.js';
+import { PAPER_FEES } from '../src/bot/paperFees.js';
 import { FileSnapshotStore } from '../src/bot/snapshotStore.js';
 
 const defaultConfig: BotConfig = {
@@ -1388,17 +1389,135 @@ describe('BotEngine hardening regressions', () => {
     now += 1;
     engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
 
-    const position = engine.getSymbolState('BTCUSDT')?.position;
-    expect(position).toBeTruthy();
-    if (!position) return;
+    const mutable = engine as unknown as { symbols: Map<string, { position: { tpPrice: number; slPrice: number } | null }> };
+    const internalPosition = mutable.symbols.get('BTCUSDT')?.position;
+    expect(internalPosition).toBeTruthy();
+    if (!internalPosition) return;
 
-    const mid = (position.tpPrice + position.slPrice) / 2;
-    position.tpPrice = mid;
-    position.slPrice = mid;
+    const mid = (internalPosition.tpPrice + internalPosition.slPrice) / 2;
+    internalPosition.tpPrice = mid;
+    internalPosition.slPrice = mid;
     engine.onMarketUpdate('BTCUSDT', { markPrice: mid, openInterestValue: 1022, ts: now + 1 });
 
     const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
     expect(close?.closeReason).toBe('SL');
+  });
+
+
+  it('computes deterministic LONG close audit fields with maker-entry and taker-exit fees', () => {
+    const positionUpdates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: (payload) => positionUpdates.push(payload),
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, direction: 'long', marginUSDT: 100, leverage: 1, tpRoiPct: 1, slRoiPct: 1, entryOffsetPct: 0, priceUpThrPct: 0 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1010, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1011, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1012, ts: now });
+
+    const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
+    expect(close).toBeTruthy();
+    const entryPrice = close?.position.entryPrice ?? 0;
+    const exitPrice = close?.exitPrice ?? 0;
+    const qty = close?.position.qty ?? 0;
+    const expectedEntryFee = entryPrice * qty * PAPER_FEES.makerFeeRate;
+    const expectedExitFee = exitPrice * qty * PAPER_FEES.takerFeeRate;
+    const expectedGross = (exitPrice - entryPrice) * qty;
+    const expectedNet = expectedGross - expectedEntryFee - expectedExitFee;
+    expect(close?.realizedGrossPnlUSDT).toBeCloseTo(expectedGross, 8);
+    expect(close?.feesUSDT).toBeCloseTo(expectedEntryFee + expectedExitFee, 8);
+    expect(close?.realizedNetPnlUSDT).toBeCloseTo(expectedNet, 8);
+    expect(close?.position.entryFeeUSDT).toBeCloseTo(expectedEntryFee, 8);
+    expect(close?.position.exitFeeUSDT).toBeCloseTo(expectedExitFee, 8);
+  });
+
+  it('computes deterministic SHORT close audit fields with maker-entry and taker-exit fees', () => {
+    const positionUpdates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: (payload) => positionUpdates.push(payload),
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, direction: 'short', marginUSDT: 100, leverage: 1, tpRoiPct: 1, slRoiPct: 1, entryOffsetPct: 0, priceUpThrPct: 1, oiUpThrPct: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 990, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 989, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.01, openInterestValue: 988, ts: now });
+
+    const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
+    expect(close).toBeTruthy();
+    const entryPrice = close?.position.entryPrice ?? 0;
+    const exitPrice = close?.exitPrice ?? 0;
+    const qty = close?.position.qty ?? 0;
+    const expectedEntryFee = entryPrice * qty * PAPER_FEES.makerFeeRate;
+    const expectedExitFee = exitPrice * qty * PAPER_FEES.takerFeeRate;
+    const expectedGross = (entryPrice - exitPrice) * qty;
+    const expectedNet = expectedGross - expectedEntryFee - expectedExitFee;
+    expect(close?.realizedGrossPnlUSDT).toBeCloseTo(expectedGross, 8);
+    expect(close?.feesUSDT).toBeCloseTo(expectedEntryFee + expectedExitFee, 8);
+    expect(close?.realizedNetPnlUSDT).toBeCloseTo(expectedNet, 8);
+  });
+
+  it('treats zero-net closes as neutral in stats buckets', () => {
+    const engine = new BotEngine({
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1 });
+    const mutable = engine as unknown as {
+      recordClosedTrade: (symbol: string, side: 'LONG' | 'SHORT', gross: number, fees: number, net: number, reason: string) => void;
+    };
+    mutable.recordClosedTrade('BTCUSDT', 'LONG', 0, 0, 0, 'OTHER');
+    const stats = engine.getStats();
+    expect(stats.totalTrades).toBe(1);
+    expect(stats.wins).toBe(0);
+    expect(stats.losses).toBe(0);
+    expect(stats.long.wins).toBe(0);
+    expect(stats.long.losses).toBe(0);
+    expect(stats.perSymbol?.[0]?.wins ?? 0).toBe(0);
+    expect(stats.perSymbol?.[0]?.losses ?? 0).toBe(0);
+  });
+
+  it('applies todayPnL guardrail using net pnl (including fees)', () => {
+    const engine = new BotEngine({
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, dailyLossLimitUSDT: 0.05 });
+    const mutable = engine as unknown as {
+      recordClosedTrade: (symbol: string, side: 'LONG' | 'SHORT', gross: number, fees: number, net: number, reason: string) => void;
+    };
+    mutable.recordClosedTrade('BTCUSDT', 'LONG', 0, 0.06, -0.06, 'OTHER');
+    expect(engine.getStats().todayPnlUSDT).toBeCloseTo(-0.06, 8);
+    expect(engine.getStats().guardrailPauseReason).toBe('DAILY_LOSS_LIMIT');
   });
 
   it('fee accounting keeps net pnl = gross pnl - fees', () => {
