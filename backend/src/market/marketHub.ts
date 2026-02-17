@@ -5,11 +5,11 @@ export type MarketState = {
   markPrice: number;
   openInterestValue: number;
   ts: number;
-  lastPrice?: number | null;
-  bid?: number | null;
-  ask?: number | null;
-  spreadBps?: number | null;
-  lastTickTs?: number;
+  lastPrice: number | null;
+  bid: number | null;
+  ask: number | null;
+  spreadBps: number | null;
+  lastTickTs: number;
 };
 
 type MarketHubOptions = {

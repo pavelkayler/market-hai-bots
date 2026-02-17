@@ -29,3 +29,29 @@
 - Backend tests: pass.
 - Frontend build: pass.
 - No blocking runtime crash observed in automated smoke pass.
+
+---
+
+## QA Report — Release Readiness (Task 45 follow-up)
+
+## Scope executed
+- Re-ran the full automated backend regression suite that covers universe lifecycle, bot lifecycle/snapshot, paper close accounting, demo queue/sent cancel behavior, replay lifecycle state, and reset-all flows.
+- Re-ran backend static type checks and frontend production build.
+- Re-ran root convenience scripts (`npm test`, `npm run build:frontend`) to validate top-level commands still pass.
+
+## Failures found and fixes
+1. **Backend typecheck failed** due to `MarketState` payload shape drift (optional vs required quote/tick fields) and legacy metricDefinition parsing casts.
+   - Fixed by normalizing `MarketState` to always include nullable quote fields and `lastTickTs`, and ensuring fallback/replay-fed market states provide those fields.
+   - Fixed universe legacy `metricDefinition` coercion by introducing a safe adapter variable for old object shape before composing the string.
+2. **Replay test mismatch** appeared after payload hardening.
+   - Updated replay service test expectations to assert the complete canonical market state object.
+
+## Remaining known limitations
+- Manual click-by-click browser execution of every checklist step was not performed in this run; coverage relied on existing deterministic integration tests and API route tests.
+- Demo close detection and replay quality still depend on polling/recording cadence (v1 design constraint).
+
+## Validation status
+- Backend tests: pass.
+- Backend typecheck: pass.
+- Frontend build: pass.
+- Root scripts (`test`, `build:frontend`): pass.

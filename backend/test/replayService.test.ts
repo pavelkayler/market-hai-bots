@@ -69,7 +69,7 @@ describe('ReplayService', () => {
       'utf-8'
     );
 
-    const fedTicks: Array<{ symbol: string; state: { markPrice: number; openInterestValue: number; ts: number } }> = [];
+    const fedTicks: Array<{ symbol: string; state: { markPrice: number; openInterestValue: number; ts: number; lastPrice: null; bid: null; ask: null; spreadBps: null; lastTickTs: number } }> = [];
     const sleepSpy = vi.fn(async () => {});
 
     const service = new ReplayService({
@@ -96,8 +96,8 @@ describe('ReplayService', () => {
 
     expect(sleepSpy).not.toHaveBeenCalled();
     expect(fedTicks).toEqual([
-      { symbol: 'ETHUSDT', state: { markPrice: 10, openInterestValue: 100, ts: 1000 } },
-      { symbol: 'BTCUSDT', state: { markPrice: 20, openInterestValue: 200, ts: 900 } }
+      { symbol: 'ETHUSDT', state: { markPrice: 10, openInterestValue: 100, ts: 1000, lastPrice: null, bid: null, ask: null, spreadBps: null, lastTickTs: 1000 } },
+      { symbol: 'BTCUSDT', state: { markPrice: 20, openInterestValue: 200, ts: 900, lastPrice: null, bid: null, ask: null, spreadBps: null, lastTickTs: 900 } }
     ]);
   });
 });
