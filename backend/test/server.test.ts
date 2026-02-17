@@ -109,8 +109,10 @@ describe('server routes', () => {
       direction: 'both',
       tf: 1,
       holdSeconds: 3,
+  signalCounterThreshold: 2,
       priceUpThrPct: 0.5,
       oiUpThrPct: 50,
+  oiCandleThrPct: 0,
       marginUSDT: 100,
       leverage: 10,
       tpRoiPct: 1,
@@ -297,8 +299,10 @@ describe('server routes', () => {
         direction: 'long',
         tf: 1,
         holdSeconds: 1,
+  signalCounterThreshold: 2,
         priceUpThrPct: 1,
         oiUpThrPct: 1,
+  oiCandleThrPct: 0,
         marginUSDT: 100,
         leverage: 2,
         tpRoiPct: 1,
@@ -373,8 +377,10 @@ describe('server routes', () => {
           direction: 'long',
           tf: 1,
           holdSeconds: 1,
+  signalCounterThreshold: 2,
           priceUpThrPct: 1,
           oiUpThrPct: 1,
+  oiCandleThrPct: 0,
           marginUSDT: 100,
           leverage: 2,
           tpRoiPct: 1,
@@ -677,8 +683,10 @@ describe('server routes', () => {
         direction: 'long',
         tf: 1,
         holdSeconds: 1,
+  signalCounterThreshold: 2,
         priceUpThrPct: 1,
         oiUpThrPct: 1,
+  oiCandleThrPct: 0,
         marginUSDT: 100,
         leverage: 2,
         tpRoiPct: 1,
@@ -689,7 +697,7 @@ describe('server routes', () => {
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 1000, ts: now });
     now += 10;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
-    now += 1100;
+    now += 60_000;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
 
     const cancelResponse = await app.inject({ method: 'POST', url: '/api/orders/cancel', payload: { symbol: 'BTCUSDT' } });
@@ -728,8 +736,10 @@ describe('server routes', () => {
         direction: 'long',
         tf: 1,
         holdSeconds: 1,
+  signalCounterThreshold: 2,
         priceUpThrPct: 1,
         oiUpThrPct: 1,
+  oiCandleThrPct: 0,
         marginUSDT: 100,
         leverage: 2,
         tpRoiPct: 1,
@@ -742,7 +752,7 @@ describe('server routes', () => {
     now += 10;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
     tickerStream.emit({ symbol: 'ETHUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
-    now += 1100;
+    now += 60_000;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
     tickerStream.emit({ symbol: 'ETHUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
 
@@ -800,8 +810,10 @@ describe('server routes', () => {
         direction: 'long',
         tf: 1,
         holdSeconds: 1,
+  signalCounterThreshold: 2,
         priceUpThrPct: 1,
         oiUpThrPct: 1,
+  oiCandleThrPct: 0,
         marginUSDT: 100,
         leverage: 2,
         tpRoiPct: 1,
@@ -812,7 +824,7 @@ describe('server routes', () => {
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 1000, ts: now });
     now += 10;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
-    now += 1100;
+    now += 60_000;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
 
       const response = await app.inject({ method: 'GET', url: '/api/bot/state' });

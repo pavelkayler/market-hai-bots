@@ -15,9 +15,12 @@ export type BotConfig = {
   mode: BotMode;
   direction: BotDirection;
   tf: BotTf;
+  /** @deprecated confirmation now uses signalCounterThreshold */
   holdSeconds: number;
+  signalCounterThreshold: number;
   priceUpThrPct: number;
   oiUpThrPct: number;
+  oiCandleThrPct: number;
   marginUSDT: number;
   leverage: number;
   tpRoiPct: number;
@@ -58,6 +61,11 @@ export type SymbolRuntimeState = {
   fsmState: SymbolFsmState;
   baseline: SymbolBaseline | null;
   holdStartTs: number | null;
+  signalEvents: number[];
+  lastSignalBucketKey: number | null;
+  prevCandleOi: number | null;
+  lastCandleOi: number | null;
+  lastCandleBucketStart: number | null;
   lastEvaluationGateTs: number | null;
   blockedUntilTs: number;
   overrideGateOnce: boolean;
@@ -119,9 +127,12 @@ type BotEngineDeps = {
 };
 
 const DEFAULT_HOLD_SECONDS = 3;
+const DEFAULT_SIGNAL_COUNTER_THRESHOLD = 2;
 const DEFAULT_OI_UP_THR_PCT = 50;
+const DEFAULT_OI_CANDLE_THR_PCT = 0;
 const DEFAULT_MAX_ACTIVE_SYMBOLS = 5;
 const ONE_HOUR_MS = 60 * 60 * 1000;
+const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 
 export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | null => {
   const tf = raw.tf;
@@ -141,7 +152,13 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
   }
 
   const holdSeconds = typeof raw.holdSeconds === 'number' && Number.isFinite(raw.holdSeconds) ? raw.holdSeconds : DEFAULT_HOLD_SECONDS;
+  const signalCounterThreshold =
+    typeof raw.signalCounterThreshold === 'number' && Number.isFinite(raw.signalCounterThreshold)
+      ? Math.max(1, Math.floor(raw.signalCounterThreshold))
+      : DEFAULT_SIGNAL_COUNTER_THRESHOLD;
   const oiUpThrPct = typeof raw.oiUpThrPct === 'number' && Number.isFinite(raw.oiUpThrPct) ? raw.oiUpThrPct : DEFAULT_OI_UP_THR_PCT;
+  const oiCandleThrPct =
+    typeof raw.oiCandleThrPct === 'number' && Number.isFinite(raw.oiCandleThrPct) ? Math.max(0, raw.oiCandleThrPct) : DEFAULT_OI_CANDLE_THR_PCT;
   const maxActiveSymbols =
     typeof raw.maxActiveSymbols === 'number' && Number.isFinite(raw.maxActiveSymbols) ? Math.max(1, Math.floor(raw.maxActiveSymbols)) : DEFAULT_MAX_ACTIVE_SYMBOLS;
   const dailyLossLimitUSDT =
@@ -163,8 +180,10 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     direction,
     tf,
     holdSeconds,
+    signalCounterThreshold,
     priceUpThrPct: raw.priceUpThrPct as number,
     oiUpThrPct,
+    oiCandleThrPct,
     marginUSDT: raw.marginUSDT as number,
     leverage: raw.leverage as number,
     tpRoiPct: raw.tpRoiPct as number,
@@ -344,6 +363,11 @@ export class BotEngine {
         fsmState: state.fsmState,
         baseline: state.baseline,
         holdStartTs: null,
+        signalEvents: state.signalEvents ?? [],
+        lastSignalBucketKey: state.lastSignalBucketKey ?? null,
+        prevCandleOi: state.prevCandleOi ?? null,
+        lastCandleOi: state.lastCandleOi ?? null,
+        lastCandleBucketStart: state.lastCandleBucketStart ?? null,
         lastEvaluationGateTs: null,
         blockedUntilTs: state.blockedUntilTs,
         overrideGateOnce: state.overrideGateOnce,
@@ -405,7 +429,12 @@ export class BotEngine {
       baseline: symbolState.baseline ? { ...symbolState.baseline } : null,
       pendingOrder: symbolState.pendingOrder ? { ...symbolState.pendingOrder } : null,
       position: symbolState.position ? { ...symbolState.position } : null,
-      demo: symbolState.demo ? { ...symbolState.demo } : null
+      demo: symbolState.demo ? { ...symbolState.demo } : null,
+      signalEvents: [...symbolState.signalEvents],
+      lastSignalBucketKey: symbolState.lastSignalBucketKey,
+      prevCandleOi: symbolState.prevCandleOi,
+      lastCandleOi: symbolState.lastCandleOi,
+      lastCandleBucketStart: symbolState.lastCandleBucketStart
     };
   }
 
@@ -494,6 +523,8 @@ export class BotEngine {
       return;
     }
 
+    const now = this.now();
+
     if (symbolState.fsmState === 'ENTRY_PENDING') {
       if (this.state.config.mode === 'paper') {
         this.processPendingPaperOrder(symbolState, marketState);
@@ -512,7 +543,6 @@ export class BotEngine {
       return;
     }
 
-    const now = this.now();
     if (now < symbolState.blockedUntilTs) {
       return;
     }
@@ -521,28 +551,25 @@ export class BotEngine {
       return;
     }
 
+    this.updateCandleOiState(symbolState, marketState.openInterestValue, now);
     const { priceDeltaPct, oiDeltaPct } = this.computeDeltas(symbolState.baseline, marketState);
-    const side = this.getEligibleSide(priceDeltaPct, oiDeltaPct);
+    const side = this.getEligibleSide(symbolState, priceDeltaPct, oiDeltaPct);
     if (!side) {
       this.resetToIdle(symbolState);
       this.persistSnapshot();
       return;
     }
 
+    const signalCount24h = this.recordSignalEventAndGetCount(symbolState, now);
+    const confirmed = signalCount24h >= this.state.config.signalCounterThreshold;
     const holdingState = side === 'LONG' ? 'HOLDING_LONG' : 'HOLDING_SHORT';
     if (symbolState.fsmState !== holdingState) {
       symbolState.fsmState = holdingState;
       symbolState.holdStartTs = now;
+    }
+
+    if (!confirmed) {
       this.persistSnapshot();
-      return;
-    }
-
-    if (symbolState.holdStartTs === null) {
-      symbolState.holdStartTs = now;
-      return;
-    }
-
-    if (now - symbolState.holdStartTs < this.state.config.holdSeconds * 1000) {
       return;
     }
 
@@ -593,6 +620,11 @@ export class BotEngine {
       fsmState: 'IDLE',
       baseline: null,
       holdStartTs: null,
+      signalEvents: [],
+      lastSignalBucketKey: null,
+      prevCandleOi: null,
+      lastCandleOi: null,
+      lastCandleBucketStart: null,
       lastEvaluationGateTs: null,
       blockedUntilTs: 0,
       overrideGateOnce: false,
@@ -885,6 +917,10 @@ export class BotEngine {
       baseTs: marketState.ts
     };
     symbolState.overrideGateOnce = true;
+    const bucketStart = this.computeTfBucketStart(this.now());
+    symbolState.prevCandleOi = null;
+    symbolState.lastCandleOi = marketState.openInterestValue;
+    symbolState.lastCandleBucketStart = bucketStart;
     this.persistSnapshot();
   }
 
@@ -956,7 +992,12 @@ export class BotEngine {
         overrideGateOnce: symbolState.overrideGateOnce,
         pendingOrder: symbolState.pendingOrder,
         position: symbolState.position,
-        demo: symbolState.demo
+        demo: symbolState.demo,
+        signalEvents: symbolState.signalEvents,
+        lastSignalBucketKey: symbolState.lastSignalBucketKey,
+        prevCandleOi: symbolState.prevCandleOi,
+        lastCandleOi: symbolState.lastCandleOi,
+        lastCandleBucketStart: symbolState.lastCandleBucketStart
       };
     }
 
@@ -1081,13 +1122,14 @@ export class BotEngine {
     return true;
   }
 
-  private getEligibleSide(priceDeltaPct: number, oiDeltaPct: number): 'LONG' | 'SHORT' | null {
+  private getEligibleSide(symbolState: SymbolRuntimeState, priceDeltaPct: number, oiDeltaPct: number): 'LONG' | 'SHORT' | null {
     const direction = this.state.config!.direction;
-    const longTrue = this.isLongConditionTrue(priceDeltaPct, oiDeltaPct);
-    const shortTrue = this.isShortConditionTrue(priceDeltaPct, oiDeltaPct);
+    const longTrue = this.isLongConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
+    const shortDivergenceTrue = this.isShortDivergenceConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
+    const shortContinuationTrue = this.isShortContinuationConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
 
     if (direction === 'both') {
-      if (shortTrue) {
+      if (shortDivergenceTrue || shortContinuationTrue) {
         return 'SHORT';
       }
       if (longTrue) {
@@ -1100,15 +1142,95 @@ export class BotEngine {
       return longTrue ? 'LONG' : null;
     }
 
-    return shortTrue ? 'SHORT' : null;
+    return shortDivergenceTrue || shortContinuationTrue ? 'SHORT' : null;
   }
 
-  private isLongConditionTrue(priceDeltaPct: number, oiDeltaPct: number): boolean {
-    return priceDeltaPct >= this.state.config!.priceUpThrPct && oiDeltaPct >= this.state.config!.oiUpThrPct;
+  private isLongConditionTrue(symbolState: SymbolRuntimeState, priceDeltaPct: number, oiDeltaPct: number): boolean {
+    return priceDeltaPct >= this.state.config!.priceUpThrPct && oiDeltaPct >= this.state.config!.oiUpThrPct && this.isLongOiCandleGateTrue(symbolState);
   }
 
-  private isShortConditionTrue(priceDeltaPct: number, oiDeltaPct: number): boolean {
-    return priceDeltaPct < 0 && oiDeltaPct < 0;
+  private isShortContinuationConditionTrue(symbolState: SymbolRuntimeState, priceDeltaPct: number, oiDeltaPct: number): boolean {
+    return (
+      priceDeltaPct <= -this.state.config!.priceUpThrPct &&
+      oiDeltaPct <= -this.state.config!.oiUpThrPct &&
+      this.isShortOiCandleGateTrue(symbolState)
+    );
+  }
+
+  private isShortDivergenceConditionTrue(symbolState: SymbolRuntimeState, priceDeltaPct: number, oiDeltaPct: number): boolean {
+    return (
+      priceDeltaPct <= -this.state.config!.priceUpThrPct &&
+      oiDeltaPct >= this.state.config!.oiUpThrPct &&
+      this.isShortOiCandleGateTrue(symbolState)
+    );
+  }
+
+  private isLongOiCandleGateTrue(symbolState: SymbolRuntimeState): boolean {
+    const oiCandleThrPct = this.state.config!.oiCandleThrPct;
+    if (oiCandleThrPct === 0) {
+      return true;
+    }
+
+    const oiCandleDeltaPct = this.computeOiCandleDeltaPct(symbolState);
+    if (oiCandleDeltaPct === null) {
+      return true;
+    }
+
+    return oiCandleDeltaPct >= oiCandleThrPct;
+  }
+
+  private isShortOiCandleGateTrue(symbolState: SymbolRuntimeState): boolean {
+    const oiCandleThrPct = this.state.config!.oiCandleThrPct;
+    if (oiCandleThrPct === 0) {
+      return true;
+    }
+
+    const oiCandleDeltaPct = this.computeOiCandleDeltaPct(symbolState);
+    if (oiCandleDeltaPct === null) {
+      return true;
+    }
+
+    return oiCandleDeltaPct <= -oiCandleThrPct;
+  }
+
+  private updateCandleOiState(symbolState: SymbolRuntimeState, oiValue: number, now: number): void {
+    const bucketStart = this.computeTfBucketStart(now);
+    if (symbolState.lastCandleBucketStart === null) {
+      symbolState.lastCandleBucketStart = bucketStart;
+      symbolState.lastCandleOi = oiValue;
+      return;
+    }
+
+    if (symbolState.lastCandleBucketStart !== bucketStart) {
+      symbolState.prevCandleOi = symbolState.lastCandleOi;
+      symbolState.lastCandleOi = oiValue;
+      symbolState.lastCandleBucketStart = bucketStart;
+    }
+  }
+
+  private computeOiCandleDeltaPct(symbolState: SymbolRuntimeState): number | null {
+    if (!symbolState.prevCandleOi || !symbolState.lastCandleOi || symbolState.prevCandleOi <= 0 || symbolState.lastCandleOi <= 0) {
+      return null;
+    }
+
+    return ((symbolState.lastCandleOi - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100;
+  }
+
+  private recordSignalEventAndGetCount(symbolState: SymbolRuntimeState, now: number): number {
+    const cutoffTs = now - ONE_DAY_MS;
+    symbolState.signalEvents = symbolState.signalEvents.filter((ts) => ts >= cutoffTs);
+    const bucketStart = this.computeTfBucketStart(now);
+    if (symbolState.lastSignalBucketKey !== bucketStart) {
+      symbolState.signalEvents.push(now);
+      symbolState.lastSignalBucketKey = bucketStart;
+    }
+
+    return symbolState.signalEvents.length;
+  }
+
+  private computeTfBucketStart(now: number): number {
+    const tfMs = this.state.config!.tf * 60_000;
+    return Math.floor(now / tfMs) * tfMs;
   }
 
   private computeDeltas(baseline: SymbolBaseline, marketState: MarketState): { priceDeltaPct: number; oiDeltaPct: number } {
