@@ -874,6 +874,10 @@ export function BotPage({
                   : '-'}
               </div>
               <div>Symbols: {universeState.symbols?.length ?? 0}</div>
+              <div>Contract filter: USDT Linear PerPETUAL only</div>
+              {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? (
+                <div>Filtered out (non-perp/expiring): {universeState.filteredOut.expiringOrNonPerp}</div>
+              ) : null}
             </div>
 
             <div className="d-flex gap-2 flex-wrap mt-3">

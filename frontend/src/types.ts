@@ -94,6 +94,10 @@ export type UniverseState = {
   createdAt?: number;
   filters?: UniverseFilters;
   symbols?: UniverseEntry[];
+  contractFilter?: 'USDT_LINEAR_PERPETUAL_ONLY';
+  filteredOut?: {
+    expiringOrNonPerp: number;
+  };
 };
 
 export type SymbolBaseline = {

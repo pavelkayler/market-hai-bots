@@ -4,6 +4,12 @@ import { parseInstrumentsInfo } from '../bybit/parsers.js';
 
 export type InstrumentLinear = {
   symbol: string;
+  category?: string | null;
+  contractType?: string | null;
+  status?: string | null;
+  settleCoin?: string | null;
+  quoteCoin?: string | null;
+  baseCoin?: string | null;
   qtyStep: number | null;
   minOrderQty: number | null;
   maxOrderQty: number | null;
