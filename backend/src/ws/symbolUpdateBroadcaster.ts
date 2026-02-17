@@ -1,4 +1,4 @@
-import type { EntryReason, NoEntryReason, SymbolBaseline, SymbolFsmState } from '../bot/botEngine.js';
+import type { EntryReason, GateSnapshot, NoEntryReason, SymbolBaseline, SymbolFsmState } from '../bot/botEngine.js';
 import type { PaperPendingOrder, PaperPosition } from '../bot/paperTypes.js';
 import type { MarketState } from '../market/marketHub.js';
 
@@ -22,6 +22,7 @@ type SymbolBroadcastPayload = {
   oiDeltaPct?: number | null;
   signalCount24h?: number;
   signalCounterThreshold?: number;
+  gates?: GateSnapshot | null;
 };
 
 export type SymbolUpdateMode = 'single' | 'batch' | 'both';
@@ -108,6 +109,7 @@ export class SymbolUpdateBroadcaster {
       oiDeltaPct?: number | null;
       signalCount24h?: number;
       signalCounterThreshold?: number;
+      gates?: GateSnapshot | null;
     } = {}
   ): void {
     const now = Date.now();
@@ -135,7 +137,8 @@ export class SymbolUpdateBroadcaster {
       ...(signalDiagnostics.priceDeltaPct !== undefined ? { priceDeltaPct: signalDiagnostics.priceDeltaPct } : {}),
       ...(signalDiagnostics.oiDeltaPct !== undefined ? { oiDeltaPct: signalDiagnostics.oiDeltaPct } : {}),
       ...(signalDiagnostics.signalCount24h !== undefined ? { signalCount24h: signalDiagnostics.signalCount24h } : {}),
-      ...(signalDiagnostics.signalCounterThreshold !== undefined ? { signalCounterThreshold: signalDiagnostics.signalCounterThreshold } : {})
+      ...(signalDiagnostics.signalCounterThreshold !== undefined ? { signalCounterThreshold: signalDiagnostics.signalCounterThreshold } : {}),
+      ...(signalDiagnostics.gates !== undefined && signalDiagnostics.gates !== null ? { gates: signalDiagnostics.gates } : {})
     };
 
     if (this.mode === 'single' || this.mode === 'both') {

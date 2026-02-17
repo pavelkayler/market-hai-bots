@@ -42,6 +42,27 @@ export type BotConfig = {
   maxSpreadBps: number;
   maxTickStalenessMs: number;
   minNotionalUSDT: number;
+  paperEntrySlippageBps?: number;
+  paperExitSlippageBps?: number;
+  paperPartialFillPct?: number;
+};
+
+export type GateSnapshot = {
+  tf: number;
+  higherTfMinutes: number;
+  trendDir: 'up' | 'down' | 'flat' | null;
+  trendBlocked: boolean;
+  trendBlockReason?: string;
+  confirmWindowBars: number;
+  confirmCount: number;
+  confirmZ?: number | null;
+  oiCandleValue?: number | null;
+  oiPrevCandleValue?: number | null;
+  oiCandleDeltaPct?: number | null;
+  continuationOk?: boolean | null;
+  impulseAgeMs?: number | null;
+  spreadBps?: number | null;
+  tickAgeMs?: number | null;
 };
 
 export type BotState = {
@@ -136,6 +157,7 @@ export type SymbolRuntimeState = {
   lastPriceDeltaPct: number | null;
   lastOiDeltaPct: number | null;
   lastSignalCount24h: number;
+  gates: GateSnapshot | null;
 };
 
 export type SignalPayload = {
@@ -273,8 +295,12 @@ const DEFAULT_MIN_SPREAD_BPS = 0;
 const DEFAULT_MAX_SPREAD_BPS = 0;
 const DEFAULT_MAX_TICK_STALENESS_MS = 0;
 const DEFAULT_MIN_NOTIONAL_USDT = 5;
+const DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS = 0;
+const DEFAULT_PAPER_EXIT_SLIPPAGE_BPS = 0;
+const DEFAULT_PAPER_PARTIAL_FILL_PCT = 100;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
+const PNL_SANITY_WINDOW_TRADES = 20;
 const NO_ENTRY_REASON_CODES: NoEntryReason['code'][] = [
   'TREND_BLOCK_LONG',
   'TREND_BLOCK_SHORT',
@@ -374,6 +400,18 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
       : DEFAULT_MAX_TICK_STALENESS_MS;
   const minNotionalUSDT =
     typeof raw.minNotionalUSDT === 'number' && Number.isFinite(raw.minNotionalUSDT) ? Math.max(0, raw.minNotionalUSDT) : DEFAULT_MIN_NOTIONAL_USDT;
+  const paperEntrySlippageBps =
+    typeof raw.paperEntrySlippageBps === 'number' && Number.isFinite(raw.paperEntrySlippageBps)
+      ? Math.max(0, raw.paperEntrySlippageBps)
+      : DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS;
+  const paperExitSlippageBps =
+    typeof raw.paperExitSlippageBps === 'number' && Number.isFinite(raw.paperExitSlippageBps)
+      ? Math.max(0, raw.paperExitSlippageBps)
+      : DEFAULT_PAPER_EXIT_SLIPPAGE_BPS;
+  const paperPartialFillPct =
+    typeof raw.paperPartialFillPct === 'number' && Number.isFinite(raw.paperPartialFillPct)
+      ? Math.max(0, Math.min(100, raw.paperPartialFillPct))
+      : DEFAULT_PAPER_PARTIAL_FILL_PCT;
 
   const numericFields = ['priceUpThrPct', 'marginUSDT', 'leverage', 'tpRoiPct', 'slRoiPct'] as const;
   for (const key of numericFields) {
@@ -414,7 +452,10 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     minSpreadBps,
     maxSpreadBps,
     maxTickStalenessMs,
-    minNotionalUSDT
+    minNotionalUSDT,
+    paperEntrySlippageBps,
+    paperExitSlippageBps,
+    paperPartialFillPct
   };
 };
 
@@ -458,8 +499,10 @@ export class BotEngine {
   private lossPnlSum = 0;
   private todayPnlDayKey: string | null = null;
   private readonly perSymbolStats = new Map<string, BotPerSymbolAccumulator>();
+  private readonly closedTradesNetWindow: number[] = [];
   private lastEntryPlacedTs = 0;
   private lastNoEntryLogTs = 0;
+  private lastPnlSanityWarnTs = 0;
 
   constructor(private readonly deps: BotEngineDeps) {
     this.now = deps.now ?? Date.now;
@@ -555,6 +598,8 @@ export class BotEngine {
     this.lossPnlSum = 0;
     this.todayPnlDayKey = null;
     this.perSymbolStats.clear();
+    this.closedTradesNetWindow.length = 0;
+    this.lastPnlSanityWarnTs = 0;
     this.persistSnapshot();
   }
 
@@ -694,7 +739,8 @@ export class BotEngine {
         entryReason: state.entryReason ?? null,
         lastPriceDeltaPct: state.lastPriceDeltaPct ?? null,
         lastOiDeltaPct: state.lastOiDeltaPct ?? null,
-        lastSignalCount24h: state.lastSignalCount24h ?? 0
+        lastSignalCount24h: state.lastSignalCount24h ?? 0,
+        gates: state.gates ?? null
       });
     }
 
@@ -816,7 +862,8 @@ export class BotEngine {
       entryReason: symbolState.entryReason,
       lastPriceDeltaPct: symbolState.lastPriceDeltaPct,
       lastOiDeltaPct: symbolState.lastOiDeltaPct,
-      lastSignalCount24h: symbolState.lastSignalCount24h
+      lastSignalCount24h: symbolState.lastSignalCount24h,
+      gates: symbolState.gates ? { ...symbolState.gates } : null
     };
   }
 
@@ -906,6 +953,7 @@ export class BotEngine {
 
     const now = this.now();
     this.updateTrendState(symbolState, marketState.markPrice, now);
+    this.updateGateSnapshot(symbolState, marketState);
 
     if (!symbolState.baseline) {
       this.resetBaseline(symbolState, marketState);
@@ -980,6 +1028,10 @@ export class BotEngine {
         (candidate.side === 'LONG' && trendDeltaPct <= -this.state.config.trendMinMovePct) ||
         (candidate.side === 'SHORT' && trendDeltaPct >= this.state.config.trendMinMovePct);
       if (trendBlocked) {
+        if (symbolState.gates) {
+          symbolState.gates.trendBlocked = true;
+          symbolState.gates.trendBlockReason = candidate.side === 'LONG' ? 'TREND_BLOCK_LONG' : 'TREND_BLOCK_SHORT';
+        }
         this.recordNoEntryReason(symbolState, {
           code: candidate.side === 'LONG' ? 'TREND_BLOCK_LONG' : 'TREND_BLOCK_SHORT',
           message: `Trend ${this.state.config.trendTfMinutes}m blocks ${candidate.side}.`,
@@ -1071,6 +1123,9 @@ export class BotEngine {
     }
 
     const ageBars = Math.floor((currentBucket - armed.triggerBucketStart) / (this.state.config!.tf * 60_000));
+    if (symbolState.gates) {
+      symbolState.gates.impulseAgeMs = Math.max(0, this.now() - armed.triggerBucketStart);
+    }
     if (ageBars > this.state.config!.impulseMaxAgeBars) {
       this.recordNoEntryReason(symbolState, {
         code: 'IMPULSE_STALE',
@@ -1085,6 +1140,11 @@ export class BotEngine {
 
     const movePct = ((marketState.markPrice - armed.triggerMark) / armed.triggerMark) * 100;
     const moveOk = armed.side === 'LONG' ? movePct >= this.state.config!.confirmMinContinuationPct : movePct <= -this.state.config!.confirmMinContinuationPct;
+    if (symbolState.gates) {
+      symbolState.gates.continuationOk = moveOk;
+      symbolState.gates.confirmZ = movePct;
+      symbolState.gates.confirmCount = symbolState.lastSignalCount24h;
+    }
     if (!moveOk) {
       if (currentBucket > armed.continuationWindowEndBucketStart) {
         this.recordNoEntryReason(symbolState, {
@@ -1172,6 +1232,9 @@ export class BotEngine {
 
   private passesCurrentLiquidityGates(symbolState: SymbolRuntimeState, marketState: MarketState): boolean {
     const maxSpreadBps = this.state.config!.maxSpreadBps;
+    if (symbolState.gates) {
+      symbolState.gates.spreadBps = marketState.spreadBps ?? null;
+    }
     if (maxSpreadBps > 0) {
       if (marketState.bid === null || marketState.ask === null || marketState.spreadBps === null) {
         this.recordNoEntryReason(symbolState, {
@@ -1197,6 +1260,9 @@ export class BotEngine {
     if (maxTickStalenessMs > 0) {
       const lastTickTs = marketState.lastTickTs ?? marketState.ts;
       const stalenessMs = Math.max(0, this.now() - lastTickTs);
+      if (symbolState.gates) {
+        symbolState.gates.tickAgeMs = stalenessMs;
+      }
       if (stalenessMs > maxTickStalenessMs) {
         this.recordNoEntryReason(symbolState, {
           code: 'TICK_STALE',
@@ -1209,6 +1275,40 @@ export class BotEngine {
     }
 
     return true;
+  }
+
+  private updateGateSnapshot(symbolState: SymbolRuntimeState, marketState: MarketState): void {
+    if (!this.state.config) {
+      return;
+    }
+
+    const trendDeltaPct = this.getTrendDeltaPct(symbolState, this.state.config.trendTfMinutes, this.state.config.trendLookbackBars);
+    const trendDir =
+      trendDeltaPct === null
+        ? null
+        : trendDeltaPct > this.state.config.trendMinMovePct
+          ? 'up'
+          : trendDeltaPct < -this.state.config.trendMinMovePct
+            ? 'down'
+            : 'flat';
+
+    const tickAgeMs = marketState.lastTickTs ? Math.max(0, this.now() - marketState.lastTickTs) : null;
+    symbolState.gates = {
+      tf: this.state.config.tf,
+      higherTfMinutes: this.state.config.trendTfMinutes,
+      trendDir,
+      trendBlocked: false,
+      confirmWindowBars: this.state.config.confirmWindowBars,
+      confirmCount: symbolState.lastSignalCount24h,
+      confirmZ: symbolState.lastPriceDeltaPct,
+      oiCandleValue: symbolState.lastCandleOi,
+      oiPrevCandleValue: symbolState.prevCandleOi,
+      oiCandleDeltaPct: symbolState.oiCandleDeltaPctHistory.at(-1) ?? null,
+      continuationOk: null,
+      impulseAgeMs: symbolState.armedSignal ? Math.max(0, this.now() - symbolState.armedSignal.triggerBucketStart) : null,
+      spreadBps: marketState.spreadBps,
+      tickAgeMs
+    };
   }
 
   private updateTrendState(symbolState: SymbolRuntimeState, markPrice: number, now: number): void {
@@ -1258,11 +1358,36 @@ export class BotEngine {
     if (now - this.lastEntryPlacedTs >= 10_000 && now - this.lastNoEntryLogTs >= 10_000 && symbolState.lastNoEntryReasons.length > 0) {
       const rendered = symbolState.lastNoEntryReasons
         .slice(0, 3)
-        .map((entry) => `${entry.code}${typeof entry.value === 'number' ? `=${entry.value.toFixed(4)}` : ''}${typeof entry.threshold === 'number' ? ` (thr ${entry.threshold})` : ''}`)
-        .join(', ');
-      this.deps.emitLog?.(`No entry (${symbolState.symbol}): top-3 reasons -> ${rendered}`);
+        .map((entry, index) => `${index + 1}) ${this.formatNoEntryReason(symbolState, entry)}`)
+        .join(' | ');
+      this.deps.emitLog?.(`No entry (${symbolState.symbol}) (top reasons): ${rendered}`);
       this.lastNoEntryLogTs = now;
     }
+  }
+
+  private formatNoEntryReason(symbolState: SymbolRuntimeState, entry: NoEntryReason): string {
+    const gates = symbolState.gates;
+    if (entry.code === 'TREND_BLOCK_LONG' || entry.code === 'TREND_BLOCK_SHORT') {
+      const dir = gates?.trendDir ?? 'unknown';
+      const need = entry.code === 'TREND_BLOCK_LONG' ? 'trend!=down' : 'trend!=up';
+      return `${entry.code} (trend=${dir} on ${this.state.config?.trendTfMinutes ?? 5}m; need ${need})`;
+    }
+    if (entry.code === 'SPREAD_TOO_WIDE') {
+      return `${entry.code} (spread=${(gates?.spreadBps ?? entry.value ?? 0).toFixed(2)}bps > max=${(entry.threshold ?? 0).toFixed(2)}bps)`;
+    }
+    if (entry.code === 'OI_2CANDLES_FAIL' || entry.code === 'OI_CANDLE_GATE_FAIL') {
+      const delta = gates?.oiCandleDeltaPct ?? entry.value ?? 0;
+      return `${entry.code} (oiCandleDeltaPct=${delta.toFixed(2)}% <= thr=${(entry.threshold ?? this.state.config?.oiCandleThrPct ?? 0).toFixed(2)}%)`;
+    }
+    if (entry.code === 'TICK_STALE') {
+      return `${entry.code} (tickAgeMs=${Math.round(gates?.tickAgeMs ?? entry.value ?? 0)} > max=${Math.round(entry.threshold ?? 0)})`;
+    }
+    if (entry.code === 'NO_CONTINUATION') {
+      return `${entry.code} (confirmZ=${(gates?.confirmZ ?? 0).toFixed(3)}%; need >=${(this.state.config?.confirmMinContinuationPct ?? 0).toFixed(3)}%)`;
+    }
+    const valuePart = typeof entry.value === 'number' ? ` value=${entry.value.toFixed(4)}` : '';
+    const thresholdPart = typeof entry.threshold === 'number' ? ` thr=${entry.threshold}` : '';
+    return `${entry.code}${valuePart}${thresholdPart}`;
   }
 
   private buildEmptySymbolState(symbol: string): SymbolRuntimeState {
@@ -1291,7 +1416,8 @@ export class BotEngine {
       entryReason: null,
       lastPriceDeltaPct: null,
       lastOiDeltaPct: null,
-      lastSignalCount24h: 0
+      lastSignalCount24h: 0,
+      gates: null
     };
   }
 
@@ -1504,13 +1630,21 @@ export class BotEngine {
     const tpMovePct = percentToFraction(this.state.config.tpRoiPct / this.state.config.leverage);
     const slMovePct = percentToFraction(this.state.config.slRoiPct / this.state.config.leverage);
 
+    const fillRatio = (this.state.config.paperPartialFillPct ?? DEFAULT_PAPER_PARTIAL_FILL_PCT) / 100;
+    const filledQty = filledOrder.qty * fillRatio;
+    if (filledQty <= 0) {
+      return;
+    }
+    const entrySlippageFraction = (this.state.config.paperEntrySlippageBps ?? DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS) / 10_000;
+    const entryPrice = side === 'LONG' ? filledOrder.limitPrice * (1 + entrySlippageFraction) : filledOrder.limitPrice * (1 - entrySlippageFraction);
+
     const position: PaperPosition = {
       symbol: symbolState.symbol,
       side,
-      entryPrice: filledOrder.limitPrice,
-      qty: filledOrder.qty,
-      tpPrice: side === 'LONG' ? filledOrder.limitPrice * (1 + tpMovePct) : filledOrder.limitPrice * (1 - tpMovePct),
-      slPrice: side === 'LONG' ? filledOrder.limitPrice * (1 - slMovePct) : filledOrder.limitPrice * (1 + slMovePct),
+      entryPrice,
+      qty: filledQty,
+      tpPrice: side === 'LONG' ? entryPrice * (1 + tpMovePct) : entryPrice * (1 - tpMovePct),
+      slPrice: side === 'LONG' ? entryPrice * (1 - slMovePct) : entryPrice * (1 + slMovePct),
       openedTs: now
     };
 
@@ -1542,7 +1676,9 @@ export class BotEngine {
     }
 
     const closeReason = slHit ? 'SL' : 'TP';
-    const exitPrice = slHit ? position.slPrice : position.tpPrice;
+    const rawExitPrice = slHit ? position.slPrice : position.tpPrice;
+    const exitSlippageFraction = (this.state.config?.paperExitSlippageBps ?? DEFAULT_PAPER_EXIT_SLIPPAGE_BPS) / 10_000;
+    const exitPrice = position.side === 'LONG' ? rawExitPrice * (1 - exitSlippageFraction) : rawExitPrice * (1 + exitSlippageFraction);
     const grossPnl = position.side === 'LONG' ? (exitPrice - position.entryPrice) * position.qty : (position.entryPrice - exitPrice) * position.qty;
     // PAPER fee model: entry limit fills are treated as maker; TP/SL closes are taker for conservative expectancy.
     const entryFeeRate = PAPER_FEES.makerFeeRate;
@@ -1678,7 +1814,8 @@ export class BotEngine {
         entryReason: symbolState.entryReason,
         lastPriceDeltaPct: symbolState.lastPriceDeltaPct,
         lastOiDeltaPct: symbolState.lastOiDeltaPct,
-        lastSignalCount24h: symbolState.lastSignalCount24h
+        lastSignalCount24h: symbolState.lastSignalCount24h,
+        gates: symbolState.gates
       };
     }
 
@@ -1776,6 +1913,11 @@ export class BotEngine {
     }
 
     this.perSymbolStats.set(symbol, perSymbol);
+    this.closedTradesNetWindow.push(netPnlUSDT);
+    if (this.closedTradesNetWindow.length > PNL_SANITY_WINDOW_TRADES) {
+      this.closedTradesNetWindow.splice(0, this.closedTradesNetWindow.length - PNL_SANITY_WINDOW_TRADES);
+    }
+    this.maybeEmitPnlSanityWarning(now);
 
     const config = this.state.config;
     if (!config) {
@@ -1800,6 +1942,20 @@ export class BotEngine {
 
     this.todayPnlDayKey = dayKey;
     this.stats.todayPnlUSDT = 0;
+  }
+
+  private maybeEmitPnlSanityWarning(now: number): void {
+    if (this.closedTradesNetWindow.length < PNL_SANITY_WINDOW_TRADES) {
+      return;
+    }
+
+    const wins = this.closedTradesNetWindow.filter((value) => value > 0).length;
+    const winratePct = (wins / this.closedTradesNetWindow.length) * 100;
+    const pnlUSDT = this.closedTradesNetWindow.reduce((sum, value) => sum + value, 0);
+    if (winratePct > 55 && pnlUSDT < 0 && now - this.lastPnlSanityWarnTs >= 10_000) {
+      this.deps.emitLog?.('PNL_SANITY: winrate high but net negative; check TP/SL ratio, fees, slippage, spread.');
+      this.lastPnlSanityWarnTs = now;
+    }
   }
 
   private pauseWithGuardrail(reason: string): void {

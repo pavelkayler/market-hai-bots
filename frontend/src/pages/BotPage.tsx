@@ -147,7 +147,10 @@ const defaultSettings: BotSettings = {
   minSpreadBps: 0,
   maxSpreadBps: 35,
   maxTickStalenessMs: 2500,
-  minNotionalUSDT: 5
+  minNotionalUSDT: 5,
+  paperEntrySlippageBps: 0,
+  paperExitSlippageBps: 0,
+  paperPartialFillPct: 100
 };
 
 function loadSettings(): BotSettings {
@@ -1688,8 +1691,11 @@ export function BotPage({
                   const isSignal = item.state === 'HOLDING_LONG' || item.state === 'HOLDING_SHORT' || item.state === 'ARMED_LONG' || item.state === 'ARMED_SHORT';
                   const isOrder = item.state === 'ENTRY_PENDING';
                   const isPosition = item.state === 'POSITION_OPEN';
+                  const gateDetails = item.gates
+                    ? `trend ${item.gates.trendDir ?? '—'}${item.gates.trendBlocked ? ` (${item.gates.trendBlockReason ?? 'blocked'})` : ''} | confirm ${item.gates.confirmCount}/${item.gates.confirmWindowBars}${item.gates.confirmZ === null || item.gates.confirmZ === undefined ? '' : ` z ${item.gates.confirmZ.toFixed(3)}%`} | OI2 ${item.gates.oiCandleDeltaPct === null || item.gates.oiCandleDeltaPct === undefined ? '—' : `${item.gates.oiCandleDeltaPct.toFixed(2)}%`} | spread ${item.gates.spreadBps === null || item.gates.spreadBps === undefined ? '—' : `${item.gates.spreadBps.toFixed(2)}bps`} | tick ${item.gates.tickAgeMs === null || item.gates.tickAgeMs === undefined ? '—' : `${Math.round(item.gates.tickAgeMs)}ms`} | impulse ${item.gates.impulseAgeMs === null || item.gates.impulseAgeMs === undefined ? '—' : `${Math.round(item.gates.impulseAgeMs)}ms`}`
+                    : 'gate —';
                   const signalDetails = item.baseline
-                    ? `base ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0}/${item.signalCounterThreshold ?? 0}`
+                    ? `base ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0}/${item.signalCounterThreshold ?? 0} | ${gateDetails}`
                     : '—';
                   return (
                     <tr key={`phase-${item.symbol}`}>
@@ -1713,7 +1719,7 @@ export function BotPage({
             {noEntryRows.length === 0 ? <div className="text-muted">No no-entry reasons yet.</div> : null}
             {noEntryRows.map((row) => (
               <div key={`reasons-${row.symbol}`} className="mb-2">
-                <strong>{row.symbol}</strong>: {(row.topReasons ?? []).slice(0, 3).map((reason) => `${reason.code}${typeof reason.value === 'number' ? `=${reason.value.toFixed(3)}` : ''}${typeof reason.threshold === 'number' ? ` (thr ${reason.threshold})` : ''}`).join(', ')}
+                <strong>{row.symbol}</strong>: <span title={(row.topReasons ?? []).slice(0, 3).map((reason) => `${reason.code}${typeof reason.value === 'number' ? ` value=${reason.value.toFixed(3)}` : ''}${typeof reason.threshold === 'number' ? ` threshold=${reason.threshold}` : ''}`).join(' | ')}>{(row.topReasons ?? []).slice(0, 3).map((reason) => `${reason.code}${typeof reason.value === 'number' ? `=${reason.value.toFixed(3)}` : ''}${typeof reason.threshold === 'number' ? ` (thr ${reason.threshold})` : ''}`).join(', ')}</span>
               </div>
             ))}
           </Card.Body>
