@@ -100,7 +100,7 @@ describe('server routes', () => {
     expect(response.json()).toEqual({
       ok: true,
       activeProfile: 'default',
-      names: ['default']
+      names: ['default', 'fast_test_1m', 'overnight_1m_safe']
     });
   });
 
@@ -241,7 +241,7 @@ describe('server routes', () => {
     expect(response.json()).toEqual({
       ok: true,
       guardrails: {
-        maxActiveSymbols: 5,
+        maxActiveSymbols: 3,
         dailyLossLimitUSDT: 0,
         maxConsecutiveLosses: 0
       }
@@ -453,7 +453,7 @@ describe('server routes', () => {
 
     const profilesResponse = await app.inject({ method: 'GET', url: '/api/profiles' });
     expect(profilesResponse.statusCode).toBe(200);
-    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['default'] });
+    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['default', 'fast_test_1m', 'overnight_1m_safe'] });
 
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -1274,7 +1274,7 @@ describe('universe exclusions routes', () => {
     await app.inject({ method: 'POST', url: '/api/bot/start', payload: {
       mode: 'paper', direction: 'long', tf: 1, holdSeconds: 1, signalCounterThreshold: 1,
       priceUpThrPct: 0.5, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
-      entryOffsetPct: 0, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0
+      entryOffsetPct: 0, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0, trendTf: 5, trendThrPct: 0, confirmMovePct: 0, confirmMaxCandles: 1, maxSecondsIntoCandle: 45
     } });
 
     const response = await app.inject({ method: 'POST', url: '/api/universe/exclusions/add', payload: { symbol: 'BTCUSDT' } });

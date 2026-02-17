@@ -288,7 +288,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       symbolState.baseline,
       symbolState.pendingOrder,
       symbolState.position,
-      botEngine.getOiCandleSnapshot(symbol)
+      botEngine.getOiCandleSnapshot(symbol),
+      symbolState.lastNoEntryReasons
     );
   };
 

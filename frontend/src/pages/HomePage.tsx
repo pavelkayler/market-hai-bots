@@ -161,7 +161,7 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
           <div>
             Last closed:{' '}
             {botStats.lastClosed
-              ? `${new Date(botStats.lastClosed.ts).toLocaleString()} ${botStats.lastClosed.symbol} ${botStats.lastClosed.pnlUSDT.toFixed(2)}`
+              ? `${new Date(botStats.lastClosed.ts).toLocaleString()} ${botStats.lastClosed.symbol} ${botStats.lastClosed.netPnlUSDT.toFixed(2)}`
               : '-'}
           </div>
           <hr />

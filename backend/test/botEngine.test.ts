@@ -24,7 +24,12 @@ const defaultConfig: BotConfig = {
   entryOffsetPct: 0,
   maxActiveSymbols: 5,
   dailyLossLimitUSDT: 0,
-  maxConsecutiveLosses: 0
+  maxConsecutiveLosses: 0,
+  trendTf: 5,
+  trendThrPct: 0,
+  confirmMovePct: 0,
+  confirmMaxCandles: 1,
+  maxSecondsIntoCandle: 45
 };
 
 class FakeDemoTradeClient implements IDemoTradeClient {
@@ -1360,5 +1365,69 @@ describe('BotEngine per-symbol stats and candle OI', () => {
     expect(restored.getStats().perSymbol).toBeUndefined();
 
     await rm(tempDir, { recursive: true, force: true });
+  });
+});
+
+describe('BotEngine hardening regressions', () => {
+  it('uses SL priority when TP and SL are both crossed in same update', () => {
+    const positionUpdates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: (payload) => positionUpdates.push(payload),
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, confirmMovePct: 0 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+
+    const position = engine.getSymbolState('BTCUSDT')?.position;
+    expect(position).toBeTruthy();
+    if (!position) return;
+
+    const mid = (position.tpPrice + position.slPrice) / 2;
+    position.tpPrice = mid;
+    position.slPrice = mid;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: mid, openInterestValue: 1022, ts: now + 1 });
+
+    const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
+    expect(close?.closeReason).toBe('SL');
+  });
+
+  it('fee accounting keeps net pnl = gross pnl - fees', () => {
+    const positionUpdates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: (payload) => positionUpdates.push(payload),
+      emitQueueUpdate: () => undefined
+    });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, confirmMovePct: 0 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 1;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+
+    const position = engine.getSymbolState('BTCUSDT')?.position;
+    expect(position).toBeTruthy();
+    if (!position) return;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: position.tpPrice, openInterestValue: 1025, ts: now + 1 });
+
+    const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
+    const closedPosition = close?.position;
+    expect(closedPosition?.grossPnlUSDT).toBeDefined();
+    expect(closedPosition?.feeTotalUSDT).toBeDefined();
+    expect(closedPosition?.netPnlUSDT).toBeCloseTo((closedPosition?.grossPnlUSDT ?? 0) - (closedPosition?.feeTotalUSDT ?? 0));
   });
 });

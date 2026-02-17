@@ -23,7 +23,12 @@ const aggressiveConfig: BotConfig = {
   entryOffsetPct: 0,
   maxActiveSymbols: 5,
   dailyLossLimitUSDT: 0,
-  maxConsecutiveLosses: 0
+  maxConsecutiveLosses: 0,
+  trendTf: 5,
+  trendThrPct: 0,
+  confirmMovePct: 0,
+  confirmMaxCandles: 1,
+  maxSecondsIntoCandle: 45
 };
 
 describe('ProfileService', () => {
@@ -77,7 +82,7 @@ describe('ProfileService', () => {
 
       const list = await service.list();
       expect(list.activeProfile).toBe('balanced');
-      expect(list.names).toEqual(['aggressive', 'balanced', 'default']);
+      expect(list.names).toEqual(['aggressive', 'balanced', 'default', 'fast_test_1m', 'overnight_1m_safe']);
       expect(await service.get('aggressive')).toEqual({ ...aggressiveConfig, leverage: 5 });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
@@ -107,7 +112,7 @@ describe('ProfileService', () => {
             slRoiPct: 0.7,
             maxActiveSymbols: 5,
             dailyLossLimitUSDT: 0,
-            maxConsecutiveLosses: 0
+            maxConsecutiveLosses: 0, trendTf: 5, trendThrPct: 0, confirmMovePct: 0, confirmMaxCandles: 1, maxSecondsIntoCandle: 45
           }
         }
       });

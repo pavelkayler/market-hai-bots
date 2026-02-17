@@ -20,6 +20,11 @@ export type BotSettings = {
   maxActiveSymbols: number;
   dailyLossLimitUSDT: number;
   maxConsecutiveLosses: number;
+  trendTf: 5 | 15;
+  trendThrPct: number;
+  confirmMovePct: number;
+  confirmMaxCandles: number;
+  maxSecondsIntoCandle: number;
 };
 
 export type BotConfig = BotSettings;
@@ -88,7 +93,11 @@ export type BotStats = {
   lastClosed?: {
     ts: number;
     symbol: string;
-    pnlUSDT: number;
+    side: 'LONG' | 'SHORT';
+    grossPnlUSDT: number;
+    feesUSDT: number;
+    netPnlUSDT: number;
+    reason: string;
   };
   perSymbol?: BotPerSymbolStats[];
 };
@@ -146,6 +155,13 @@ export type Position = {
   lastPnlUSDT?: number;
 };
 
+export type NoEntryReason = {
+  code: string;
+  message: string;
+  value?: number;
+  threshold?: number;
+};
+
 export type SymbolUpdatePayload = {
   symbol: string;
   state: 'IDLE' | 'HOLDING_LONG' | 'HOLDING_SHORT' | 'ENTRY_PENDING' | 'POSITION_OPEN';
@@ -158,6 +174,7 @@ export type SymbolUpdatePayload = {
   baseline: SymbolBaseline | null;
   pendingOrder: PendingOrder | null;
   position: Position | null;
+  topReasons?: NoEntryReason[];
 };
 
 export type QueueUpdatePayload = {
