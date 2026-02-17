@@ -987,6 +987,8 @@ export function BotPage({
   const universeContractFiltered = universeState.filteredOut?.expiringOrNonPerp ?? 0;
   const universeMetricFiltered = universeState.filteredOut?.byMetricThreshold ?? 0;
   const universeDataUnavailable = universeState.filteredOut?.dataUnavailable ?? 0;
+  const universeDiagnosticsTotals = universeState.diagnostics?.totals;
+  const universeDiagnosticsExcluded = universeState.diagnostics?.excluded;
   const universeIsEmpty = universeExists && universeSymbolCount === 0;
   const universeHasUpstreamError = universeState.upstreamStatus === 'error' && !!universeState.upstreamError;
   const universeLastKnownAvailable = universeState.lastKnownUniverseAvailable ?? universeExists;
@@ -1130,7 +1132,9 @@ export function BotPage({
             ) : universeIsEmpty ? (
               <Alert variant="warning" className="py-2 mb-2 small">
                 <div><strong>Built empty (0 symbols passed filters).</strong></div>
-                <div>Threshold filtered: {universeMetricFiltered}, data unavailable: {universeDataUnavailable}.</div>
+                <div>
+                  Top reasons: ticker missing {universeDiagnosticsExcluded?.tickerMissing ?? 0}, threshold filtered {universeDiagnosticsExcluded?.thresholdFiltered ?? universeMetricFiltered}, contract-filter excluded {universeContractFiltered}.
+                </div>
               </Alert>
             ) : (
               <Alert variant="success" className="py-2 mb-2 small">
@@ -1146,22 +1150,29 @@ export function BotPage({
                 Filters: {universeState.filters ? `minTurnover ${universeState.filters.minTurnover.toLocaleString()}, minVolPct ${universeState.filters.minVolPct}` : '-'}
               </div>
               <div>Contract filter: USDT Linear Perpetual only</div>
+              <div>
+                Instruments: {universeDiagnosticsTotals?.instrumentsTotal ?? '-'}, Tickers: {universeDiagnosticsTotals?.tickersTotal ?? '-'}, Matched: {universeDiagnosticsTotals?.matchedTotal ?? '-'}, Valid: {universeDiagnosticsTotals?.validTotal ?? universeSymbolCount}
+              </div>
               <details className="mt-1 ui-dense-disclosure">
                 <summary>How volatility is computed</summary>
                 <div className="mt-1">
                   {universeState.metricDefinition ?? 'turnover24hUSDT from Bybit 24h ticker; vol24hRangePct=(high24h-low24h)/low24h*100 (not candle volatility)'}
                 </div>
               </details>
-              {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? <div>Filtered out (non-perp/expiring): {universeState.filteredOut.expiringOrNonPerp}</div> : null}
-              {typeof universeState.filteredOut?.byMetricThreshold === 'number' ? <div>Filtered out (turnover/vol thresholds): {universeState.filteredOut.byMetricThreshold}</div> : null}
-              {typeof universeState.filteredOut?.dataUnavailable === 'number' ? <div>Filtered out (ticker data unavailable): {universeState.filteredOut.dataUnavailable}</div> : null}
+              {typeof universeState.filteredOut?.expiringOrNonPerp === 'number' ? <div>Contract-filter excluded (total): {universeState.filteredOut.expiringOrNonPerp}</div> : null}
+              <div className="d-flex flex-wrap gap-1 mt-1">
+                <span className="badge text-bg-secondary">nonPerp {universeDiagnosticsExcluded?.nonPerp ?? 0}</span>
+                <span className="badge text-bg-secondary">expiring {universeDiagnosticsExcluded?.expiring ?? 0}</span>
+                <span className="badge text-bg-secondary">nonLinear {universeDiagnosticsExcluded?.nonLinear ?? 0}</span>
+                <span className="badge text-bg-secondary">nonTrading {universeDiagnosticsExcluded?.nonTrading ?? 0}</span>
+                <span className="badge text-bg-secondary">nonUSDT {universeDiagnosticsExcluded?.nonUSDT ?? 0}</span>
+                <span className="badge text-bg-secondary">unknown {universeDiagnosticsExcluded?.unknown ?? 0}</span>
+                <span className="badge text-bg-warning">tickerMissing {universeDiagnosticsExcluded?.tickerMissing ?? 0}</span>
+                <span className="badge text-bg-warning">thresholdFiltered {universeDiagnosticsExcluded?.thresholdFiltered ?? universeMetricFiltered}</span>
+                <span className="badge text-bg-warning">parseError {universeDiagnosticsExcluded?.parseError ?? 0}</span>
+                <span className="badge text-bg-warning">dataUnavailable {universeDataUnavailable}</span>
+              </div>
             </div>
-
-            {universeIsEmpty ? (
-              <Alert variant="warning" className="mb-2 py-2 small">
-                Contract filter excluded {universeContractFiltered}; turnover/vol filters excluded {universeMetricFiltered}; data unavailable {universeDataUnavailable}.
-              </Alert>
-            ) : null}
 
             <div className="d-flex gap-2 flex-wrap mt-2">
               <Button variant="outline-primary" onClick={() => setShowUniverseSymbols((value) => !value)}>

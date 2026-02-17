@@ -12,6 +12,7 @@
 - Operator diagnostics: phase monitor, no-entry reason codes, reason counters, exclusions persistence.
 - Universe empty-build semantics clarified: build can be `ready=true` with `symbols=[]`, with persisted filter/counter diagnostics and downloadable `universe.json`.
 - Universe create/refresh reliability hardening: bounded retries + timeout classification (`BYBIT_UNREACHABLE`, `TIMEOUT`, `BYBIT_AUTH_ERROR`, `UPSTREAM_RATE_LIMIT`, parse/bad-response), plus "last good universe preserved" behavior on upstream failure.
+- Universe diagnostics upgraded with contract/ticker/threshold buckets and instrument↔ticker match totals (`instrumentsTotal`, `tickersTotal`, `matchedTotal`, `validTotal`) persisted in `universe.json` for restart-safe debugging.
 - Compact operator layout pass: denser card/table spacing with unchanged controls/help text.
 
 ## Invariants

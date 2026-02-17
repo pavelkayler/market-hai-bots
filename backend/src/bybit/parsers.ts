@@ -143,6 +143,10 @@ export const parseInstrumentsInfo = (json: unknown): InstrumentLinear[] => {
           : null,
       quoteCoin: typeof (row as { quoteCoin?: unknown }).quoteCoin === 'string' ? (row as { quoteCoin: string }).quoteCoin : null,
       baseCoin: typeof (row as { baseCoin?: unknown }).baseCoin === 'string' ? (row as { baseCoin: string }).baseCoin : null,
+      deliveryTime:
+        typeof (row as { deliveryTime?: unknown }).deliveryTime === 'string'
+          ? (row as { deliveryTime: string }).deliveryTime
+          : null,
       qtyStep: parseFiniteNumber(lotSizeFilter?.qtyStep),
       minOrderQty: parseFiniteNumber(lotSizeFilter?.minOrderQty),
       maxOrderQty: parseFiniteNumber(lotSizeFilter?.maxOrderQty)

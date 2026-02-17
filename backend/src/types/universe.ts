@@ -12,6 +12,26 @@ export type UniverseEntry = {
   maxOrderQty: number | null;
 };
 
+export type UniverseDiagnostics = {
+  totals: {
+    instrumentsTotal: number;
+    tickersTotal: number;
+    matchedTotal: number;
+    validTotal: number;
+  };
+  excluded: {
+    nonPerp: number;
+    expiring: number;
+    nonLinear: number;
+    nonTrading: number;
+    nonUSDT: number;
+    tickerMissing: number;
+    thresholdFiltered: number;
+    parseError: number;
+    unknown: number;
+  };
+};
+
 export type UniverseState = {
   createdAt: number;
   filters: {
@@ -28,6 +48,7 @@ export type UniverseState = {
     byMetricThreshold?: number;
     dataUnavailable?: number;
   };
+  diagnostics?: UniverseDiagnostics;
   contractFilter?: 'USDT_LINEAR_PERPETUAL_ONLY';
   notReadyReason?: string;
 };

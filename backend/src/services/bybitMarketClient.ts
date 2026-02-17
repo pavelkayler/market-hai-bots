@@ -10,6 +10,7 @@ export type InstrumentLinear = {
   settleCoin?: string | null;
   quoteCoin?: string | null;
   baseCoin?: string | null;
+  deliveryTime?: string | null;
   qtyStep: number | null;
   minOrderQty: number | null;
   maxOrderQty: number | null;

@@ -27,6 +27,13 @@ For each step, record one line in `docs/QA_REPORT.md`:
 7. Remove `UNIVERSE_FORCE_UPSTREAM_ERROR` and click **Refresh** again.
    - Expect return to ready or built-empty success state.
 
+8. Fixture/mocked run: moderate thresholds with valid perps.
+   - Expect **Ready (N symbols)** with `N > 0` and diagnostics totals showing `validTotal > 0`.
+9. Fixture/mocked run: ticker-missing dataset.
+   - Expect **Built empty** with `diagnostics.excluded.tickerMissing > 0` and `filteredOut.dataUnavailable > 0`.
+10. Fixture/mocked run: all-non-perp dataset.
+   - Expect **Built empty** with contract-filter buckets (`expiring/nonLinear/nonPerp`) > 0 and clear empty-state reason.
+
 ## B) Start → signal gating → order → position → close
 1. Ensure universe exists, configure paper settings, click **Start**.
    - Expect bot state shows `running=true`.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { InstrumentLinear } from '../src/services/bybitMarketClient.js';
-import { isUsdtLinearPerpetualInstrument } from '../src/services/universeContractFilter.js';
+import { classifyUsdtLinearPerpetualInstrument, isUsdtLinearPerpetualInstrument } from '../src/services/universeContractFilter.js';
 
 const instrument = (partial: Partial<InstrumentLinear>): InstrumentLinear => ({
   symbol: 'BTCUSDT',
@@ -24,13 +24,14 @@ describe('isUsdtLinearPerpetualInstrument', () => {
 
   it('excludes expiring symbols and non-perpetual contracts', () => {
     expect(
-      isUsdtLinearPerpetualInstrument(
+      classifyUsdtLinearPerpetualInstrument(
         instrument({
           symbol: 'BTCUSDT-26JUN26',
-          contractType: 'Futures'
+          contractType: 'Futures',
+          deliveryTime: '1782345600000'
         })
       )
-    ).toBe(false);
+    ).toEqual({ included: false, reason: 'expiring' });
   });
 
   it('excludes non-linear or non-USDT products', () => {
@@ -43,5 +44,9 @@ describe('isUsdtLinearPerpetualInstrument', () => {
         })
       )
     ).toBe(false);
+  });
+
+  it('marks missing official fields as unknown', () => {
+    expect(classifyUsdtLinearPerpetualInstrument(instrument({ symbol: 'BTCPERP', settleCoin: null, quoteCoin: null }))).toEqual({ included: false, reason: 'unknown' });
   });
 });

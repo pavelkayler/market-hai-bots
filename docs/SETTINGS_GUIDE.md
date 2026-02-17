@@ -186,12 +186,19 @@ Check WS `symbol:update.topReasons` and bot logs:
 
 ### “Universe built but 0 symbols passed filters”
 
+Why `Symbols: 0` can happen:
+- **Contract filter buckets** (`nonPerp`, `expiring`, `nonLinear`, `nonTrading`, `nonUSDT`, `unknown`): instrument was excluded before ticker join.
+- **`tickerMissing`**: instrument passed contract filter but ticker symbol could not be matched.
+- **`thresholdFiltered`**: ticker matched, but turnover/volatility thresholds failed.
+- **`parseError`**: ticker existed but numeric fields were invalid.
+
 Troubleshoot in this order:
 1. Lower `minTurnover` first (most restrictive in quiet sessions).
 2. Lower `minVolPct` (remember: `3` means 3%, not 0.03).
-3. Check contract filter impact (`expiringOrNonPerp`): v1 allows only USDT linear perpetual symbols.
-4. Check `dataUnavailable` count: missing/invalid ticker fields can exclude symbols.
-5. Download `universe.json` and inspect `filteredOut` counters before widening bot-risk settings.
+3. Check contract-filter buckets to verify whether universe candidates are being excluded upstream.
+4. Check `tickerMissing` / `parseError` for join or payload issues (`dataUnavailable` is the rolled-up count).
+5. If upstream fails, UI shows **Upstream error (last good kept)** and `Download universe.json` still serves the last good universe.
+6. Download `universe.json` and inspect `diagnostics` + `filteredOut` before widening bot-risk settings.
 
 ## Operator QA checklist (Task 26)
 

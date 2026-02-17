@@ -1071,6 +1071,29 @@ describe('server routes', () => {
 
 
 
+
+  it('universe route reports tickerMissing diagnostics for mismatch fixture', async () => {
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'ETHUSDT', qtyStep: 0.01, minOrderQty: 0.01, maxOrderQty: 1000 }],
+        new Map([
+          ['ETH-USDT', { symbol: 'ETH-USDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+        ])
+      )
+    });
+
+    const createResponse = await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1, minTurnover: 5000000 } });
+    expect(createResponse.statusCode).toBe(200);
+    expect(createResponse.json()).toMatchObject({
+      passed: 0,
+      diagnostics: {
+        totals: { instrumentsTotal: 1, matchedTotal: 0, validTotal: 0 },
+        excluded: { tickerMissing: 1 }
+      },
+      filteredOut: { dataUnavailable: 1 }
+    });
+  });
+
   it('universe create includes only USDT linear perpetual symbols', async () => {
     const tickerStream = new FakeTickerStream();
     app = buildIsolatedServer({
