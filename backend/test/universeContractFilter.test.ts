@@ -22,6 +22,16 @@ describe('isUsdtLinearPerpetualInstrument', () => {
     expect(isUsdtLinearPerpetualInstrument(instrument({ symbol: 'BTCUSDT' }))).toBe(true);
   });
 
+  it('accepts real-world perpetual contractType variants', () => {
+    expect(classifyUsdtLinearPerpetualInstrument(instrument({ contractType: 'LinearPerpetual' }))).toEqual({ included: true });
+    expect(classifyUsdtLinearPerpetualInstrument(instrument({ contractType: 'inverseperpetual' }))).toEqual({ included: true });
+  });
+
+  it('accepts missing contractType when delivery is empty or zero', () => {
+    expect(classifyUsdtLinearPerpetualInstrument(instrument({ contractType: null, deliveryTime: null }))).toEqual({ included: true });
+    expect(classifyUsdtLinearPerpetualInstrument(instrument({ contractType: '', deliveryTime: '0' }))).toEqual({ included: true });
+  });
+
   it('excludes expiring symbols and non-perpetual contracts', () => {
     expect(
       classifyUsdtLinearPerpetualInstrument(
@@ -32,6 +42,16 @@ describe('isUsdtLinearPerpetualInstrument', () => {
         })
       )
     ).toEqual({ included: false, reason: 'expiring' });
+
+    expect(classifyUsdtLinearPerpetualInstrument(instrument({ contractType: 'LinearFutures', deliveryTime: '1782345600000' }))).toEqual({
+      included: false,
+      reason: 'expiring'
+    });
+
+    expect(classifyUsdtLinearPerpetualInstrument(instrument({ symbol: 'BTCUSDT-26JUN26', contractType: null, deliveryTime: null }))).toEqual({
+      included: false,
+      reason: 'expiring'
+    });
   });
 
   it('excludes non-linear or non-USDT products', () => {

@@ -20,7 +20,13 @@ class FakeMarketClient implements IBybitMarketClient {
   ) {}
 
   async getInstrumentsLinearAll(): Promise<InstrumentLinear[]> {
-    return this.instruments;
+    return this.instruments.map((instrument) => ({
+      category: instrument.category ?? 'linear',
+      status: instrument.status ?? 'Trading',
+      settleCoin: instrument.settleCoin ?? 'USDT',
+      quoteCoin: instrument.quoteCoin ?? 'USDT',
+      ...instrument
+    }));
   }
 
   async getTickersLinear(): Promise<Map<string, TickerLinear>> {
@@ -1770,7 +1776,7 @@ describe('universe exclusions routes', () => {
   it('rejects exclusion updates while bot is running', async () => {
     const marketClient: IBybitMarketClient = {
       async getInstrumentsLinearAll() {
-        return [{ symbol: 'BTCUSDT', contractType: 'Perpetual', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 }];
+        return [{ symbol: 'BTCUSDT', category: 'linear', contractType: 'Perpetual', status: 'Trading', settleCoin: 'USDT', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 }];
       },
       async getTickersLinear() {
         return new Map([
@@ -1806,8 +1812,8 @@ describe('universe exclusions routes', () => {
     const marketClient: IBybitMarketClient = {
       async getInstrumentsLinearAll() {
         return [
-          { symbol: 'BTCUSDT', contractType: 'Perpetual', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 },
-          { symbol: 'ETHUSDT', contractType: 'Perpetual', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 }
+          { symbol: 'BTCUSDT', category: 'linear', contractType: 'Perpetual', status: 'Trading', settleCoin: 'USDT', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 },
+          { symbol: 'ETHUSDT', category: 'linear', contractType: 'Perpetual', status: 'Trading', settleCoin: 'USDT', quoteCoin: 'USDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 1000 }
         ];
       },
       async getTickersLinear() {

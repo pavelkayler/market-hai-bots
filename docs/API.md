@@ -30,6 +30,13 @@ Percent convention: **`3` means `3%`** (not `0.03`).
   - `diagnostics.totals { instrumentsTotal, tickersTotal, matchedTotal, validTotal }`
   - `diagnostics.excluded { nonPerp, expiring, nonLinear, nonTrading, nonUSDT, tickerMissing, thresholdFiltered, parseError, unknown }`
   - Legacy additive fields remain (`filteredOut`, `diagnostics.byMetricThreshold`, `diagnostics.dataUnavailable`).
+- Contract eligibility is **USDT linear perpetual only**:
+  - `category` must be `linear` (case-insensitive).
+  - `settleCoin=USDT` and `quoteCoin=USDT` (case-insensitive).
+  - `status` must be trading when present.
+  - Expiring futures are excluded when `deliveryTime` parses to non-zero, or `contractType` contains `FUTURES`/`DELIVERY`, or symbol looks like dated futures (for example `BTCUSDT-26JUN26`).
+  - Perpetuals are accepted when `deliveryTime` is absent/empty/zero and `contractType` is empty or contains `PERPETUAL`.
+- `diagnostics.excluded.tickerMissing` is reported explicitly; legacy `filteredOut.dataUnavailable` remains a rolled-up additive count (`tickerMissing + parseError`).
 
 ## Bot lifecycle
 - `POST /api/bot/start`

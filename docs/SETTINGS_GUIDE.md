@@ -220,6 +220,9 @@ Check WS `symbol:update.topReasons` and bot logs:
 
 Why `Symbols: 0` can happen:
 - **Contract filter buckets** (`nonPerp`, `expiring`, `nonLinear`, `nonTrading`, `nonUSDT`, `unknown`): instrument was excluded before ticker join.
+  - Universe contract policy is **USDT linear perpetual only**: `category=linear`, `settleCoin=USDT`, `quoteCoin=USDT`, trading status when provided.
+  - Expiring instruments are removed when `deliveryTime` parses to `>0`, or `contractType` contains `FUTURES`/`DELIVERY`, or symbol has dated suffix (for example `BTCUSDT-26JUN26`).
+  - Perpetual variants like `PERPETUAL` and `LinearPerpetual` are accepted; missing/empty `contractType` is treated as perpetual only when delivery time is absent/zero.
 - **`tickerMissing`**: instrument passed contract filter but ticker symbol could not be matched.
 - **`thresholdFiltered`**: ticker matched, but turnover/volatility thresholds failed.
 - **`parseError`**: ticker existed but numeric fields were invalid.
@@ -228,7 +231,7 @@ Troubleshoot in this order:
 1. Lower `minTurnover` first (most restrictive in quiet sessions).
 2. Lower `minVolPct` (remember: `3` means 3%, not 0.03).
 3. Check contract-filter buckets to verify whether universe candidates are being excluded upstream.
-4. Check `tickerMissing` / `parseError` for join or payload issues (`dataUnavailable` is the rolled-up count).
+4. Check `tickerMissing` / `parseError` for join or payload issues (`tickerMissing` is explicit; `dataUnavailable` is the rolled-up count).
 5. If upstream fails, UI shows **Upstream error (last good kept)** and `Download universe.json` still serves the last good universe.
 6. Download `universe.json` and inspect `diagnostics` + `filteredOut` before widening bot-risk settings.
 
