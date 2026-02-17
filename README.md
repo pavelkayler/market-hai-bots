@@ -4,13 +4,17 @@ Backend: `http://localhost:8080`
 Frontend: `http://localhost:5173` (Vite default)
 
 ## Run locally
-1. Install dependencies:
+1. Install dependencies at repo root:
    - `npm i`
-2. Backend only:
+2. Environment:
+   - Copy `.env.example` to `.env` for local overrides.
+   - Paper mode works without exchange credentials.
+   - Demo mode requires `DEMO_API_KEY` + `DEMO_API_SECRET`.
+3. Start backend only (Fastify on `http://localhost:8080`):
    - `npm --prefix backend run dev`
-3. Frontend only:
+4. Start frontend only (Vite on `http://localhost:5173`):
    - `npm --prefix frontend run dev`
-4. Both (root):
+5. Start both from root:
    - `npm run dev`
 
 Useful checks:

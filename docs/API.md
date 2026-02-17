@@ -71,6 +71,7 @@ Journal entry shape:
 ## Export pack
 - `GET /api/export/pack`
 - Response: `application/zip`, filename `export-pack_<timestamp>.zip`
+- Additive response header: `X-Export-Included` (comma-separated file members actually included in this export)
 - Always includes: `meta.json`
 - Optional files included only when present: `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`
 - Missing optional files do not fail export; they are listed in `meta.json.notes`

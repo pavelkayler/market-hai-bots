@@ -164,7 +164,37 @@ describe('ProfileService', () => {
       expect(overnight?.signalCounterThreshold).toBe(3);
       expect(overnight?.priceUpThrPct).toBe(0.6);
       expect(overnight?.oiUpThrPct).toBe(0.8);
+      expect(overnight?.entryOffsetPct).toBe(0.01);
       expect(overnight?.maxTickStalenessMs).toBe(1200);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('ships paper-testing starter presets with guardrails enabled by default', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'profile-service-starter-guardrails-test-'));
+    const service = new ProfileService(path.join(tempDir, 'profiles.json'));
+
+    try {
+      const fast = await service.get('fast_test_1m');
+      const overnight = await service.get('overnight_1m_safe');
+
+      expect(fast).toBeTruthy();
+      expect(overnight).toBeTruthy();
+
+      for (const preset of [fast, overnight]) {
+        expect(preset?.maxConsecutiveLosses ?? 0).toBeGreaterThan(0);
+        expect(preset?.dailyLossLimitUSDT ?? 0).toBeGreaterThan(0);
+        expect(preset?.signalCounterThreshold ?? 0).toBeGreaterThanOrEqual(2);
+        expect(preset?.oiCandleThrPct ?? -1).toBeGreaterThanOrEqual(0);
+        expect(preset?.entryOffsetPct).toBe(0.01);
+        expect(preset?.maxSpreadBps ?? 0).toBeGreaterThan(0);
+        expect(preset?.maxTickStalenessMs ?? 0).toBeGreaterThan(0);
+      }
+
+      expect((overnight?.maxActiveSymbols ?? 99)).toBeLessThanOrEqual(2);
+      expect((overnight?.trendTfMinutes ?? 0)).toBeGreaterThanOrEqual(5);
+      expect((overnight?.confirmWindowBars ?? 0)).toBeGreaterThanOrEqual(2);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

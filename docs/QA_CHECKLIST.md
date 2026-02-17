@@ -2,6 +2,20 @@
 
 Use this for operator validation. Percent convention is always **`3 = 3%`**.
 
+
+## Expected operator UI strings (must match)
+- Universe states:
+  - `Universe ready (N symbols)`
+  - `Built empty (0 symbols passed filters).`
+  - `Upstream error (last build failed)`
+  - `Last good universe is kept; download uses last good.`
+- Symbol phase labels:
+  - `HOLDING_*` / `ARMED_*` => signal phase (no order, no position)
+  - `ENTRY_PENDING` => order phase
+  - `POSITION_OPEN` => position phase
+- Export UX:
+  - In-flight button label: `Exporting...`
+
 ## PASS/FAIL recording format
 For each step, record one line in `docs/QA_REPORT.md`:
 - `Section <id> - <step>: PASS - <evidence>`

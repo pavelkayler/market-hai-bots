@@ -161,6 +161,38 @@ Starter profiles are auto-seeded when missing (without overwriting existing prof
 - `fast_test_1m`
 - `overnight_1m_safe`
 
+
+## Signal gating semantics (canonical)
+
+- `signalCounterThreshold`: minimum qualifying signal count required before entry is allowed.
+  - Counter window is rolling **24h** per symbol.
+  - Counter increments at most **once per UTC candle close** per symbol when signal conditions are satisfied.
+- `oiCandleThrPct`: OI threshold for candle-to-candle gate, in percent units (`0.2` means `0.2%`).
+- `requireOiTwoCandles=true`: both most recent candle-to-candle OI deltas must be `>= oiCandleThrPct`; otherwise reason `OI_2CANDLES_FAIL` blocks entry.
+- `direction=both` with `bothTieBreak` controls tie resolution when long/short candidates are simultaneously valid:
+  - `shortPriority`: chooses SHORT.
+  - `longPriority`: chooses LONG.
+  - Diagnostics surface selected side and no-entry reasons in `symbol:update.topReasons` / journal fields.
+
+## Recommended presets (paper testing ready)
+
+- `fast_test_1m` (speed-biased smoke run; use for 1–2h supervised checks):
+  - More permissive gating to produce trade cycles quickly.
+  - Guardrails remain ON (`maxConsecutiveLosses`, `dailyLossLimitUSDT`, spread + staleness caps).
+  - `signalCounterThreshold=2`, `entryOffsetPct=0.01`, `oiCandleThrPct>=0`.
+- `overnight_1m_safe` (safety-biased unattended run):
+  - Stricter confirmation and slower trend context (`trendTfMinutes=15`, smaller `maxActiveSymbols`).
+  - Conservative liquidity gates (`maxSpreadBps`, `maxTickStalenessMs`) and non-zero loss guardrails.
+  - `signalCounterThreshold>=2`, `entryOffsetPct=0.01`, `oiCandleThrPct>=0`.
+
+Both presets are seeded only when missing profile names, so edited values are preserved across restarts/upgrades.
+
+## STOP-only exclusions and clear-all semantics
+
+- Per-symbol universe exclusions are **STOP-only** (rejected while running to avoid state drift).
+- `Reset All` is **STOP-only** and clears runtime tables (`runtime`, `journal`, `stats`, `universe`, `exclusions`, `replay`) while preserving profiles.
+- After reset, operator should expect empty runtime panels and preserved profile list/active profile defaults.
+
 ## Troubleshooting
 
 ### “Winrate is positive but PnL is negative”
