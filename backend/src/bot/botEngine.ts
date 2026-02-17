@@ -10,11 +10,13 @@ import { percentToFraction } from '../utils/percent.js';
 
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
+export type BothTieBreak = 'shortPriority' | 'longPriority' | 'strongerSignal';
 export type BotTf = 1 | 3 | 5;
 
 export type BotConfig = {
   mode: BotMode;
   direction: BotDirection;
+  bothTieBreak: BothTieBreak;
   tf: BotTf;
   /** @deprecated confirmation now uses signalCounterThreshold */
   holdSeconds: number;
@@ -63,6 +65,21 @@ export type GateSnapshot = {
   impulseAgeMs?: number | null;
   spreadBps?: number | null;
   tickAgeMs?: number | null;
+  bothCandidate?: {
+    hadBoth: boolean;
+    chosen: 'long' | 'short';
+    tieBreak: BothTieBreak;
+    edgeLong?: number;
+    edgeShort?: number;
+  };
+};
+
+export type BothCandidateDiagnostics = {
+  hadBoth: boolean;
+  chosen: 'long' | 'short';
+  tieBreak: BothTieBreak;
+  edgeLong?: number;
+  edgeShort?: number;
 };
 
 export type BotState = {
@@ -158,6 +175,7 @@ export type SymbolRuntimeState = {
   lastOiDeltaPct: number | null;
   lastSignalCount24h: number;
   gates: GateSnapshot | null;
+  lastBothCandidate: BothCandidateDiagnostics | null;
 };
 
 export type SignalPayload = {
@@ -168,6 +186,7 @@ export type SignalPayload = {
   priceDeltaPct: number;
   oiDeltaPct: number;
   entryReason: EntryReason;
+  bothCandidate?: BothCandidateDiagnostics;
 };
 
 export type OrderUpdatePayload = {
@@ -209,6 +228,10 @@ export type BotStats = {
   signalsConfirmed: number;
   signalsBySide: { long: number; short: number };
   signalsByEntryReason: Record<EntryReason, number>;
+  bothHadBothCount: number;
+  bothChosenLongCount: number;
+  bothChosenShortCount: number;
+  bothTieBreakMode: BothTieBreak;
   lastClosed?: {
     ts: number;
     symbol: string;
@@ -235,6 +258,12 @@ type BotPerSymbolAccumulator = {
   shortTrades: number;
   shortWins: number;
   shortLosses: number;
+  signalsAttempted: number;
+  signalsConfirmed: number;
+  confirmedBySide: { long: number; short: number };
+  confirmedByEntryReason: Record<EntryReason, number>;
+  totalHoldMs: number;
+  closedTradesWithHold: number;
   lastClosedTs: number | null;
   lastClosedPnlUSDT: number | null;
 };
@@ -262,6 +291,11 @@ export type BotPerSymbolStats = {
   shortTrades: number;
   shortWins: number;
   shortLosses: number;
+  signalsAttempted: number;
+  signalsConfirmed: number;
+  confirmedBySide: { long: number; short: number };
+  confirmedByEntryReason: Record<EntryReason, number>;
+  avgHoldMs?: number | null;
   lastClosedTs?: number | null;
   lastClosedPnlUSDT?: number | null;
 };
@@ -283,6 +317,7 @@ const DEFAULT_OI_UP_THR_PCT = 50;
 const DEFAULT_OI_CANDLE_THR_PCT = 0;
 const DEFAULT_MAX_ACTIVE_SYMBOLS = 3;
 const DEFAULT_ENTRY_OFFSET_PCT = 0.01;
+const DEFAULT_BOTH_TIE_BREAK: BothTieBreak = 'shortPriority';
 const DEFAULT_TREND_TF: 5 | 15 = 5;
 const DEFAULT_TREND_LOOKBACK_BARS = 20;
 const DEFAULT_TREND_MIN_MOVE_PCT = 0.2;
@@ -337,6 +372,7 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
   const tf = raw.tf;
   const mode = raw.mode;
   const direction = raw.direction;
+  const bothTieBreakRaw = raw.bothTieBreak;
 
   if (mode !== 'paper' && mode !== 'demo') {
     return null;
@@ -345,6 +381,11 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
   if (direction !== 'long' && direction !== 'short' && direction !== 'both') {
     return null;
   }
+
+  const bothTieBreak: BothTieBreak =
+    bothTieBreakRaw === 'longPriority' || bothTieBreakRaw === 'strongerSignal' || bothTieBreakRaw === 'shortPriority'
+      ? bothTieBreakRaw
+      : DEFAULT_BOTH_TIE_BREAK;
 
   if (tf !== 1 && tf !== 3 && tf !== 5) {
     return null;
@@ -427,6 +468,7 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
   return {
     mode,
     direction,
+    bothTieBreak,
     tf,
     holdSeconds,
     signalCounterThreshold,
@@ -493,7 +535,11 @@ export class BotEngine {
     reasonCounts: createEmptyReasonCounts(),
     signalsConfirmed: 0,
     signalsBySide: { long: 0, short: 0 },
-    signalsByEntryReason: createEmptyReasonCounts()
+    signalsByEntryReason: createEmptyReasonCounts(),
+    bothHadBothCount: 0,
+    bothChosenLongCount: 0,
+    bothChosenShortCount: 0,
+    bothTieBreakMode: DEFAULT_BOTH_TIE_BREAK
   };
   private winPnlSum = 0;
   private lossPnlSum = 0;
@@ -559,6 +605,11 @@ export class BotEngine {
       shortTrades: bucket.shortTrades,
       shortWins: bucket.shortWins,
       shortLosses: bucket.shortLosses,
+      signalsAttempted: bucket.signalsAttempted,
+      signalsConfirmed: bucket.signalsConfirmed,
+      confirmedBySide: { ...bucket.confirmedBySide },
+      confirmedByEntryReason: { ...bucket.confirmedByEntryReason },
+      avgHoldMs: bucket.closedTradesWithHold > 0 ? bucket.totalHoldMs / bucket.closedTradesWithHold : null,
       lastClosedTs: bucket.lastClosedTs,
       lastClosedPnlUSDT: bucket.lastClosedPnlUSDT
     }));
@@ -570,6 +621,7 @@ export class BotEngine {
       reasonCounts: { ...this.stats.reasonCounts },
       signalsBySide: { ...this.stats.signalsBySide },
       signalsByEntryReason: { ...this.stats.signalsByEntryReason },
+      bothTieBreakMode: this.state.config?.bothTieBreak ?? this.stats.bothTieBreakMode,
       ...(perSymbol.length > 0 ? { perSymbol } : {})
     };
     return this.stats.lastClosed ? { ...stats, lastClosed: { ...this.stats.lastClosed } } : stats;
@@ -592,7 +644,11 @@ export class BotEngine {
       reasonCounts: createEmptyReasonCounts(),
       signalsConfirmed: 0,
       signalsBySide: { long: 0, short: 0 },
-      signalsByEntryReason: createEmptyReasonCounts()
+      signalsByEntryReason: createEmptyReasonCounts(),
+      bothHadBothCount: 0,
+      bothChosenLongCount: 0,
+      bothChosenShortCount: 0,
+      bothTieBreakMode: this.state.config?.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK
     };
     this.winPnlSum = 0;
     this.lossPnlSum = 0;
@@ -665,6 +721,7 @@ export class BotEngine {
       runningSinceTs: now,
       config
     };
+    this.stats.bothTieBreakMode = config.bothTieBreak;
     this.persistSnapshot();
   }
 
@@ -740,7 +797,8 @@ export class BotEngine {
         lastPriceDeltaPct: state.lastPriceDeltaPct ?? null,
         lastOiDeltaPct: state.lastOiDeltaPct ?? null,
         lastSignalCount24h: state.lastSignalCount24h ?? 0,
-        gates: state.gates ?? null
+        gates: state.gates ?? null,
+        lastBothCandidate: state.lastBothCandidate ?? null
       });
     }
 
@@ -753,7 +811,7 @@ export class BotEngine {
       runningSinceTs: null,
       activeUptimeMs: snapshot.activeUptimeMs ?? 0,
       uptimeMs: 0,
-      config: snapshot.config
+      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK } : null
     };
 
     this.perSymbolStats.clear();
@@ -776,6 +834,10 @@ export class BotEngine {
         signalsConfirmed: snapshot.stats.signalsConfirmed ?? 0,
         signalsBySide: snapshot.stats.signalsBySide ?? { long: 0, short: 0 },
         signalsByEntryReason: snapshot.stats.signalsByEntryReason ?? createEmptyReasonCounts(),
+        bothHadBothCount: snapshot.stats.bothHadBothCount ?? 0,
+        bothChosenLongCount: snapshot.stats.bothChosenLongCount ?? 0,
+        bothChosenShortCount: snapshot.stats.bothChosenShortCount ?? 0,
+        bothTieBreakMode: snapshot.stats.bothTieBreakMode ?? snapshot.config?.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK,
         ...(snapshot.stats.lastClosed ? { lastClosed: snapshot.stats.lastClosed } : {})
       };
       this.winPnlSum = snapshot.stats.wins * (snapshot.stats.avgWinUSDT ?? 0);
@@ -794,6 +856,12 @@ export class BotEngine {
           shortTrades: entry.shortTrades,
           shortWins: entry.shortWins,
           shortLosses: entry.shortLosses,
+          signalsAttempted: entry.signalsAttempted ?? 0,
+          signalsConfirmed: entry.signalsConfirmed ?? 0,
+          confirmedBySide: entry.confirmedBySide ?? { long: 0, short: 0 },
+          confirmedByEntryReason: entry.confirmedByEntryReason ?? createEmptyReasonCounts(),
+          totalHoldMs: typeof entry.avgHoldMs === 'number' && Number.isFinite(entry.avgHoldMs) ? entry.avgHoldMs * entry.trades : 0,
+          closedTradesWithHold: typeof entry.avgHoldMs === 'number' && Number.isFinite(entry.avgHoldMs) ? entry.trades : 0,
           lastClosedTs: entry.lastClosedTs ?? null,
           lastClosedPnlUSDT: entry.lastClosedPnlUSDT ?? null
         });
@@ -863,7 +931,8 @@ export class BotEngine {
       lastPriceDeltaPct: symbolState.lastPriceDeltaPct,
       lastOiDeltaPct: symbolState.lastOiDeltaPct,
       lastSignalCount24h: symbolState.lastSignalCount24h,
-      gates: symbolState.gates ? { ...symbolState.gates } : null
+      gates: symbolState.gates ? { ...symbolState.gates } : null,
+      lastBothCandidate: symbolState.lastBothCandidate ? { ...symbolState.lastBothCandidate } : null
     };
   }
 
@@ -1010,6 +1079,14 @@ export class BotEngine {
     symbolState.lastPriceDeltaPct = priceDeltaPct;
     symbolState.lastOiDeltaPct = oiDeltaPct;
     const candidate = this.getEligibleSignal(symbolState, priceDeltaPct, oiDeltaPct);
+    symbolState.lastBothCandidate = candidate?.bothCandidate ?? null;
+    if (symbolState.gates) {
+      if (candidate?.bothCandidate?.hadBoth) {
+        symbolState.gates.bothCandidate = { ...candidate.bothCandidate };
+      } else {
+        delete symbolState.gates.bothCandidate;
+      }
+    }
     if (!candidate) {
       this.recordNoEntryReason(symbolState, {
         code: 'SIGNAL_COUNTER_NOT_MET',
@@ -1021,6 +1098,9 @@ export class BotEngine {
       this.persistSnapshot();
       return;
     }
+
+    const perSymbolSignalStatsAttempt = this.getOrCreatePerSymbolStats(symbol);
+    perSymbolSignalStatsAttempt.signalsAttempted += 1;
 
     const trendDeltaPct = this.getTrendDeltaPct(symbolState, this.state.config.trendTfMinutes, this.state.config.trendLookbackBars);
     if (trendDeltaPct !== null) {
@@ -1081,7 +1161,24 @@ export class BotEngine {
     } else {
       this.stats.signalsBySide.short += 1;
     }
+    if (candidate.bothCandidate?.hadBoth) {
+      this.stats.bothHadBothCount += 1;
+      if (candidate.bothCandidate.chosen === 'long') {
+        this.stats.bothChosenLongCount += 1;
+      } else {
+        this.stats.bothChosenShortCount += 1;
+      }
+    }
     this.stats.signalsByEntryReason[candidate.entryReason] += 1;
+
+    const perSymbolSignalStats = this.getOrCreatePerSymbolStats(symbol);
+    perSymbolSignalStats.signalsConfirmed += 1;
+    if (candidate.side === 'LONG') {
+      perSymbolSignalStats.confirmedBySide.long += 1;
+    } else {
+      perSymbolSignalStats.confirmedBySide.short += 1;
+    }
+    perSymbolSignalStats.confirmedByEntryReason[candidate.entryReason] += 1;
 
     this.deps.emitSignal({
       symbol,
@@ -1090,7 +1187,8 @@ export class BotEngine {
       oiValue: marketState.openInterestValue,
       priceDeltaPct,
       oiDeltaPct,
-      entryReason: candidate.entryReason
+      entryReason: candidate.entryReason,
+      ...(candidate.bothCandidate?.hadBoth ? { bothCandidate: candidate.bothCandidate } : {})
     });
 
     this.stats.reasonCounts[candidate.entryReason] += 1;
@@ -1417,7 +1515,8 @@ export class BotEngine {
       lastPriceDeltaPct: null,
       lastOiDeltaPct: null,
       lastSignalCount24h: 0,
-      gates: null
+      gates: null,
+      lastBothCandidate: null
     };
   }
 
@@ -1723,7 +1822,7 @@ export class BotEngine {
       entryFeeRate,
       exitFeeRate
     });
-    this.recordClosedTrade(symbolState.symbol, position.side, grossPnl, feeTotalUSDT, netPnlUSDT, closeReason, entryFeeUSDT, exitFeeUSDT);
+    this.recordClosedTrade(symbolState.symbol, position.side, grossPnl, feeTotalUSDT, netPnlUSDT, closeReason, entryFeeUSDT, exitFeeUSDT, position.openedTs);
     this.updateSummaryCounts();
     this.persistSnapshot();
   }
@@ -1815,7 +1914,8 @@ export class BotEngine {
         lastPriceDeltaPct: symbolState.lastPriceDeltaPct,
         lastOiDeltaPct: symbolState.lastOiDeltaPct,
         lastSignalCount24h: symbolState.lastSignalCount24h,
-        gates: symbolState.gates
+        gates: symbolState.gates,
+        lastBothCandidate: symbolState.lastBothCandidate
       };
     }
 
@@ -1839,7 +1939,8 @@ export class BotEngine {
     netPnlUSDT: number,
     reason: string,
     entryFeeUSDT?: number,
-    exitFeeUSDT?: number
+    exitFeeUSDT?: number,
+    positionOpenedTs?: number
   ): void {
     const now = this.now();
     this.rotateDailyPnlBucket();
@@ -1871,25 +1972,15 @@ export class BotEngine {
     }
     sideBucket.winratePct = sideBucket.trades > 0 ? (sideBucket.wins / sideBucket.trades) * 100 : 0;
 
-    const perSymbol = this.perSymbolStats.get(symbol) ?? {
-      trades: 0,
-      wins: 0,
-      losses: 0,
-      pnlUSDT: 0,
-      longTrades: 0,
-      longWins: 0,
-      longLosses: 0,
-      shortTrades: 0,
-      shortWins: 0,
-      shortLosses: 0,
-      lastClosedTs: null,
-      lastClosedPnlUSDT: null
-    };
+    const perSymbol = this.getOrCreatePerSymbolStats(symbol);
 
     perSymbol.trades += 1;
     perSymbol.pnlUSDT += netPnlUSDT;
     perSymbol.lastClosedTs = now;
     perSymbol.lastClosedPnlUSDT = netPnlUSDT;
+    const holdMs = Math.max(0, now - (positionOpenedTs ?? now));
+    perSymbol.totalHoldMs += holdMs;
+    perSymbol.closedTradesWithHold += 1;
     if (netPnlUSDT > 0) {
       perSymbol.wins += 1;
     } else if (netPnlUSDT < 0) {
@@ -1932,6 +2023,36 @@ export class BotEngine {
     if (config.maxConsecutiveLosses > 0 && this.stats.lossStreak >= config.maxConsecutiveLosses) {
       this.pauseWithGuardrail('MAX_CONSECUTIVE_LOSSES');
     }
+  }
+
+  private getOrCreatePerSymbolStats(symbol: string): BotPerSymbolAccumulator {
+    const existing = this.perSymbolStats.get(symbol);
+    if (existing) {
+      return existing;
+    }
+
+    const created: BotPerSymbolAccumulator = {
+      trades: 0,
+      wins: 0,
+      losses: 0,
+      pnlUSDT: 0,
+      longTrades: 0,
+      longWins: 0,
+      longLosses: 0,
+      shortTrades: 0,
+      shortWins: 0,
+      shortLosses: 0,
+      signalsAttempted: 0,
+      signalsConfirmed: 0,
+      confirmedBySide: { long: 0, short: 0 },
+      confirmedByEntryReason: createEmptyReasonCounts(),
+      totalHoldMs: 0,
+      closedTradesWithHold: 0,
+      lastClosedTs: null,
+      lastClosedPnlUSDT: null
+    };
+    this.perSymbolStats.set(symbol, created);
+    return created;
   }
 
   private rotateDailyPnlBucket(): void {
@@ -2065,18 +2186,50 @@ export class BotEngine {
     symbolState: SymbolRuntimeState,
     priceDeltaPct: number,
     oiDeltaPct: number
-  ): { side: 'LONG' | 'SHORT'; entryReason: EntryReason } | null {
+  ): { side: 'LONG' | 'SHORT'; entryReason: EntryReason; bothCandidate?: BothCandidateDiagnostics } | null {
     const direction = this.state.config!.direction;
     const longTrue = this.isLongConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
     const shortDivergenceTrue = this.isShortDivergenceConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
     const shortContinuationTrue = this.isShortContinuationConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
 
     if (direction === 'both') {
-      if (shortDivergenceTrue) {
-        return { side: 'SHORT', entryReason: 'SHORT_DIVERGENCE' };
+      const shortEntryReason: EntryReason | null = shortDivergenceTrue ? 'SHORT_DIVERGENCE' : shortContinuationTrue ? 'SHORT_CONTINUATION' : null;
+      const shortTrue = !!shortEntryReason;
+      if (longTrue && shortTrue) {
+        const tieBreak = this.state.config?.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK;
+        if (tieBreak === 'longPriority') {
+          return {
+            side: 'LONG',
+            entryReason: 'LONG_CONTINUATION',
+            bothCandidate: { hadBoth: true, chosen: 'long', tieBreak }
+          };
+        }
+        if (tieBreak === 'strongerSignal') {
+          const edgeLong = this.computeLongEdge(priceDeltaPct, oiDeltaPct);
+          const edgeShort = this.computeShortEdge(priceDeltaPct, oiDeltaPct);
+          if (edgeLong > edgeShort + 1e-6) {
+            return {
+              side: 'LONG',
+              entryReason: 'LONG_CONTINUATION',
+              bothCandidate: { hadBoth: true, chosen: 'long', tieBreak, edgeLong, edgeShort }
+            };
+          }
+          return {
+            side: 'SHORT',
+            entryReason: shortEntryReason,
+            bothCandidate: { hadBoth: true, chosen: 'short', tieBreak, edgeLong, edgeShort }
+          };
+        }
+
+        return {
+          side: 'SHORT',
+          entryReason: shortEntryReason,
+          bothCandidate: { hadBoth: true, chosen: 'short', tieBreak }
+        };
       }
-      if (shortContinuationTrue) {
-        return { side: 'SHORT', entryReason: 'SHORT_CONTINUATION' };
+
+      if (shortEntryReason) {
+        return { side: 'SHORT', entryReason: shortEntryReason };
       }
       if (longTrue) {
         return { side: 'LONG', entryReason: 'LONG_CONTINUATION' };
@@ -2093,6 +2246,18 @@ export class BotEngine {
     }
 
     return shortContinuationTrue ? { side: 'SHORT', entryReason: 'SHORT_CONTINUATION' } : null;
+  }
+
+  private computeLongEdge(priceDeltaPct: number, oiDeltaPct: number): number {
+    const priceThr = Math.max(Math.abs(this.state.config!.priceUpThrPct), 1e-9);
+    const oiThr = Math.max(Math.abs(this.state.config!.oiUpThrPct), 1e-9);
+    return priceDeltaPct / priceThr + oiDeltaPct / oiThr;
+  }
+
+  private computeShortEdge(priceDeltaPct: number, oiDeltaPct: number): number {
+    const priceThr = Math.max(Math.abs(this.state.config!.priceUpThrPct), 1e-9);
+    const oiThr = Math.max(Math.abs(this.state.config!.oiUpThrPct), 1e-9);
+    return Math.abs(priceDeltaPct) / priceThr + Math.abs(oiDeltaPct) / oiThr;
   }
 
   private isLongConditionTrue(symbolState: SymbolRuntimeState, priceDeltaPct: number, oiDeltaPct: number): boolean {

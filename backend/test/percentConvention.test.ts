@@ -8,6 +8,7 @@ describe('percent input convention', () => {
     const normalized = normalizeBotConfig({
       mode: 'paper',
       direction: 'both',
+      bothTieBreak: 'shortPriority',
       tf: 1,
       holdSeconds: 1,
       signalCounterThreshold: 2,

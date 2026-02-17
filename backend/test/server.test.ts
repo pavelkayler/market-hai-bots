@@ -290,7 +290,11 @@ describe('server routes', () => {
         reasonCounts: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 },
         signalsConfirmed: 0,
         signalsBySide: { long: 0, short: 0 },
-        signalsByEntryReason: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 }
+        signalsByEntryReason: { LONG_CONTINUATION: 0, SHORT_CONTINUATION: 0, SHORT_DIVERGENCE: 0 },
+        bothHadBothCount: 0,
+        bothChosenLongCount: 0,
+        bothChosenShortCount: 0,
+        bothTieBreakMode: 'shortPriority'
       }
     });
 
