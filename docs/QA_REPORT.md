@@ -102,3 +102,12 @@
 - Use `UNIVERSE_FORCE_UPSTREAM_ERROR=1` after creating a valid universe, then refresh:
   - UI shows upstream error block with last-known-universe availability.
   - Download endpoint continues serving last persisted universe.
+
+
+## Ops journaling + export pack (manual record)
+- [ ] PASS / [ ] FAIL — Pause/Resume/Kill/Reset-all executed in order.
+- [ ] PASS / [ ] FAIL — Journal tail contains `BOT_PAUSE`, `BOT_RESUME`, `BOT_KILL`, `SYSTEM_RESET_ALL` with `symbol=SYSTEM`, `side=null`.
+- [ ] PASS / [ ] FAIL — Export pack downloaded; `meta.json` present.
+- [ ] PASS / [ ] FAIL — `meta.json.notes` correctly reports missing `runtime.json` / `journal.ndjson` when absent.
+- Notes:
+  - 

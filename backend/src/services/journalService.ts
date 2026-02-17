@@ -13,7 +13,8 @@ export type JournalEvent =
   | 'BOT_PAUSE'
   | 'BOT_RESUME'
   | 'BOT_KILL'
-  | 'SYSTEM_RESET_ALL';
+  | 'SYSTEM_RESET_ALL'
+  | 'EXPORT_PACK_REQUESTED';
 
 export type JournalEntry = {
   ts: number;

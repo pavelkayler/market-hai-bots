@@ -91,3 +91,21 @@ Use this as an operator runbook. Each step includes expected outcome.
 3. Validate after reset:
    - Runtime state cleared, exclusions empty, universe not ready, replay stopped.
    - Profiles remain intact (default + saved profiles still present).
+
+
+## G) Ops journaling + export pack
+1. Start bot, then click **Pause**, **Resume**, **Kill**, **Stop**, then **Reset all**.
+   - Expect each action to succeed (Reset all only after Stop).
+2. Open journal tail (or download journal) and verify the latest lifecycle ops entries include:
+   - `BOT_PAUSE`, `BOT_RESUME`, `BOT_KILL`, `SYSTEM_RESET_ALL`.
+   - Each of these entries must have `symbol="SYSTEM"` and `side=null`.
+3. Click **Export Pack (.zip)**.
+   - Expect a zip download.
+   - Expect `meta.json` always present.
+   - Expect `universe.json` and `profiles.json` when persisted files exist.
+   - Expect `runtime.json` / `journal.ndjson` only if those files exist.
+4. Open `meta.json` from the zip.
+   - Expect `createdAt`, `appVersion`, `notes[]`, `paths`, and optional `counts`.
+   - If runtime/journal are missing, expect notes:
+     - `runtime.json missing (no persisted runtime snapshot found)`
+     - `journal.ndjson missing (no journal file found)`

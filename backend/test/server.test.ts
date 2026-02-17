@@ -4,12 +4,13 @@ import os from 'node:os';
 import JSZip from 'jszip';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
 import { buildServer } from '../src/server.js';
 import type { TickerStream, TickerUpdate } from '../src/market/tickerStream.js';
 import { BybitApiError, type IBybitMarketClient, type InstrumentLinear, type TickerLinear } from '../src/services/bybitMarketClient.js';
+import { JournalService } from '../src/services/journalService.js';
 import { ActiveSymbolSet } from '../src/services/universeService.js';
 
 class FakeMarketClient implements IBybitMarketClient {
@@ -220,32 +221,80 @@ describe('server routes', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it('GET /api/export/pack returns zip containing expected files', async () => {
+  it('GET /api/export/pack returns zip containing expected files and meta contract', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'export-pack-route-test-'));
     const universeFilePath = path.join(tempDir, 'universe.json');
     const runtimeSnapshotFilePath = path.join(tempDir, 'runtime.json');
     const profileFilePath = path.join(tempDir, 'profiles.json');
     const journalFilePath = path.join(tempDir, 'journal.ndjson');
 
-    await writeFile(universeFilePath, '{"ready":true}', 'utf-8');
-    await writeFile(runtimeSnapshotFilePath, '{"running":false}', 'utf-8');
-    await writeFile(profileFilePath, '{"activeProfile":"default"}', 'utf-8');
-    await writeFile(journalFilePath, '{"ts":1}\n', 'utf-8');
+    await writeFile(universeFilePath, JSON.stringify({ ready: true, symbols: [{ symbol: 'BTCUSDT' }, { symbol: 'ETHUSDT' }] }), 'utf-8');
+    await writeFile(runtimeSnapshotFilePath, JSON.stringify({ savedAt: Date.now(), paused: true, running: true, config: null, symbols: {} }), 'utf-8');
+    await writeFile(profileFilePath, JSON.stringify({ activeProfile: 'default', names: ['default', 'fast_test_1m'] }), 'utf-8');
+    await writeFile(journalFilePath, '{"ts":1}\n{"ts":2}\n', 'utf-8');
 
     await app.close();
     app = buildIsolatedServer({ universeFilePath, runtimeSnapshotFilePath, profileFilePath, journalFilePath });
+    await writeFile(runtimeSnapshotFilePath, JSON.stringify({ savedAt: Date.now(), paused: true, running: true, config: null, symbols: { BTCUSDT: {} } }), 'utf-8');
 
     const response = await app.inject({ method: 'GET', url: '/api/export/pack' });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('application/zip');
+    expect(response.headers['content-disposition']).toContain('attachment; filename="export-pack_');
 
     const zip = await JSZip.loadAsync(response.rawPayload);
     const names = Object.keys(zip.files).sort();
     expect(names).toEqual(['journal.ndjson', 'meta.json', 'profiles.json', 'runtime.json', 'universe.json']);
 
+    const metaRaw = await zip.file('meta.json')?.async('string');
+    const meta = JSON.parse(metaRaw ?? '{}') as {
+      createdAt: number;
+      appVersion: string;
+      notes: string[];
+      paths: Record<string, string>;
+      counts: { journalLines: number; universeSymbols: number; profilesCount: number };
+    };
+    expect(typeof meta.createdAt).toBe('number');
+    expect(typeof meta.appVersion).toBe('string');
+    expect(meta.notes).toEqual([]);
+    expect(meta.paths.universe).toBe(universeFilePath);
+    expect(meta.paths.runtime).toBe(runtimeSnapshotFilePath);
+    expect(meta.paths.profiles).toBe(profileFilePath);
+    expect(meta.paths.journal).toBe(journalFilePath);
+    expect(meta.counts).toMatchObject({ journalLines: 3, universeSymbols: 2, profilesCount: 2 });
+
     await rm(tempDir, { recursive: true, force: true });
   });
+
+  it('GET /api/export/pack includes meta notes when runtime and journal are missing', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'export-pack-missing-route-test-'));
+    const universeFilePath = path.join(tempDir, 'universe.json');
+    const profileFilePath = path.join(tempDir, 'profiles.json');
+    const runtimeSnapshotFilePath = path.join(tempDir, 'runtime.json');
+    const journalFilePath = path.join(tempDir, 'journal.ndjson');
+
+    await writeFile(universeFilePath, '{"ready":true,"symbols":[]}', 'utf-8');
+    await writeFile(profileFilePath, '{"activeProfile":"default","names":["default"]}', 'utf-8');
+
+    await app.close();
+    app = buildIsolatedServer({ universeFilePath, runtimeSnapshotFilePath, profileFilePath, journalFilePath });
+
+    const response = await app.inject({ method: 'GET', url: '/api/export/pack' });
+    expect(response.statusCode).toBe(200);
+
+    const zip = await JSZip.loadAsync(response.rawPayload);
+    const names = Object.keys(zip.files).sort();
+    expect(names).toEqual(['meta.json', 'profiles.json', 'universe.json']);
+
+    const metaRaw = await zip.file('meta.json')?.async('string');
+    const meta = JSON.parse(metaRaw ?? '{}') as { notes: string[] };
+    expect(meta.notes).toContain('runtime.json missing (no persisted runtime snapshot found)');
+    expect(meta.notes).toContain('journal.ndjson missing (no journal file found)');
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
 
   it('GET /api/bot/guardrails returns defaults before start', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/bot/guardrails' });
@@ -462,7 +511,7 @@ describe('server routes', () => {
 
     const journalTailResponse = await app.inject({ method: 'GET', url: '/api/journal/tail?limit=10' });
     expect(journalTailResponse.statusCode).toBe(200);
-    expect(journalTailResponse.json()).toEqual({ ok: true, entries: [] });
+    expect(journalTailResponse.json()).toEqual({ ok: true, entries: [expect.objectContaining({ event: 'SYSTEM_RESET_ALL', symbol: 'SYSTEM', side: null })] });
 
     const resumeResponse = await app.inject({ method: 'POST', url: '/api/bot/resume', payload: {} });
     expect(resumeResponse.statusCode).toBe(400);
@@ -1459,6 +1508,95 @@ describe('server routes', () => {
 
     await rm(tempDir, { recursive: true, force: true });
   });
+
+  it('lifecycle ops append SYSTEM journal events', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'ops-journal-route-test-'));
+    const journalFilePath = path.join(tempDir, 'journal.ndjson');
+    const runtimeSnapshotFilePath = path.join(tempDir, 'runtime.json');
+
+    await app.close();
+    app = buildIsolatedServer({
+      journalFilePath,
+      runtimeSnapshotFilePath,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper', direction: 'long', tf: 1, holdSeconds: 1, signalCounterThreshold: 1,
+        priceUpThrPct: 1, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
+        entryOffsetPct: 0
+      }
+    });
+
+    expect((await app.inject({ method: 'POST', url: '/api/bot/pause', payload: {} })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: '/api/bot/resume', payload: {} })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: '/api/bot/kill', payload: {} })).statusCode).toBe(200);
+
+    const beforeResetTail = await app.inject({ method: 'GET', url: '/api/journal/tail?limit=20' });
+    const beforeResetEvents = (beforeResetTail.json() as { entries: Array<{ event: string; symbol: string; side: string | null }> }).entries;
+    const lifecycleEntries = beforeResetEvents.filter((entry) => ['BOT_PAUSE', 'BOT_RESUME', 'BOT_KILL'].includes(entry.event));
+    expect(lifecycleEntries.map((entry) => entry.event)).toEqual(['BOT_PAUSE', 'BOT_RESUME', 'BOT_KILL']);
+    for (const entry of lifecycleEntries) {
+      expect(entry.symbol).toBe('SYSTEM');
+      expect(entry.side).toBeNull();
+    }
+
+    await app.inject({ method: 'POST', url: '/api/bot/stop', payload: {} });
+    expect((await app.inject({ method: 'POST', url: '/api/reset/all', payload: {} })).statusCode).toBe(200);
+
+    const afterResetTail = await app.inject({ method: 'GET', url: '/api/journal/tail?limit=20' });
+    const afterResetEvents = (afterResetTail.json() as { entries: Array<{ event: string; symbol: string; side: string | null }> }).entries;
+    expect(afterResetEvents).toHaveLength(1);
+    expect(afterResetEvents[0]).toMatchObject({ event: 'SYSTEM_RESET_ALL', symbol: 'SYSTEM', side: null });
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('ops routes remain successful when ops journaling append throws', async () => {
+    const appendSpy = vi.spyOn(JournalService.prototype, 'append').mockRejectedValue(new Error('append failed'));
+
+    try {
+      await app.close();
+      app = buildIsolatedServer({
+        marketClient: new FakeMarketClient(
+          [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+          new Map([
+            ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+          ])
+        )
+      });
+
+      await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+      await app.inject({
+        method: 'POST',
+        url: '/api/bot/start',
+        payload: {
+          mode: 'paper', direction: 'long', tf: 1, holdSeconds: 1, signalCounterThreshold: 1,
+          priceUpThrPct: 1, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
+          entryOffsetPct: 0
+        }
+      });
+
+      expect((await app.inject({ method: 'POST', url: '/api/bot/pause', payload: {} })).statusCode).toBe(200);
+      expect((await app.inject({ method: 'POST', url: '/api/bot/resume', payload: {} })).statusCode).toBe(200);
+      expect((await app.inject({ method: 'POST', url: '/api/bot/kill', payload: {} })).statusCode).toBe(200);
+      expect((await app.inject({ method: 'GET', url: '/api/export/pack' })).statusCode).toBe(200);
+      await app.inject({ method: 'POST', url: '/api/bot/stop', payload: {} });
+      expect((await app.inject({ method: 'POST', url: '/api/reset/all', payload: {} })).statusCode).toBe(200);
+    } finally {
+      appendSpy.mockRestore();
+    }
+  });
+
 
   it('paper flow: signal dedupe -> entry pending -> fill -> TP close updates stats and journal', async () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);

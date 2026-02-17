@@ -9,7 +9,7 @@ import {
   clearUniverse,
   createUniverse,
   deleteProfile,
-  downloadExportPack,
+  exportPack,
   downloadJournal,
   downloadProfiles,
   downloadUniverseJson,
@@ -208,6 +208,7 @@ export function BotPage({
   const [activeProfile, setActiveProfile] = useState<string>('default');
   const [useActiveProfileOnStart, setUseActiveProfileOnStart] = useState<boolean>(loadUseActiveProfileOnStart());
   const [status, setStatus] = useState<string>('');
+  const [isExportingPack, setIsExportingPack] = useState(false);
   const [error, setError] = useState<string>('');
   const [showUniverseSymbols, setShowUniverseSymbols] = useState<boolean>(false);
   const [universeSearch, setUniverseSearch] = useState<string>('');
@@ -756,20 +757,28 @@ export function BotPage({
   };
 
   const handleDownloadExportPack = async () => {
+    if (isExportingPack) {
+      return;
+    }
+
     setError('');
+    setIsExportingPack(true);
     try {
-      const blob = await downloadExportPack();
+      const { blob, fileName } = await exportPack();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `export-pack-${new Date().toISOString().replaceAll(':', '-')}.zip`;
+      link.download = fileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      setStatus('Export pack download started');
+      setStatus('Downloaded export pack');
     } catch (err) {
-      setError((err as Error).message);
+      const apiError = err as ApiRequestError;
+      setError(`Export pack failed: ${apiError.message}`);
+    } finally {
+      setIsExportingPack(false);
     }
   };
 
@@ -1035,10 +1044,12 @@ export function BotPage({
               <Button variant="outline-secondary" onClick={() => void handleDownloadJournal('ndjson')}>
                 Download NDJSON
               </Button>
-              <Button variant="outline-success" onClick={() => void handleDownloadExportPack()}>
-                Download Export Pack
+              <Button variant="outline-success" onClick={() => void handleDownloadExportPack()} disabled={isExportingPack}>
+                {isExportingPack ? 'Exporting...' : 'Export Pack (.zip)'}
               </Button>
             </div>
+
+            <div className="small text-muted mt-2">Includes universe.json, profiles.json, runtime.json (if exists), journal.ndjson (if exists), meta.json.</div>
 
             <div className="mt-3">
               <strong>Last events</strong>

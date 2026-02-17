@@ -227,7 +227,7 @@ If an invariant is violated, v1 safe fallback is applied: symbol is logged and r
 5. **Export pack**
    - Call `GET /api/export/pack` and verify zip contains:
      `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`, `meta.json`.
-   - Verify `meta.json` includes version + timestamp + notes placeholder.
+   - Verify `meta.json` includes `createdAt`, `appVersion`, `notes[]`, `paths`, and optional `counts`.
 6. **Reset all tables**
    - Run only while bot is stopped.
    - Verify runtime/stats/universe/journal/exclusions are reset while profiles are preserved.
@@ -239,3 +239,9 @@ If an invariant is violated, v1 safe fallback is applied: symbol is logged and r
 - `overnight_1m_safe`: slower higher-quality preset for unattended overnight monitoring with tighter spread/staleness controls and stricter confirmation.
 
 These presets are seeded by backend startup only if missing, so user edits are preserved across upgrades.
+
+
+### Ops journal lifecycle events
+- Lifecycle controls append ops events using `symbol=SYSTEM`, `side=null`:
+  - `BOT_PAUSE`, `BOT_RESUME`, `BOT_KILL`, `SYSTEM_RESET_ALL`, `EXPORT_PACK_REQUESTED`.
+- Ops journaling is best-effort: route responses remain successful even if journal append fails.

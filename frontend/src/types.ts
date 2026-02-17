@@ -333,7 +333,9 @@ export type JournalEntry = {
     | 'POSITION_CLOSED'
     | 'BOT_PAUSE'
     | 'BOT_RESUME'
-    | 'BOT_KILL';
+    | 'BOT_KILL'
+    | 'SYSTEM_RESET_ALL'
+    | 'EXPORT_PACK_REQUESTED';
   side: 'LONG' | 'SHORT' | null;
   data: Record<string, unknown>;
 };

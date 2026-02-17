@@ -187,16 +187,24 @@ Journal ops events:
 - `BOT_PAUSE`
 - `BOT_RESUME`
 - `BOT_KILL`
+- `SYSTEM_RESET_ALL`
+- `EXPORT_PACK_REQUESTED`
 
 ### Export
 - `GET /api/export/pack`
-  - Returns `application/zip` containing:
+  - Returns `application/zip` with `Content-Disposition: attachment; filename="export-pack_<ISO-ish>.zip"` (safe filename, no `:`).
+  - Includes available root files:
     - `universe.json`
     - `profiles.json`
-    - `runtime.json`
-    - `journal.ndjson`
-    - `meta.json` (`{ ts, version, missing[] }`)
-  - Missing files are included as empty placeholders and listed in `meta.json.missing`.
+    - `runtime.json` (if present)
+    - `journal.ndjson` (if present)
+    - `meta.json` (always present)
+  - `meta.json` contract:
+    - `createdAt` (epoch ms)
+    - `appVersion` (`package.json` version if available, else `unknown`)
+    - `notes: string[]` (missing-file diagnostics)
+    - `paths` (resolved storage paths used for collection)
+    - `counts` (optional `journalLines`, `universeSymbols`, `profilesCount`)
 
 ### Replay / local recording
 - `POST /api/replay/record/start` `{ "topN": 20, "fileName": "session-2026-02-15.ndjson" }`
