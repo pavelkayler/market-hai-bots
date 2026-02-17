@@ -82,12 +82,42 @@ const OVERNIGHT_1M_SAFE_PROFILE: BotConfig = {
   minNotionalUSDT: 10
 };
 
+const SMOKE_MIN_1M_PROFILE: BotConfig = {
+  ...DEFAULT_PROFILE_CONFIG,
+  mode: 'paper',
+  direction: 'both',
+  tf: 1,
+  signalCounterThreshold: 1,
+  priceUpThrPct: 0.2,
+  oiUpThrPct: 0.2,
+  oiCandleThrPct: 0,
+  marginUSDT: 25,
+  leverage: 5,
+  tpRoiPct: 2,
+  slRoiPct: 2,
+  entryOffsetPct: 0.01,
+  maxActiveSymbols: 20,
+  dailyLossLimitUSDT: 0,
+  maxConsecutiveLosses: 0,
+  trendTfMinutes: 5,
+  trendLookbackBars: 10,
+  trendMinMovePct: 0,
+  confirmWindowBars: 1,
+  confirmMinContinuationPct: 0,
+  impulseMaxAgeBars: 1,
+  requireOiTwoCandles: false,
+  minNotionalUSDT: 0,
+  maxSpreadBps: 9999,
+  maxTickStalenessMs: 60000
+};
+
 const DEFAULT_PROFILES_FILE: ProfilesFile = {
   activeProfile: DEFAULT_PROFILE_NAME,
   profiles: {
     [DEFAULT_PROFILE_NAME]: DEFAULT_PROFILE_CONFIG,
     fast_test_1m: FAST_TEST_1M_PROFILE,
-    overnight_1m_safe: OVERNIGHT_1M_SAFE_PROFILE
+    overnight_1m_safe: OVERNIGHT_1M_SAFE_PROFILE,
+    smoke_min_1m: SMOKE_MIN_1M_PROFILE
   }
 };
 
@@ -268,6 +298,10 @@ export class ProfileService {
 
     if (!state.profiles.overnight_1m_safe) {
       state.profiles.overnight_1m_safe = OVERNIGHT_1M_SAFE_PROFILE;
+    }
+
+    if (!state.profiles.smoke_min_1m) {
+      state.profiles.smoke_min_1m = SMOKE_MIN_1M_PROFILE;
     }
   }
 }
