@@ -24,11 +24,16 @@ const aggressiveConfig: BotConfig = {
   maxActiveSymbols: 5,
   dailyLossLimitUSDT: 0,
   maxConsecutiveLosses: 0,
-  trendTf: 5,
-  trendThrPct: 0,
-  confirmMovePct: 0,
-  confirmMaxCandles: 1,
-  maxSecondsIntoCandle: 45
+  trendTfMinutes: 5,
+  trendLookbackBars: 20,
+  trendMinMovePct: 0.2,
+  confirmWindowBars: 2,
+  confirmMinContinuationPct: 0.1,
+  impulseMaxAgeBars: 2,
+  requireOiTwoCandles: false,
+  maxSecondsIntoCandle: 45,
+  minSpreadBps: 0,
+  minNotionalUSDT: 5
 };
 
 describe('ProfileService', () => {
@@ -112,7 +117,12 @@ describe('ProfileService', () => {
             slRoiPct: 0.7,
             maxActiveSymbols: 5,
             dailyLossLimitUSDT: 0,
-            maxConsecutiveLosses: 0, trendTf: 5, trendThrPct: 0, confirmMovePct: 0, confirmMaxCandles: 1, maxSecondsIntoCandle: 45
+            maxConsecutiveLosses: 0, trendTfMinutes: 5, trendLookbackBars: 20,
+  trendMinMovePct: 0.2, confirmWindowBars: 2,
+  confirmMinContinuationPct: 0.1, impulseMaxAgeBars: 2,
+  requireOiTwoCandles: false, maxSecondsIntoCandle: 45,
+  minSpreadBps: 0,
+  minNotionalUSDT: 5
           }
         }
       });

@@ -27,11 +27,16 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   maxActiveSymbols: 3,
   dailyLossLimitUSDT: 10,
   maxConsecutiveLosses: 3,
-  trendTf: 5,
-  trendThrPct: 0.15,
-  confirmMovePct: 0.1,
-  confirmMaxCandles: 1,
-  maxSecondsIntoCandle: 45
+  trendTfMinutes: 5,
+  trendLookbackBars: 20,
+  trendMinMovePct: 0.2,
+  confirmWindowBars: 2,
+  confirmMinContinuationPct: 0.1,
+  impulseMaxAgeBars: 2,
+  requireOiTwoCandles: false,
+  maxSecondsIntoCandle: 45,
+  minSpreadBps: 0,
+  minNotionalUSDT: 5
 };
 
 const FAST_TEST_1M_PROFILE: BotConfig = {
@@ -40,6 +45,12 @@ const FAST_TEST_1M_PROFILE: BotConfig = {
   signalCounterThreshold: 1,
   priceUpThrPct: 0.35,
   oiUpThrPct: 25,
+  trendTfMinutes: 5,
+  trendMinMovePct: 0.1,
+  confirmWindowBars: 1,
+  confirmMinContinuationPct: 0.05,
+  impulseMaxAgeBars: 2,
+  requireOiTwoCandles: false,
   maxActiveSymbols: 2,
   dailyLossLimitUSDT: 8,
   maxConsecutiveLosses: 3
@@ -51,8 +62,12 @@ const OVERNIGHT_1M_SAFE_PROFILE: BotConfig = {
   signalCounterThreshold: 3,
   priceUpThrPct: 0.7,
   oiUpThrPct: 60,
-  trendThrPct: 0.2,
-  confirmMovePct: 0.15,
+  trendTfMinutes: 15,
+  trendMinMovePct: 0.3,
+  confirmWindowBars: 2,
+  confirmMinContinuationPct: 0.1,
+  impulseMaxAgeBars: 2,
+  requireOiTwoCandles: true,
   maxActiveSymbols: 1,
   dailyLossLimitUSDT: 6,
   maxConsecutiveLosses: 2

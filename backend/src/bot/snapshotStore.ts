@@ -25,9 +25,12 @@ export type RuntimeSnapshotSymbol = {
   trend15mLastClose?: number | null;
   armedSignal?: {
     side: 'LONG' | 'SHORT';
-    baselinePrice: number;
-    armedBucketStart: number;
-    expireBucketStart: number;
+    baselinePrice?: number;
+    armedBucketStart?: number;
+    expireBucketStart?: number;
+    triggerMark?: number;
+    triggerBucketStart?: number;
+    continuationWindowEndBucketStart?: number;
   } | null;
   lastNoEntryReasons?: Array<{ code: string; message: string; value?: number; threshold?: number }>;
 };

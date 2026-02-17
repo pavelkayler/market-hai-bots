@@ -132,11 +132,16 @@ const defaultSettings: BotSettings = {
   maxActiveSymbols: 3,
   dailyLossLimitUSDT: 10,
   maxConsecutiveLosses: 3,
-  trendTf: 5,
-  trendThrPct: 0.15,
-  confirmMovePct: 0.1,
-  confirmMaxCandles: 1,
-  maxSecondsIntoCandle: 45
+  trendTfMinutes: 5,
+  trendLookbackBars: 20,
+  trendMinMovePct: 0.2,
+  confirmWindowBars: 2,
+  confirmMinContinuationPct: 0.1,
+  impulseMaxAgeBars: 2,
+  requireOiTwoCandles: false,
+  maxSecondsIntoCandle: 45,
+  minSpreadBps: 0,
+  minNotionalUSDT: 5
 };
 
 function loadSettings(): BotSettings {
@@ -856,6 +861,11 @@ export function BotPage({
   });
 
   const positionRows = useMemo(() => trackedSymbols.filter((item) => item.position), [trackedSymbols]);
+  const noEntryRows = useMemo(() => {
+    return Object.values(symbolMap)
+      .filter((item) => item.topReasons && item.topReasons.length > 0)
+      .slice(0, 20);
+  }, [symbolMap]);
   const positionColumns: ColumnDef<SymbolUpdatePayload>[] = useMemo(
     () => [
       { label: 'Symbol', sortKey: 'symbol', accessor: (row) => row.symbol },
@@ -1340,24 +1350,42 @@ export function BotPage({
               <Card.Body>
                 <Row className="g-2">
                   <Col md={4}>
-                    <Form.Label>trendTf <span className="text-muted small">(min)</span></Form.Label>
-                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="5" value={settings.trendTf} onChange={(event) => persistSettings({ ...settings, trendTf: Number(event.target.value) as 5 | 15 })} />
-                    <Form.Text muted>Trend filter using 5m/15m close-to-close slope. Example: TF=5, thr=0.15%.</Form.Text>
+                    <Form.Label>trendTfMinutes <span className="text-muted small">(min)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="5" value={settings.trendTfMinutes} onChange={(event) => persistSettings({ ...settings, trendTfMinutes: Number(event.target.value) as 5 | 15 })} />
+                    <Form.Text muted>Higher-TF trend source (5 or 15). Example: 5 for 1m fast runs.</Form.Text>
                   </Col>
                   <Col md={4}>
-                    <Form.Label>trendThrPct <span className="text-muted small">(%)</span></Form.Label>
-                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.15" value={settings.trendThrPct} onChange={(event) => persistSettings({ ...settings, trendThrPct: Number(event.target.value) })} />
-                    <Form.Text muted>Trend filter using 5m/15m close-to-close slope. 0.15 = 0.15% (not 0.0015).</Form.Text>
+                    <Form.Label>trendLookbackBars <span className="text-muted small">(bars)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="20" value={settings.trendLookbackBars} onChange={(event) => persistSettings({ ...settings, trendLookbackBars: Number(event.target.value) })} />
+                    <Form.Text muted>Lookback bars on trend TF. Example: 20 bars.</Form.Text>
                   </Col>
                   <Col md={4}>
-                    <Form.Label>confirmMovePct <span className="text-muted small">(%)</span></Form.Label>
-                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.1" value={settings.confirmMovePct} onChange={(event) => persistSettings({ ...settings, confirmMovePct: Number(event.target.value) })} />
-                    <Form.Text muted>Continuation confirmation threshold on next candle. 0.1 means 0.1%.</Form.Text>
+                    <Form.Label>trendMinMovePct <span className="text-muted small">(%)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.15" value={settings.trendMinMovePct} onChange={(event) => persistSettings({ ...settings, trendMinMovePct: Number(event.target.value) })} />
+                    <Form.Text muted>Min trend move over lookback. 0.3 means 0.3%.</Form.Text>
                   </Col>
                   <Col md={4}>
-                    <Form.Label>confirmMaxCandles <span className="text-muted small">(count)</span></Form.Label>
-                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="1" value={settings.confirmMaxCandles} onChange={(event) => persistSettings({ ...settings, confirmMaxCandles: Number(event.target.value) })} />
-                    <Form.Text muted>How many candles are allowed for continuation confirm. Example: 1.</Form.Text>
+                    <Form.Label>confirmMinContinuationPct <span className="text-muted small">(%)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.1" value={settings.confirmMinContinuationPct} onChange={(event) => persistSettings({ ...settings, confirmMinContinuationPct: Number(event.target.value) })} />
+                    <Form.Text muted>Follow-through needed after trigger. 0.1 means 0.1% continuation.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>confirmWindowBars <span className="text-muted small">(bars)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="1" value={settings.confirmWindowBars} onChange={(event) => persistSettings({ ...settings, confirmWindowBars: Number(event.target.value) })} />
+                    <Form.Text muted>Bars allowed to find continuation. Example: 2 for safer 1m.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>impulseMaxAgeBars <span className="text-muted small">(bars)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="2" value={settings.impulseMaxAgeBars} onChange={(event) => persistSettings({ ...settings, impulseMaxAgeBars: Number(event.target.value) })} />
+                    <Form.Text muted>Reject stale impulses older than this many TF bars.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>requireOiTwoCandles <span className="text-muted small">(bool)</span></Form.Label>
+                    <Form.Select disabled={disableSettings} value={settings.requireOiTwoCandles ? 'true' : 'false'} onChange={(event) => persistSettings({ ...settings, requireOiTwoCandles: event.target.value === 'true' })}>
+                      <option value="false">false</option>
+                      <option value="true">true</option>
+                    </Form.Select>
+                    <Form.Text muted>Require last 2 OI candle deltas {'>='} oiCandleThrPct. Helps avoid single spikes.</Form.Text>
                   </Col>
                 </Row>
               </Card.Body>
@@ -1392,6 +1420,16 @@ export function BotPage({
                     <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.01" value={settings.entryOffsetPct} onChange={(event) => persistSettings({ ...settings, entryOffsetPct: Number(event.target.value) })} />
                     <Form.Text muted>LONG entryLimit = mark*(1 - off/100), SHORT entryLimit = mark*(1 + off/100).</Form.Text>
                     <Form.Text muted>Example: 0.01 = 0.01% offset (not 0.0001).</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>minNotionalUSDT <span className="text-muted small">(USDT)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.1} placeholder="5" value={settings.minNotionalUSDT} onChange={(event) => persistSettings({ ...settings, minNotionalUSDT: Number(event.target.value) })} />
+                    <Form.Text muted>Gate tiny orders. Example: 5 for paper/demo sanity.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>minSpreadBps <span className="text-muted small">(bps)</span></Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={0.1} placeholder="0" value={settings.minSpreadBps} onChange={(event) => persistSettings({ ...settings, minSpreadBps: Number(event.target.value) })} />
+                    <Form.Text muted>Optional spread filter. Keep 0 when spread feed is unavailable.</Form.Text>
                   </Col>
                 </Row>
               </Card.Body>
@@ -1574,6 +1612,18 @@ export function BotPage({
       </Col>
 
       <Col md={12}>
+        <Card className="mb-3">
+          <Card.Header>No entry reasons (top)</Card.Header>
+          <Card.Body>
+            {noEntryRows.length === 0 ? <div className="text-muted">No no-entry reasons yet.</div> : null}
+            {noEntryRows.map((row) => (
+              <div key={`reasons-${row.symbol}`} className="mb-2">
+                <strong>{row.symbol}</strong>: {(row.topReasons ?? []).slice(0, 3).map((reason) => `${reason.code}${typeof reason.value === 'number' ? `=${reason.value.toFixed(3)}` : ''}${typeof reason.threshold === 'number' ? ` (thr ${reason.threshold})` : ''}`).join(', ')}
+              </div>
+            ))}
+          </Card.Body>
+        </Card>
+
         <Card>
           <Card.Header>Orders</Card.Header>
           <Card.Body className="table-responsive">
