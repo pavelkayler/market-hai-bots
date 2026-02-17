@@ -5,7 +5,9 @@
   "scripts": {
     "dev:backend": "npm --prefix backend run dev",
     "dev:frontend": "npm --prefix frontend run dev",
-    "dev": "concurrently -k \"npm run dev:backend\" \"npm run dev:frontend\""
+    "dev": "concurrently -k \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "test": "npm --prefix backend test",
+    "build:frontend": "npm --prefix frontend run build"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

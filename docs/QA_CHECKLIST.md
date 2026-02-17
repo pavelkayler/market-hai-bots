@@ -1,0 +1,72 @@
+# QA Checklist (Release Readiness, v1)
+
+Use this as an operator runbook. Each step includes expected outcome.
+
+## A) Universe lifecycle
+1. Click **Create Universe** with `minTurnover` and `minVolPct`.
+   - Expect success toast and `ready=true` in Universe state.
+2. Click **Refresh Universe**.
+   - Expect filters preserved/canonicalized and counters (`passed`, `excludedCount`, `contract filter`) updated.
+3. Click **Get Universe**.
+   - Expect symbols table loaded with `symbol`, turnover, vol24h range, 24h high/low.
+4. Use **search**, click column headers to **sort**, and move between pages.
+   - Expect stable sort and pagination; search narrows results immediately.
+5. Click **Download universe.json**.
+   - Expect JSON file download with canonical fields (`ready`, `filters`, `contractFilter`, `symbols`).
+6. Click **Clear Universe**.
+   - Expect `ready=false` and symbols table cleared.
+
+## B) Bot lifecycle / snapshot behavior
+1. With universe ready, click **Start**.
+   - Expect bot state `running=true`; settings become locked.
+2. Click **Pause**.
+   - Expect `paused=true`, `hasSnapshot=true`, journal includes `BOT_PAUSE`.
+3. Click **Resume**.
+   - Expect `running=true`, `paused=false`, snapshot-based state restored (including last config).
+4. Click **Stop**.
+   - Expect `running=false` and no new orders.
+5. After a reset/clear of runtime, click **Resume**.
+   - Expect error `NO_SNAPSHOT`.
+
+## C) Paper trade lifecycle
+1. Start in **paper** mode with `signalCounterThreshold >= 2`, `entryOffsetPct > 0`.
+2. Feed/observe qualifying signal ticks across UTC candle boundaries.
+   - Expect counter increments once per UTC candle (dedupe within same candle).
+3. After threshold is met:
+   - Expect `ENTRY_PENDING` limit order at mark ± `entryOffsetPct`.
+4. Move mark through limit.
+   - Expect fill and phase `POSITION_OPEN`.
+5. Move mark to TP or SL.
+   - Expect close event, `POSITION_CLOSED`, journal records, and stats update using **net PnL (fees included)**.
+
+## D) Demo lifecycle
+1. Start in **demo** mode with credentials configured.
+2. Trigger an entry.
+   - Expect queued order -> sent order transition.
+3. Cancel a queued order.
+   - Expect local queue cancellation, no remote cancel required.
+4. Cancel a sent order.
+   - Expect remote cancel request and state cleared after polling.
+5. Keep polling enabled.
+   - Expect open orders synced and position-list polling used for close detection.
+
+## E) Replay lifecycle
+1. Start recording (`record/start`), then stop.
+   - Expect file appears in replay files list.
+2. Start replay with a selected speed (1x/2x/5x/fast).
+   - Expect replaying state + progress counters increase.
+3. Stop replay.
+   - Expect live feed restored and replay flags reset.
+4. Try enabling record while replaying (and vice versa).
+   - Expect mutual-exclusion rejection.
+5. If trading during replay is disabled by config/design:
+   - Expect no new live trades while replay is active.
+
+## F) Reset all
+1. With bot running, call **Reset all**.
+   - Expect reject with `BOT_RUNNING`.
+2. Stop bot, then call **Reset all**.
+   - Expect success with cleared: stats/journal/runtime/exclusions/universe/replay.
+3. Validate after reset:
+   - Runtime state cleared, exclusions empty, universe not ready, replay stopped.
+   - Profiles remain intact (default + saved profiles still present).

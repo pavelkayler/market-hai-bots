@@ -2,6 +2,16 @@
 
 Percent convention: **`3` means 3%** (not `0.03`).
 
+## Definitions (operator quick reference)
+
+- **Percent inputs**: unless explicitly marked otherwise, `3` means **3%**, not `0.03`.
+- **Universe volatility (`vol24hRangePct`)**: `((high24h - low24h) / low24h) * 100` from **24h ticker** data. It is not 1m candle volatility.
+- **ROI% to price move**: `roiPct / leverage / 100`.
+  - Example: `tpRoiPct=3`, `leverage=10` → price move target is `0.3%`.
+- **Net PnL**: `grossPnl - fees` (entry fee + exit fee).
+  - Example: 3 wins `+2,+2,+2` and 2 losses `-4,-4` gives gross `-2`. Even with 60% winrate, fees can push net further negative.
+- **Today PnL** uses the **UTC** day boundary (00:00 UTC reset), not local timezone midnight.
+
 ## Universe filters (24h metrics, v1)
 
 Universe uses only **24h ticker metrics**:

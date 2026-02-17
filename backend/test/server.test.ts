@@ -765,6 +765,8 @@ describe('server routes', () => {
     expect(response.headers['content-type']).toContain('application/json');
     expect(response.json()).toMatchObject({
       ready: true,
+      contractFilter: 'USDT_LINEAR_PERPETUAL_ONLY',
+      filters: { minVolPct: 5, minTurnover: 10000000 },
       symbols: [expect.objectContaining({ symbol: 'BTCUSDT' })]
     });
 
@@ -1221,6 +1223,113 @@ describe('server routes', () => {
     expect(typeof payload.activeOrders).toBe('number');
     expect(typeof payload.openPositions).toBe('number');
     expect(payload.activeOrders).toBe(1);
+  });
+
+  it('start -> pause creates snapshot and resume restores running state', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'pause-resume-route-test-'));
+    const runtimeSnapshotFilePath = path.join(tempDir, 'runtime.json');
+
+    app = buildIsolatedServer({
+      runtimeSnapshotFilePath,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper', direction: 'long', tf: 1, holdSeconds: 1, signalCounterThreshold: 1,
+        priceUpThrPct: 1, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
+        entryOffsetPct: 0, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0, trendTfMinutes: 5, trendLookbackBars: 20,
+        trendMinMovePct: 0.2, confirmWindowBars: 2, confirmMinContinuationPct: 0.1, impulseMaxAgeBars: 2, requireOiTwoCandles: false,
+        maxSecondsIntoCandle: 45, minSpreadBps: 0, minNotionalUSDT: 5
+      }
+    });
+
+    const pauseResponse = await app.inject({ method: 'POST', url: '/api/bot/pause', payload: {} });
+    expect(pauseResponse.statusCode).toBe(200);
+
+    const pausedState = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(pausedState.json()).toMatchObject({ running: true, paused: true, hasSnapshot: true });
+
+    const resumeResponse = await app.inject({ method: 'POST', url: '/api/bot/resume', payload: {} });
+    expect(resumeResponse.statusCode).toBe(200);
+
+    const resumedState = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(resumedState.json()).toMatchObject({ running: true, paused: false, hasSnapshot: true });
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('paper flow: signal dedupe -> entry pending -> fill -> TP close updates stats and journal', async () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const tickerStream = new FakeTickerStream();
+    app = buildIsolatedServer({
+      now: () => now,
+      tickerStream,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper', direction: 'long', tf: 1, holdSeconds: 1, signalCounterThreshold: 2,
+        priceUpThrPct: 1, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
+        entryOffsetPct: 0.1, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0, trendTfMinutes: 5, trendLookbackBars: 20,
+        trendMinMovePct: 0, confirmWindowBars: 2, confirmMinContinuationPct: 0, impulseMaxAgeBars: 2, requireOiTwoCandles: false,
+        maxSecondsIntoCandle: 45, minSpreadBps: 0, minNotionalUSDT: 5
+      }
+    });
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: 1000, ts: now });
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now + 5_000 });
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now + 20_000 });
+
+    let stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(stateResponse.json()).toMatchObject({ activeOrders: 0, openPositions: 0 });
+
+    now += 60_000;
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
+    stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(stateResponse.json()).toMatchObject({ activeOrders: 1, openPositions: 0 });
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 101.85, openInterestValue: 1020, ts: now + 1_000 });
+    stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(stateResponse.json()).toMatchObject({ activeOrders: 0, openPositions: 1 });
+
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102.5, openInterestValue: 1020, ts: now + 2_000 });
+
+    const statsResponse = await app.inject({ method: 'GET', url: '/api/bot/stats' });
+    expect(statsResponse.json()).toMatchObject({
+      ok: true,
+      stats: {
+        totalTrades: 1,
+        wins: 1,
+        losses: 0,
+        pnlUSDT: expect.any(Number),
+        todayPnlUSDT: expect.any(Number),
+        long: { trades: 1, wins: 1, losses: 0 },
+        short: { trades: 0, wins: 0, losses: 0 }
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const tailResponse = await app.inject({ method: 'GET', url: '/api/journal/tail?limit=20' });
+    const events = (tailResponse.json() as { entries: Array<{ event: string }> }).entries.map((entry) => entry.event);
+    expect(events).toEqual(expect.arrayContaining(['SIGNAL', 'ORDER_PLACED', 'ORDER_FILLED', 'POSITION_OPENED', 'POSITION_CLOSED']));
   });
 
 
