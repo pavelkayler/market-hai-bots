@@ -44,13 +44,28 @@ PnL:
 
 Stats and per-symbol performance use **net** PnL.
 
-## New risk/filter fields
+## Trend / confirmation hardening (Task 29)
 
-- `trendTf`: `5 | 15` (default profile: `5`)
-- `trendThrPct`: trend slope threshold in % (`0` disables)
-- `confirmMovePct`: continuation confirmation % (`0` disables)
-- `confirmMaxCandles`: max candles for confirmation window
-- `maxSecondsIntoCandle`: reject late impulses in TF candle
+- `trendTfMinutes`: `5 | 15` higher-TF context source.
+- `trendLookbackBars`: lookback bars on trend TF (default `20`).
+- `trendMinMovePct`: min move over lookback for trend regime (`UP`, `DOWN`, `FLAT`).
+  - LONG is blocked only when trend is `DOWN`.
+  - SHORT is blocked only when trend is `UP`.
+  - `FLAT` allows both sides.
+- `confirmWindowBars`: continuation window after trigger (`1..5`).
+- `confirmMinContinuationPct`: required continuation from trigger mark.
+- `impulseMaxAgeBars`: rejects stale impulses that survive too long without follow-through.
+- `requireOiTwoCandles`: requires last 2 OI candle deltas to be >= `oiCandleThrPct` (for both LONG and SHORT divergence mode OI-rising checks).
+- `maxSecondsIntoCandle`: keeps very-late impulse triggers out (especially on 1m).
+- `minNotionalUSDT`: block tiny entries in paper/demo.
+- `minSpreadBps`: optional spread gate placeholder (keep `0` when spread is unavailable).
+
+### Example presets
+
+- **fast_test_1m**
+  - `trendTfMinutes=5`, `trendMinMovePct=0.1`, `confirmWindowBars=1`, `confirmMinContinuationPct=0.05`, `impulseMaxAgeBars=2`, `requireOiTwoCandles=false`
+- **overnight_1m_safe**
+  - `trendTfMinutes=15`, `trendMinMovePct=0.3`, `confirmWindowBars=2`, `confirmMinContinuationPct=0.1`, `impulseMaxAgeBars=2`, `requireOiTwoCandles=true`
 
 ## Guardrails defaults (default profile)
 
@@ -76,10 +91,11 @@ Most common causes:
 ### “No entries happening”
 
 Check WS `symbol:update.topReasons` and bot logs:
-- `TREND_FILTER_BLOCK`
+- `TREND_BLOCK_LONG` / `TREND_BLOCK_SHORT`
 - `SIGNAL_COUNTER_NOT_MET`
-- `CONFIRMATION_FAIL`
-- `IMPULSE_TOO_LATE`
+- `NO_CONTINUATION`
+- `IMPULSE_STALE` / `IMPULSE_TOO_LATE`
+- `OI_2CANDLES_FAIL`
 - `QTY_BELOW_MIN`
 - `MAX_ACTIVE_REACHED`
 - `GUARDRAIL_PAUSED`

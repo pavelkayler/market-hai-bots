@@ -1274,7 +1274,12 @@ describe('universe exclusions routes', () => {
     await app.inject({ method: 'POST', url: '/api/bot/start', payload: {
       mode: 'paper', direction: 'long', tf: 1, holdSeconds: 1, signalCounterThreshold: 1,
       priceUpThrPct: 0.5, oiUpThrPct: 1, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2, tpRoiPct: 1, slRoiPct: 1,
-      entryOffsetPct: 0, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0, trendTf: 5, trendThrPct: 0, confirmMovePct: 0, confirmMaxCandles: 1, maxSecondsIntoCandle: 45
+      entryOffsetPct: 0, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0, trendTfMinutes: 5, trendLookbackBars: 20,
+  trendMinMovePct: 0.2, confirmWindowBars: 2,
+  confirmMinContinuationPct: 0.1, impulseMaxAgeBars: 2,
+  requireOiTwoCandles: false, maxSecondsIntoCandle: 45,
+  minSpreadBps: 0,
+  minNotionalUSDT: 5
     } });
 
     const response = await app.inject({ method: 'POST', url: '/api/universe/exclusions/add', payload: { symbol: 'BTCUSDT' } });

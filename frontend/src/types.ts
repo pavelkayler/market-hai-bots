@@ -20,11 +20,16 @@ export type BotSettings = {
   maxActiveSymbols: number;
   dailyLossLimitUSDT: number;
   maxConsecutiveLosses: number;
-  trendTf: 5 | 15;
-  trendThrPct: number;
-  confirmMovePct: number;
-  confirmMaxCandles: number;
+  trendTfMinutes: 5 | 15;
+  trendLookbackBars: number;
+  trendMinMovePct: number;
+  confirmWindowBars: number;
+  confirmMinContinuationPct: number;
+  impulseMaxAgeBars: number;
+  requireOiTwoCandles: boolean;
   maxSecondsIntoCandle: number;
+  minSpreadBps: number;
+  minNotionalUSDT: number;
 };
 
 export type BotConfig = BotSettings;
@@ -175,7 +180,7 @@ export type NoEntryReason = {
 
 export type SymbolUpdatePayload = {
   symbol: string;
-  state: 'IDLE' | 'HOLDING_LONG' | 'HOLDING_SHORT' | 'ENTRY_PENDING' | 'POSITION_OPEN';
+  state: 'IDLE' | 'HOLDING_LONG' | 'HOLDING_SHORT' | 'ARMED_LONG' | 'ARMED_SHORT' | 'ENTRY_PENDING' | 'POSITION_OPEN';
   markPrice: number;
   openInterestValue: number;
   oiCandleValue: number | null;

@@ -29,11 +29,16 @@ export type BotConfig = {
   maxActiveSymbols: number;
   dailyLossLimitUSDT: number;
   maxConsecutiveLosses: number;
-  trendTf: 5 | 15;
-  trendThrPct: number;
-  confirmMovePct: number;
-  confirmMaxCandles: number;
+  trendTfMinutes: 5 | 15;
+  trendLookbackBars: number;
+  trendMinMovePct: number;
+  confirmWindowBars: number;
+  confirmMinContinuationPct: number;
+  impulseMaxAgeBars: number;
+  requireOiTwoCandles: boolean;
   maxSecondsIntoCandle: number;
+  minSpreadBps: number;
+  minNotionalUSDT: number;
 };
 
 export type BotState = {
@@ -62,12 +67,16 @@ export type SymbolFsmState = 'IDLE' | 'HOLDING_LONG' | 'HOLDING_SHORT' | 'ARMED_
 
 export type NoEntryReason = {
   code:
-    | 'TREND_FILTER_BLOCK'
+    | 'TREND_BLOCK_LONG'
+    | 'TREND_BLOCK_SHORT'
     | 'OI_CANDLE_GATE_FAIL'
+    | 'OI_2CANDLES_FAIL'
     | 'SIGNAL_COUNTER_NOT_MET'
-    | 'CONFIRMATION_FAIL'
+    | 'NO_CONTINUATION'
+    | 'IMPULSE_STALE'
     | 'IMPULSE_TOO_LATE'
     | 'QTY_BELOW_MIN'
+    | 'NOTIONAL_TOO_SMALL'
     | 'MAX_ACTIVE_REACHED'
     | 'GUARDRAIL_PAUSED';
   message: string;
@@ -104,17 +113,14 @@ export type SymbolRuntimeState = {
   pendingOrder: PaperPendingOrder | null;
   position: PaperPosition | null;
   demo: DemoRuntimeState | null;
-  trend5mBucketStart: number | null;
-  trend5mPrevClose: number | null;
-  trend5mLastClose: number | null;
-  trend15mBucketStart: number | null;
-  trend15mPrevClose: number | null;
-  trend15mLastClose: number | null;
+  trendCandles5m: TrendCandle[];
+  trendCandles15m: TrendCandle[];
+  oiCandleDeltaPctHistory: number[];
   armedSignal: {
     side: 'LONG' | 'SHORT';
-    baselinePrice: number;
-    armedBucketStart: number;
-    expireBucketStart: number;
+    triggerMark: number;
+    triggerBucketStart: number;
+    continuationWindowEndBucketStart: number;
   } | null;
   noEntryReasonCounts: Map<NoEntryReason['code'], number>;
   lastNoEntryReasons: NoEntryReason[];
@@ -194,6 +200,16 @@ type BotPerSymbolAccumulator = {
   lastClosedPnlUSDT: number | null;
 };
 
+type TrendCandle = {
+  bucketStart: number;
+  openTs: number;
+  closeTs: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+
 export type BotPerSymbolStats = {
   symbol: string;
   trades: number;
@@ -229,12 +245,31 @@ const DEFAULT_OI_CANDLE_THR_PCT = 0;
 const DEFAULT_MAX_ACTIVE_SYMBOLS = 3;
 const DEFAULT_ENTRY_OFFSET_PCT = 0.01;
 const DEFAULT_TREND_TF: 5 | 15 = 5;
-const DEFAULT_TREND_THR_PCT = 0;
-const DEFAULT_CONFIRM_MOVE_PCT = 0;
-const DEFAULT_CONFIRM_MAX_CANDLES = 1;
+const DEFAULT_TREND_LOOKBACK_BARS = 20;
+const DEFAULT_TREND_MIN_MOVE_PCT = 0.2;
+const DEFAULT_CONFIRM_WINDOW_BARS = 2;
+const DEFAULT_CONFIRM_MIN_CONTINUATION_PCT = 0.1;
+const DEFAULT_IMPULSE_MAX_AGE_BARS = 2;
+const DEFAULT_REQUIRE_OI_TWO_CANDLES = false;
 const DEFAULT_MAX_SECONDS_INTO_CANDLE = 45;
+const DEFAULT_MIN_SPREAD_BPS = 0;
+const DEFAULT_MIN_NOTIONAL_USDT = 5;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
+const NO_ENTRY_REASON_CODES: NoEntryReason['code'][] = [
+  'TREND_BLOCK_LONG',
+  'TREND_BLOCK_SHORT',
+  'OI_CANDLE_GATE_FAIL',
+  'OI_2CANDLES_FAIL',
+  'SIGNAL_COUNTER_NOT_MET',
+  'NO_CONTINUATION',
+  'IMPULSE_STALE',
+  'IMPULSE_TOO_LATE',
+  'QTY_BELOW_MIN',
+  'NOTIONAL_TOO_SMALL',
+  'MAX_ACTIVE_REACHED',
+  'GUARDRAIL_PAUSED'
+];
 
 const createEmptySideBreakdown = (): BotStatsSideBreakdown => ({
   trades: 0,
@@ -279,18 +314,33 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
       : 0;
   const entryOffsetPct =
     typeof raw.entryOffsetPct === 'number' && Number.isFinite(raw.entryOffsetPct) ? Math.max(0, raw.entryOffsetPct) : DEFAULT_ENTRY_OFFSET_PCT;
-  const trendTf = raw.trendTf === 15 ? 15 : DEFAULT_TREND_TF;
-  const trendThrPct = typeof raw.trendThrPct === 'number' && Number.isFinite(raw.trendThrPct) ? Math.max(0, raw.trendThrPct) : DEFAULT_TREND_THR_PCT;
-  const confirmMovePct =
-    typeof raw.confirmMovePct === 'number' && Number.isFinite(raw.confirmMovePct) ? Math.max(0, raw.confirmMovePct) : DEFAULT_CONFIRM_MOVE_PCT;
-  const confirmMaxCandles =
-    typeof raw.confirmMaxCandles === 'number' && Number.isFinite(raw.confirmMaxCandles)
-      ? Math.max(1, Math.floor(raw.confirmMaxCandles))
-      : DEFAULT_CONFIRM_MAX_CANDLES;
+  const trendTfMinutes = raw.trendTfMinutes === 15 || raw.trendTf === 15 ? 15 : DEFAULT_TREND_TF;
+  const trendLookbackBarsRaw = typeof raw.trendLookbackBars === 'number' ? raw.trendLookbackBars : DEFAULT_TREND_LOOKBACK_BARS;
+  const trendLookbackBars = Math.max(10, Math.min(200, Math.floor(trendLookbackBarsRaw)));
+  const trendMinMovePctRaw = typeof raw.trendMinMovePct === 'number' ? raw.trendMinMovePct : raw.trendThrPct;
+  const trendMinMovePct = typeof trendMinMovePctRaw === 'number' && Number.isFinite(trendMinMovePctRaw) ? Math.max(0, trendMinMovePctRaw) : DEFAULT_TREND_MIN_MOVE_PCT;
+  const confirmWindowBarsRaw = typeof raw.confirmWindowBars === 'number' ? raw.confirmWindowBars : raw.confirmMaxCandles;
+  const confirmWindowBars =
+    typeof confirmWindowBarsRaw === 'number' && Number.isFinite(confirmWindowBarsRaw)
+      ? Math.max(1, Math.min(5, Math.floor(confirmWindowBarsRaw)))
+      : DEFAULT_CONFIRM_WINDOW_BARS;
+  const confirmMinContinuationPctRaw = typeof raw.confirmMinContinuationPct === 'number' ? raw.confirmMinContinuationPct : raw.confirmMovePct;
+  const confirmMinContinuationPct =
+    typeof confirmMinContinuationPctRaw === 'number' && Number.isFinite(confirmMinContinuationPctRaw)
+      ? Math.max(0, confirmMinContinuationPctRaw)
+      : DEFAULT_CONFIRM_MIN_CONTINUATION_PCT;
+  const impulseMaxAgeBars =
+    typeof raw.impulseMaxAgeBars === 'number' && Number.isFinite(raw.impulseMaxAgeBars)
+      ? Math.max(1, Math.min(10, Math.floor(raw.impulseMaxAgeBars)))
+      : DEFAULT_IMPULSE_MAX_AGE_BARS;
+  const requireOiTwoCandles = typeof raw.requireOiTwoCandles === 'boolean' ? raw.requireOiTwoCandles : DEFAULT_REQUIRE_OI_TWO_CANDLES;
   const maxSecondsIntoCandle =
     typeof raw.maxSecondsIntoCandle === 'number' && Number.isFinite(raw.maxSecondsIntoCandle)
       ? Math.max(0, Math.floor(raw.maxSecondsIntoCandle))
       : DEFAULT_MAX_SECONDS_INTO_CANDLE;
+  const minSpreadBps = typeof raw.minSpreadBps === 'number' && Number.isFinite(raw.minSpreadBps) ? Math.max(0, raw.minSpreadBps) : DEFAULT_MIN_SPREAD_BPS;
+  const minNotionalUSDT =
+    typeof raw.minNotionalUSDT === 'number' && Number.isFinite(raw.minNotionalUSDT) ? Math.max(0, raw.minNotionalUSDT) : DEFAULT_MIN_NOTIONAL_USDT;
 
   const numericFields = ['priceUpThrPct', 'marginUSDT', 'leverage', 'tpRoiPct', 'slRoiPct'] as const;
   for (const key of numericFields) {
@@ -320,11 +370,16 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     maxActiveSymbols,
     dailyLossLimitUSDT,
     maxConsecutiveLosses,
-    trendTf,
-    trendThrPct,
-    confirmMovePct,
-    confirmMaxCandles,
-    maxSecondsIntoCandle
+    trendTfMinutes,
+    trendLookbackBars,
+    trendMinMovePct,
+    confirmWindowBars,
+    confirmMinContinuationPct,
+    impulseMaxAgeBars,
+    requireOiTwoCandles,
+    maxSecondsIntoCandle,
+    minSpreadBps,
+    minNotionalUSDT
   };
 };
 
@@ -574,15 +629,22 @@ export class BotEngine {
         pendingOrder: state.pendingOrder,
         position: state.position,
         demo: state.demo,
-        trend5mBucketStart: state.trend5mBucketStart ?? null,
-        trend5mPrevClose: state.trend5mPrevClose ?? null,
-        trend5mLastClose: state.trend5mLastClose ?? null,
-        trend15mBucketStart: state.trend15mBucketStart ?? null,
-        trend15mPrevClose: state.trend15mPrevClose ?? null,
-        trend15mLastClose: state.trend15mLastClose ?? null,
-        armedSignal: state.armedSignal ?? null,
+        trendCandles5m: [],
+        trendCandles15m: [],
+        oiCandleDeltaPctHistory: [],
+        armedSignal: state.armedSignal
+          ? {
+              side: state.armedSignal.side,
+              triggerMark: state.armedSignal.triggerMark ?? state.armedSignal.baselinePrice ?? 0,
+              triggerBucketStart: state.armedSignal.triggerBucketStart ?? state.armedSignal.armedBucketStart ?? 0,
+              continuationWindowEndBucketStart:
+                state.armedSignal.continuationWindowEndBucketStart ?? state.armedSignal.expireBucketStart ?? 0
+            }
+          : null,
         noEntryReasonCounts: new Map(),
-        lastNoEntryReasons: state.lastNoEntryReasons ?? []
+        lastNoEntryReasons: (state.lastNoEntryReasons ?? []).filter((entry): entry is NoEntryReason =>
+          NO_ENTRY_REASON_CODES.includes(entry.code as NoEntryReason['code'])
+        )
       });
     }
 
@@ -691,12 +753,9 @@ export class BotEngine {
       prevCandleOi: symbolState.prevCandleOi,
       lastCandleOi: symbolState.lastCandleOi,
       lastCandleBucketStart: symbolState.lastCandleBucketStart,
-      trend5mBucketStart: symbolState.trend5mBucketStart,
-      trend5mPrevClose: symbolState.trend5mPrevClose,
-      trend5mLastClose: symbolState.trend5mLastClose,
-      trend15mBucketStart: symbolState.trend15mBucketStart,
-      trend15mPrevClose: symbolState.trend15mPrevClose,
-      trend15mLastClose: symbolState.trend15mLastClose,
+      trendCandles5m: symbolState.trendCandles5m.map((candle) => ({ ...candle })),
+      trendCandles15m: symbolState.trendCandles15m.map((candle) => ({ ...candle })),
+      oiCandleDeltaPctHistory: [...symbolState.oiCandleDeltaPctHistory],
       armedSignal: symbolState.armedSignal ? { ...symbolState.armedSignal } : null,
       noEntryReasonCounts: new Map(symbolState.noEntryReasonCounts),
       lastNoEntryReasons: [...symbolState.lastNoEntryReasons]
@@ -819,8 +878,14 @@ export class BotEngine {
     }
 
     this.updateCandleOiState(symbolState, marketState.openInterestValue, now);
+    const hadArmedSignal = !!symbolState.armedSignal;
     if (this.tryConfirmArmedSignal(symbolState, marketState, now)) {
       this.updateSummaryCounts();
+      this.persistSnapshot();
+      return;
+    }
+
+    if (hadArmedSignal) {
       this.persistSnapshot();
       return;
     }
@@ -843,15 +908,17 @@ export class BotEngine {
       return;
     }
 
-    const trendDeltaPct = this.getTrendDeltaPct(symbolState, this.state.config.trendTf);
-    if (this.state.config.trendThrPct > 0 && trendDeltaPct !== null) {
-      const trendOk = side === 'LONG' ? trendDeltaPct >= this.state.config.trendThrPct : trendDeltaPct <= -this.state.config.trendThrPct;
-      if (!trendOk) {
+    const trendDeltaPct = this.getTrendDeltaPct(symbolState, this.state.config.trendTfMinutes, this.state.config.trendLookbackBars);
+    if (trendDeltaPct !== null) {
+      const trendBlocked =
+        (side === 'LONG' && trendDeltaPct <= -this.state.config.trendMinMovePct) ||
+        (side === 'SHORT' && trendDeltaPct >= this.state.config.trendMinMovePct);
+      if (trendBlocked) {
         this.recordNoEntryReason(symbolState, {
-          code: 'TREND_FILTER_BLOCK',
-          message: `Trend ${this.state.config.trendTf}m mismatch.`,
+          code: side === 'LONG' ? 'TREND_BLOCK_LONG' : 'TREND_BLOCK_SHORT',
+          message: `Trend ${this.state.config.trendTfMinutes}m blocks ${side}.`,
           value: trendDeltaPct,
-          threshold: this.state.config.trendThrPct
+          threshold: this.state.config.trendMinMovePct
         });
         this.resetToIdle(symbolState);
         this.persistSnapshot();
@@ -897,7 +964,7 @@ export class BotEngine {
       oiDeltaPct
     });
 
-    if (this.state.config.confirmMovePct <= 0) {
+    if (this.state.config.confirmMinContinuationPct <= 0) {
       this.tryPlaceEntryOrder(symbolState, marketState, side);
       this.persistSnapshot();
       return;
@@ -905,9 +972,9 @@ export class BotEngine {
 
     symbolState.armedSignal = {
       side,
-      baselinePrice: marketState.markPrice,
-      armedBucketStart: this.computeTfBucketStart(now),
-      expireBucketStart: this.computeTfBucketStart(now) + this.state.config.tf * 60_000 * this.state.config.confirmMaxCandles
+      triggerMark: marketState.markPrice,
+      triggerBucketStart: this.computeTfBucketStart(now),
+      continuationWindowEndBucketStart: this.computeTfBucketStart(now) + this.state.config.tf * 60_000 * this.state.config.confirmWindowBars
     };
     symbolState.fsmState = side === 'LONG' ? 'ARMED_LONG' : 'ARMED_SHORT';
     this.persistSnapshot();
@@ -920,19 +987,32 @@ export class BotEngine {
 
     const currentBucket = this.computeTfBucketStart(now);
     const armed = symbolState.armedSignal;
-    if (currentBucket <= armed.armedBucketStart) {
+    if (currentBucket <= armed.triggerBucketStart) {
       return false;
     }
 
-    const movePct = ((marketState.markPrice - armed.baselinePrice) / armed.baselinePrice) * 100;
-    const moveOk = armed.side === 'LONG' ? movePct >= this.state.config!.confirmMovePct : movePct <= -this.state.config!.confirmMovePct;
+    const ageBars = Math.floor((currentBucket - armed.triggerBucketStart) / (this.state.config!.tf * 60_000));
+    if (ageBars > this.state.config!.impulseMaxAgeBars) {
+      this.recordNoEntryReason(symbolState, {
+        code: 'IMPULSE_STALE',
+        message: `Impulse stale at ${ageBars} bars.`,
+        value: ageBars,
+        threshold: this.state.config!.impulseMaxAgeBars
+      });
+      symbolState.armedSignal = null;
+      this.resetToIdle(symbolState);
+      return false;
+    }
+
+    const movePct = ((marketState.markPrice - armed.triggerMark) / armed.triggerMark) * 100;
+    const moveOk = armed.side === 'LONG' ? movePct >= this.state.config!.confirmMinContinuationPct : movePct <= -this.state.config!.confirmMinContinuationPct;
     if (!moveOk) {
-      if (currentBucket > armed.expireBucketStart) {
+      if (currentBucket > armed.continuationWindowEndBucketStart) {
         this.recordNoEntryReason(symbolState, {
-          code: 'CONFIRMATION_FAIL',
-          message: 'Continuation confirmation failed.',
+          code: 'NO_CONTINUATION',
+          message: `No continuation in ${this.state.config!.confirmWindowBars} bars.`,
           value: Math.abs(movePct),
-          threshold: this.state.config!.confirmMovePct
+          threshold: this.state.config!.confirmMinContinuationPct
         });
         symbolState.armedSignal = null;
         this.resetToIdle(symbolState);
@@ -947,6 +1027,28 @@ export class BotEngine {
   private tryPlaceEntryOrder(symbolState: SymbolRuntimeState, marketState: MarketState, side: 'LONG' | 'SHORT'): boolean {
     const leverage = this.state.config!.leverage;
     const entryNotional = this.state.config!.marginUSDT * leverage;
+    if (entryNotional < this.state.config!.minNotionalUSDT) {
+      this.recordNoEntryReason(symbolState, {
+        code: 'NOTIONAL_TOO_SMALL',
+        message: 'Entry notional below minNotionalUSDT.',
+        value: entryNotional,
+        threshold: this.state.config!.minNotionalUSDT
+      });
+      this.resetToIdle(symbolState);
+      return false;
+    }
+
+    if (!this.isOiTwoCandlesGateTrue(symbolState, side)) {
+      this.recordNoEntryReason(symbolState, {
+        code: 'OI_2CANDLES_FAIL',
+        message: 'Two-candle OI continuation gate failed.',
+        value: symbolState.oiCandleDeltaPctHistory.at(-1),
+        threshold: this.state.config!.oiCandleThrPct
+      });
+      this.resetToIdle(symbolState);
+      return false;
+    }
+
     const entryPrice = side === 'LONG'
       ? marketState.markPrice * (1 - Math.max(0, this.state.config!.entryOffsetPct) / 100)
       : marketState.markPrice * (1 + Math.max(0, this.state.config!.entryOffsetPct) / 100);
@@ -985,50 +1087,42 @@ export class BotEngine {
   }
 
   private updateTrendState(symbolState: SymbolRuntimeState, markPrice: number, now: number): void {
-    this.updateTrendBucket(symbolState, markPrice, now, 5);
-    this.updateTrendBucket(symbolState, markPrice, now, 15);
+    this.updateTrendBucket(symbolState, markPrice, now, 5, this.state.config?.trendLookbackBars ?? DEFAULT_TREND_LOOKBACK_BARS);
+    this.updateTrendBucket(symbolState, markPrice, now, 15, this.state.config?.trendLookbackBars ?? DEFAULT_TREND_LOOKBACK_BARS);
   }
 
-  private updateTrendBucket(symbolState: SymbolRuntimeState, markPrice: number, now: number, tf: 5 | 15): void {
+  private updateTrendBucket(symbolState: SymbolRuntimeState, markPrice: number, now: number, tf: 5 | 15, lookbackBars: number): void {
     const bucketStart = Math.floor(now / (tf * 60_000)) * tf * 60_000;
-    if (tf === 5) {
-      if (symbolState.trend5mBucketStart === null) {
-        symbolState.trend5mBucketStart = bucketStart;
-        symbolState.trend5mLastClose = markPrice;
-        return;
-      }
-      if (symbolState.trend5mBucketStart !== bucketStart) {
-        symbolState.trend5mPrevClose = symbolState.trend5mLastClose;
-        symbolState.trend5mLastClose = markPrice;
-        symbolState.trend5mBucketStart = bucketStart;
-        return;
-      }
-      symbolState.trend5mLastClose = markPrice;
-      return;
+    const candles = tf === 5 ? symbolState.trendCandles5m : symbolState.trendCandles15m;
+    const last = candles.at(-1);
+    if (!last || last.bucketStart !== bucketStart) {
+      candles.push({ bucketStart, openTs: now, closeTs: now, open: markPrice, high: markPrice, low: markPrice, close: markPrice });
+    } else {
+      last.closeTs = now;
+      last.close = markPrice;
+      last.high = Math.max(last.high, markPrice);
+      last.low = Math.min(last.low, markPrice);
     }
 
-    if (symbolState.trend15mBucketStart === null) {
-      symbolState.trend15mBucketStart = bucketStart;
-      symbolState.trend15mLastClose = markPrice;
-      return;
+    const maxBars = lookbackBars + 5;
+    if (candles.length > maxBars) {
+      candles.splice(0, candles.length - maxBars);
     }
-    if (symbolState.trend15mBucketStart !== bucketStart) {
-      symbolState.trend15mPrevClose = symbolState.trend15mLastClose;
-      symbolState.trend15mLastClose = markPrice;
-      symbolState.trend15mBucketStart = bucketStart;
-      return;
-    }
-    symbolState.trend15mLastClose = markPrice;
   }
 
-  private getTrendDeltaPct(symbolState: SymbolRuntimeState, tf: 5 | 15): number | null {
-    const prevClose = tf === 5 ? symbolState.trend5mPrevClose : symbolState.trend15mPrevClose;
-    const lastClose = tf === 5 ? symbolState.trend5mLastClose : symbolState.trend15mLastClose;
-    if (!prevClose || !lastClose || prevClose <= 0) {
+  private getTrendDeltaPct(symbolState: SymbolRuntimeState, tf: 5 | 15, lookbackBars: number): number | null {
+    const candles = tf === 5 ? symbolState.trendCandles5m : symbolState.trendCandles15m;
+    if (candles.length <= lookbackBars) {
       return null;
     }
 
-    return ((lastClose - prevClose) / prevClose) * 100;
+    const lookbackClose = candles[candles.length - 1 - lookbackBars]?.close;
+    const lastClose = candles.at(-1)?.close;
+    if (!lookbackClose || !lastClose || lookbackClose <= 0) {
+      return null;
+    }
+
+    return ((lastClose - lookbackClose) / lookbackClose) * 100;
   }
 
   private recordNoEntryReason(symbolState: SymbolRuntimeState, reason: NoEntryReason): void {
@@ -1063,12 +1157,9 @@ export class BotEngine {
       pendingOrder: null,
       position: null,
       demo: null,
-      trend5mBucketStart: null,
-      trend5mPrevClose: null,
-      trend5mLastClose: null,
-      trend15mBucketStart: null,
-      trend15mPrevClose: null,
-      trend15mLastClose: null,
+      trendCandles5m: [],
+      trendCandles15m: [],
+      oiCandleDeltaPctHistory: [],
       armedSignal: null,
       noEntryReasonCounts: new Map(),
       lastNoEntryReasons: []
@@ -1446,12 +1537,12 @@ export class BotEngine {
         prevCandleOi: symbolState.prevCandleOi,
         lastCandleOi: symbolState.lastCandleOi,
         lastCandleBucketStart: symbolState.lastCandleBucketStart,
-        trend5mBucketStart: symbolState.trend5mBucketStart,
-        trend5mPrevClose: symbolState.trend5mPrevClose,
-        trend5mLastClose: symbolState.trend5mLastClose,
-        trend15mBucketStart: symbolState.trend15mBucketStart,
-        trend15mPrevClose: symbolState.trend15mPrevClose,
-        trend15mLastClose: symbolState.trend15mLastClose,
+        trend5mBucketStart: symbolState.trendCandles5m.at(-1)?.bucketStart ?? null,
+        trend5mPrevClose: symbolState.trendCandles5m.at(-2)?.close ?? null,
+        trend5mLastClose: symbolState.trendCandles5m.at(-1)?.close ?? null,
+        trend15mBucketStart: symbolState.trendCandles15m.at(-1)?.bucketStart ?? null,
+        trend15mPrevClose: symbolState.trendCandles15m.at(-2)?.close ?? null,
+        trend15mLastClose: symbolState.trendCandles15m.at(-1)?.close ?? null,
         armedSignal: symbolState.armedSignal,
         lastNoEntryReasons: symbolState.lastNoEntryReasons
       };
@@ -1763,6 +1854,13 @@ export class BotEngine {
       symbolState.prevCandleOi = symbolState.lastCandleOi;
       symbolState.lastCandleOi = oiValue;
       symbolState.lastCandleBucketStart = bucketStart;
+      const deltaPct = this.computeOiCandleDeltaPct(symbolState);
+      if (deltaPct !== null) {
+        symbolState.oiCandleDeltaPctHistory.push(deltaPct);
+        if (symbolState.oiCandleDeltaPctHistory.length > 5) {
+          symbolState.oiCandleDeltaPctHistory.splice(0, symbolState.oiCandleDeltaPctHistory.length - 5);
+        }
+      }
       return;
     }
 
@@ -1775,6 +1873,28 @@ export class BotEngine {
     }
 
     return ((symbolState.lastCandleOi - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100;
+  }
+
+  private isOiTwoCandlesGateTrue(symbolState: SymbolRuntimeState, side: 'LONG' | 'SHORT'): boolean {
+    if (!this.state.config?.requireOiTwoCandles) {
+      return true;
+    }
+
+    const threshold = this.state.config.oiCandleThrPct;
+    if (threshold <= 0) {
+      return true;
+    }
+
+    const recent = symbolState.oiCandleDeltaPctHistory.slice(-2);
+    if (recent.length < 2) {
+      return false;
+    }
+
+    if (side === 'LONG') {
+      return recent.every((value) => value >= threshold);
+    }
+
+    return recent.every((value) => value >= threshold);
   }
 
   getOiCandleSnapshot(symbol: string): {
