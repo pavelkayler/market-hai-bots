@@ -1,32 +1,39 @@
 # Bybit OI/Price Bot — monorepo (local)
 
-Backend runs on `http://localhost:8080`.
-Frontend runs on `http://localhost:5173` (Vite default).
+Backend: `http://localhost:8080`  
+Frontend: `http://localhost:5173` (Vite default)
 
 ## Run locally
-1. Install dependencies from repo root:
+1. Install dependencies:
    - `npm i`
-2. Start backend only:
+2. Backend only:
    - `npm --prefix backend run dev`
-3. Start frontend only:
+3. Frontend only:
    - `npm --prefix frontend run dev`
-4. Or start both from root:
+4. Both (root):
    - `npm run dev`
 
-Useful verification commands:
-- Backend tests: `npm --prefix backend test`
+Useful checks:
+- Backend tests: `npm test`
 - Frontend production build: `npm --prefix frontend run build`
+- Backend typecheck: `npm --prefix backend run typecheck`
+
+## Operator docs
+- Settings and formulas: `docs/SETTINGS_GUIDE.md`
+- REST/WS contract and error semantics: `docs/API.md`
+- Manual runbook: `docs/QA_CHECKLIST.md`
+- QA report template: `docs/QA_REPORT.md`
+- Release summary: `docs/RELEASE_NOTES_v1.md`
 
 ## Environment setup (demo mode)
 1. Copy `.env.example` to `.env`.
-2. Set the demo credentials when you want to place demo REST orders:
+2. Set demo credentials when you want demo REST orders:
    - `DEMO_API_KEY=...`
    - `DEMO_API_SECRET=...`
-3. Keep `BYBIT_DEMO_REST=https://api-demo.bybit.com` for demo REST trading (this is the default).
-4. Configure mode/credentials in UI settings:
-   - `mode=demo` requires `DEMO_API_KEY` + `DEMO_API_SECRET`.
-   - `mode=paper` does not require exchange credentials.
-
+3. Keep `BYBIT_DEMO_REST=https://api-demo.bybit.com` (default).
+4. In UI settings:
+   - `mode=demo` requires demo credentials.
+   - `mode=paper` needs no exchange credentials.
 
 ## Data files & export pack
 Runtime data is stored under `backend/data/*`:
@@ -36,36 +43,14 @@ Runtime data is stored under `backend/data/*`:
 - `backend/data/journal.ndjson`
 - `backend/data/replay/*.ndjson`
 
-For debugging/sharing, download a single bundle via `GET /api/export/pack`.
-The ZIP includes `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`, and `meta.json`.
-If any source file is missing, an empty placeholder is included and listed in `meta.json.missing`.
+Download combined artifacts via `GET /api/export/pack`.
+- Always includes: `meta.json`.
+- Includes optional files only if present: `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`.
+- Missing optional files are reported in `meta.json.notes` (partial export semantics).
 
 ## Troubleshooting with Doctor
-Use `GET /api/doctor` to validate local setup quickly:
-- `universe.ready=false`: create universe first (`POST /api/universe/create`).
-- `market.running=false`: backend market hub failed to start; restart backend and check logs.
-- `demo.configured=false` with demo mode selected: add `DEMO_API_KEY` and `DEMO_API_SECRET`.
-- `journal.sizeBytes=0`: no journal file yet (normal before first events) or journal path issue.
-
-## Tuning workflow
-
-Подробные пояснения по параметрам: `docs/SETTINGS_GUIDE.md`.
-1. Create universe (`POST /api/universe/create`) to define a tradable symbol set for the session.
-2. Record ticks with replay recorder (`POST /api/replay/record/start`) while running your scenario.
-3. Replay fast (`POST /api/replay/start` with `speed=fast`) to iterate quickly on behavior.
-4. Adjust thresholds and risk params via run profiles (`/api/profiles/*`) and set active profile for repeatable starts.
-5. Check outcomes through journal export (`GET /api/journal/download`) and compare runs.
-
-## Codex workflow
-Always instruct Codex to read:
-- docs/INVARIANTS.md
-- docs/SPEC.md
-- docs/API.md
-- docs/STATE.md
-- docs/BYBIT.md
-
-Then allowlist the exact files it may modify and require:
-- git diff
-- changed files list
-- commands to verify
-- no guessing; questions go into docs/TASKS.md
+Use `GET /api/doctor`:
+- `universe.ready=false`: no persisted universe yet; create one first.
+- `market.running=false`: restart backend and check logs.
+- `demo.configured=false` with demo mode: add `DEMO_API_KEY` + `DEMO_API_SECRET`.
+- `journal.sizeBytes=0`: no journal yet (normal before first events) or path issue.

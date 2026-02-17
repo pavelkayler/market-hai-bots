@@ -1,251 +1,80 @@
-# API — REST + WS contracts (MVP)
+# API — REST + WS contracts (v1)
 
-Base URL: `http://localhost:8080`
+Base URL: `http://localhost:8080`  
 WS: `/ws`
 
-## REST
+Percent convention: **`3` means `3%`** (not `0.03`).
 
-### Universe
+## Universe
 - `POST /api/universe/create` `{ "minVolPct": 10, "minTurnover": 10000000 }`
-  - `minTurnover` is optional and defaults to `10000000` for backward compatibility.
-  - Success returns additive fields: `ok`, `ready`, `createdAt`, `filters`, `totals`, `diagnostics`, `upstreamStatus`.
-  - `totals` includes `{ totalSymbols, validSymbols, filteredOut }`.
-  - `diagnostics` includes `{ byMetricThreshold, dataUnavailable, contractFilter, upstreamStatus }`.
-  - Build-complete semantics: `ready=true` even when `symbols=[]` (all symbols filtered by rules).
-  - On upstream failure, returns HTTP `502` with `diagnostics.upstreamStatus="error"`, `diagnostics.upstreamError { code, message, hint, retryable }`, and `lastKnownUniverseAvailable`.
-  - Failed create attempts do **not** overwrite an existing persisted universe.
-- `POST /api/universe/refresh` `{ "minVolPct"?: 12, "minTurnover"?: 10000000 }`
-  - Missing fields reuse currently stored universe filters.
-  - Returns `{ "ok": false, "error": "UNIVERSE_NOT_READY" }` when no universe is available yet.
-  - Uses the same additive `totals` + `diagnostics` success fields and upstream failure payload as create.
-  - Failed refresh attempts do **not** overwrite an existing persisted universe.
+- `POST /api/universe/refresh` `{ "minVolPct"?: number, "minTurnover"?: number }`
 - `GET /api/universe`
-  - Includes additive upstream status fields: `upstreamStatus` (`ok|error`), optional `upstreamError`, and `lastKnownUniverseAvailable`.
-- `GET /api/universe/download` (returns the persisted `UniverseState` JSON directly)
-  - Returns `{ "ok": false, "error": "UNIVERSE_NOT_FOUND" }` (404) only when no universe has ever been created/persisted.
-  - If universe exists but has `symbols=[]`, download still returns 200 with the stored state.
-  - If the latest create/refresh failed upstream, download still serves the last successfully persisted universe.
+- `GET /api/universe/download`
 - `POST /api/universe/clear`
 
-Universe empty semantics (v1):
-- `ready=true` means the build process completed successfully, even if `symbols` is empty.
-- Empty result debugging fields are returned/additive under `filteredOut`:
-  - `expiringOrNonPerp`
-  - `byMetricThreshold`
-  - `dataUnavailable`
+### Universe metric definition (canonical)
+`vol24hRangePct = (high24h - low24h) / low24h * 100` using Bybit 24h ticker fields (`highPrice24h`, `lowPrice24h`).
 
-### Bot
+### Universe result semantics
+- `ready=true` means build completed successfully, even when `symbols=[]`.
+- Distinguish states clearly:
+  - **No universe yet**: no persisted `createdAt`; download returns `404 UNIVERSE_NOT_FOUND`.
+  - **Built empty**: persisted universe exists with `ready=true`, `symbols=[]`.
+  - **Upstream failure**: create/refresh returns HTTP 502 with `upstreamError`; last good universe remains persisted and downloadable.
+- 502 payload includes additive fields:
+  - `diagnostics.upstreamStatus="error"`
+  - `diagnostics.upstreamError { code, message, hint, retryable }`
+  - `lastKnownUniverseAvailable`
+
+## Bot lifecycle
 - `POST /api/bot/start`
-  - Request body behavior:
-    - If request includes a `BotConfig`, that explicit config is used.
-    - If request body is `null`/omitted, backend loads config from current active run profile.
 - `POST /api/bot/stop`
 - `POST /api/bot/pause`
 - `POST /api/bot/resume`
 - `POST /api/bot/kill`
-  - Emergency pause + cancel all pending ENTRY orders across symbols.
-  - Does **not** close existing open positions.
-  - Response: `{ "ok": true, "cancelled": 2 }`
-- `GET /api/bot/guardrails`
-  - Response: `{ "ok": true, "guardrails": { "maxActiveSymbols": 5, "dailyLossLimitUSDT": 0, "maxConsecutiveLosses": 0 } }`
-  - Returns `{ "ok": false, "error": "NO_SNAPSHOT" }` if no runtime snapshot exists.
 - `GET /api/bot/state`
 - `GET /api/bot/stats`
-  - Response: `{ "ok": true, "stats": BotStats }`
 - `POST /api/bot/stats/reset`
-  - Response: `{ "ok": true }`
-Response shape for `/api/bot/state`:
-```json
-{
-  "running": false,
-  "paused": false,
-  "hasSnapshot": false,
-  "lastConfig": null,
-  "mode": null,
-  "direction": null,
-  "tf": null,
-  "queueDepth": 0,
-  "activeOrders": 0,
-  "openPositions": 0
-}
-```
+- `POST /api/reset/all`
 
-Guardrail behavior:
-- `maxActiveSymbols`: counts symbols currently in `ENTRY_PENDING` or `POSITION_OPEN`.
-- `dailyLossLimitUSDT`: if >0 and today's UTC realized PnL reaches `<= -limit`, bot is auto-paused (`paused=true`, `running` remains true).
-- `maxConsecutiveLosses`: if >0 and loss streak reaches the limit, bot is auto-paused.
+### Lifecycle + invariants
+- Active symbols are only `ENTRY_PENDING` or `POSITION_OPEN`.
+- Pause/resume/kill/reset/export append SYSTEM ops events with:
+  - `symbol="SYSTEM"`
+  - `side=null`
+  - `data` as object
+- Ops journaling is best-effort (warn-only on append failure).
+- `POST /api/reset/all` is **STOP-only** (`BOT_RUNNING` when running) and preserves profiles while clearing runtime/journal/stats/universe/exclusions/replay state.
 
-`BotStats` shape:
-```json
-{
-  "totalTrades": 0,
-  "wins": 0,
-  "losses": 0,
-  "winratePct": 0,
-  "pnlUSDT": 0,
-  "avgWinUSDT": null,
-  "avgLossUSDT": null,
-  "lossStreak": 0,
-  "todayPnlUSDT": 0,
-  "guardrailPauseReason": null,
-  "lastClosed": { "ts": 0, "symbol": "BTCUSDT", "pnlUSDT": 0 }
-}
-```
+## Execution math (v1)
+- `notional = marginUSDT * leverage`
+- ROI to price move: `roiPct / leverage / 100`
+- LONG: `tp=entry*(1+tpMovePct)`, `sl=entry*(1-slMovePct)`
+- SHORT: `tp=entry*(1-tpMovePct)`, `sl=entry*(1+slMovePct)`
+- Net PnL is fee-inclusive (`gross - fees`).
 
-
-### Orders
-- `POST /api/orders/cancel` `{ "symbol": "BTCUSDT" }`
-
-### Profiles
-- `GET /api/profiles`
-  - Response: `{ "ok": true, "activeProfile": "default", "names": ["default", "aggressive"] }`
-- `GET /api/profiles/:name`
-  - Success: `{ "ok": true, "name": "default", "config": BotConfig }`
-  - Not found: `{ "ok": false, "error": "NOT_FOUND" }`
-- `POST /api/profiles/:name`
-  - Body: `BotConfig` (creates or overwrites profile)
-  - Response: `{ "ok": true }`
-- `POST /api/profiles/:name/active`
-  - Sets active profile.
-  - Response: `{ "ok": true }`
-- `DELETE /api/profiles/:name`
-  - Deletes profile by name.
-  - Default profile is protected and returns `{ "ok": false, "error": "DEFAULT_PROFILE_LOCKED" }`.
-- `GET /api/profiles/download`
-  - Response content type: `application/json`
-  - Response body is raw profiles storage JSON:
-  ```json
-  {
-    "activeProfile": "default",
-    "profiles": {
-      "default": {
-        "mode": "paper",
-        "direction": "both",
-        "tf": 1,
-        "holdSeconds": 3,
-        "priceUpThrPct": 0.5,
-        "oiUpThrPct": 50,
-        "marginUSDT": 100,
-        "leverage": 10,
-        "tpRoiPct": 1,
-        "slRoiPct": 0.7,
-        "maxActiveSymbols": 5,
-        "dailyLossLimitUSDT": 0,
-        "maxConsecutiveLosses": 0
-      }
-    }
-  }
-  ```
-- `POST /api/profiles/upload`
-  - Body: raw JSON with same shape as `GET /api/profiles/download`.
-  - Merge behavior: imported profiles overwrite same-name profiles; unknown names are added.
-  - Response: `{ "ok": true }`
-
-
-### Doctor
-- `GET /api/doctor`
-  - Response:
-  ```json
-  {
-    "ok": true,
-    "serverTime": 0,
-    "uptimeSec": 0,
-    "version": "0.1.0",
-    "universe": { "ready": false, "symbols": 0 },
-    "market": { "running": true, "subscribed": 0, "updatesPerSec": 0, "tickHandlersMsAvg": 0, "wsClients": 0, "wsFramesPerSec": 0 },
-    "bot": { "running": false, "paused": false, "mode": null, "tf": null, "direction": null, "evalsPerSec": 0 },
-    "replay": { "recording": false, "replaying": false, "fileName": null },
-    "journal": { "enabled": true, "path": "backend/data/journal.ndjson", "sizeBytes": 0 },
-    "demo": { "configured": false }
-  }
-  ```
-
-
-### Journal
+## Journal
 - `GET /api/journal/tail?limit=200`
-  - Response: `{ "ok": true, "entries": [JournalEntry] }`
 - `POST /api/journal/clear`
-  - Response: `{ "ok": true }`
 - `GET /api/journal/download?format=ndjson|json|csv`
-  - `ndjson`: raw append-only file payload.
-  - `json`: JSON array of journal entries.
-  - `csv`: text/csv with columns `ts,mode,symbol,event,side,qty,price,exitPrice,pnlUSDT,detailsJson`.
 
-Journal entry schema:
+Journal entry shape:
 ```json
-{
-  "ts": 0,
-  "mode": "paper",
-  "symbol": "BTCUSDT",
-  "event": "ORDER_PLACED",
-  "side": "LONG",
-  "data": {}
-}
+{ "ts": 0, "mode": "paper", "symbol": "BTCUSDT", "event": "ORDER_PLACED", "side": "LONG", "data": {} }
 ```
 
-Journal ops events:
-- `BOT_PAUSE`
-- `BOT_RESUME`
-- `BOT_KILL`
-- `SYSTEM_RESET_ALL`
-- `EXPORT_PACK_REQUESTED`
-
-### Export
+## Export pack
 - `GET /api/export/pack`
-  - Returns `application/zip` with `Content-Disposition: attachment; filename="export-pack_<ISO-ish>.zip"` (safe filename, no `:`).
-  - Includes available root files:
-    - `universe.json`
-    - `profiles.json`
-    - `runtime.json` (if present)
-    - `journal.ndjson` (if present)
-    - `meta.json` (always present)
-  - `meta.json` contract:
-    - `createdAt` (epoch ms)
-    - `appVersion` (`package.json` version if available, else `unknown`)
-    - `notes: string[]` (missing-file diagnostics)
-    - `paths` (resolved storage paths used for collection)
-    - `counts` (optional `journalLines`, `universeSymbols`, `profilesCount`)
+- Response: `application/zip`, filename `export-pack_<timestamp>.zip`
+- Always includes: `meta.json`
+- Optional files included only when present: `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`
+- Missing optional files do not fail export; they are listed in `meta.json.notes`
+- `meta.json` includes `createdAt`, `appVersion`, `notes[]`, `paths`, optional `counts`
 
-### Replay / local recording
-- `POST /api/replay/record/start` `{ "topN": 20, "fileName": "session-2026-02-15.ndjson" }`
-  - Response: `{ "ok": true, "path": "backend/data/replay/<fileName>", "startedAt": 0 }`
+## Replay
+- `POST /api/replay/record/start`
 - `POST /api/replay/record/stop`
-  - Response: `{ "ok": true, "stoppedAt": 0, "recordsWritten": 12345 }`
-- `POST /api/replay/start` `{ "fileName": "session-2026-02-15.ndjson", "speed": "1x" | "5x" | "20x" | "fast" }`
-  - Response: `{ "ok": true, "startedAt": 0 }`
+- `POST /api/replay/start`
 - `POST /api/replay/stop`
-  - Response: `{ "ok": true, "stoppedAt": 0 }`
 - `GET /api/replay/state`
-  - Response:
-  ```json
-  {
-    "recording": false,
-    "replaying": false,
-    "fileName": null,
-    "speed": null,
-    "recordsWritten": 0,
-    "progress": { "read": 0, "total": 0 }
-  }
-  ```
 - `GET /api/replay/files`
-  - Response: `{ "ok": true, "files": ["session-2026-02-15.ndjson"] }`
-
-## WS message envelope
-```json
-{ "type": "state", "ts": 0, "payload": {} }
-```
-
-### Types
-- `state`: `{ universeReady, running, mode, queueDepth }`
-- `universe:created` / `universe:refreshed`
-- `symbol:update`
-- `symbols:update`: `{ updates: Array<symbol:update payload> }`
-- `signal:new`
-- `order:update`
-- `position:update`
-- `queue:update`
-- `log` (client keeps last 5)
-
-## Error codes
-- `DEMO_NOT_CONFIGURED`
-  - Returned by `POST /api/bot/start` when `mode=demo` is requested without both `DEMO_API_KEY` and `DEMO_API_SECRET` configured.

@@ -764,7 +764,7 @@ export function BotPage({
     setError('');
     setIsExportingPack(true);
     try {
-      const { blob, fileName } = await exportPack();
+      const { blob, fileName, includedFiles } = await exportPack();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -773,7 +773,9 @@ export function BotPage({
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      setStatus('Downloaded export pack');
+      const includedSummary = includedFiles.length > 0 ? includedFiles.join(', ') : 'meta.json';
+      setError('');
+      setStatus(`Export pack downloaded: ${fileName}. Included: ${includedSummary}.`);
     } catch (err) {
       const apiError = err as ApiRequestError;
       setError(`Export pack failed: ${apiError.message}`);
@@ -1066,7 +1068,7 @@ export function BotPage({
                     <tr key={`dash-${entry.ts}-${entry.symbol}-${entry.event}`}>
                       <td>{new Date(entry.ts).toLocaleTimeString()}</td>
                       <td>{entry.event}</td>
-                      <td>{entry.symbol}</td>
+                      <td>{entry.symbol === 'SYSTEM' ? <span className="badge text-bg-secondary">SYSTEM</span> : entry.symbol}</td>
                       <td>{entry.side ?? '-'}</td>
                     </tr>
                   ))}
@@ -1119,6 +1121,7 @@ export function BotPage({
                 <div>Code: {universeState.upstreamError?.code}</div>
                 <div>{universeState.upstreamError?.hint}</div>
                 <div>Last known universe: {universeLastKnownAvailable ? 'available' : 'not available'}</div>
+                <div>Last good universe is kept; download uses last good.</div>
               </Alert>
             ) : !universeExists ? (
               <Alert variant="secondary" className="py-2 mb-2 small">
@@ -1126,7 +1129,7 @@ export function BotPage({
               </Alert>
             ) : universeIsEmpty ? (
               <Alert variant="warning" className="py-2 mb-2 small">
-                <div><strong>Universe built but empty (0 symbols).</strong></div>
+                <div><strong>Built empty (0 symbols passed filters).</strong></div>
                 <div>Threshold filtered: {universeMetricFiltered}, data unavailable: {universeDataUnavailable}.</div>
               </Alert>
             ) : (
@@ -1977,7 +1980,7 @@ export function BotPage({
                     <tr key={`${entry.ts}-${entry.symbol}-${entry.event}-${JSON.stringify(entry.data)}`}>
                       <td>{new Date(entry.ts).toLocaleString()}</td>
                       <td>{entry.mode}</td>
-                      <td>{entry.symbol}</td>
+                      <td>{entry.symbol === 'SYSTEM' ? <span className="badge text-bg-secondary">SYSTEM</span> : entry.symbol}</td>
                       <td>{entry.event}</td>
                       <td>{entry.side ?? '-'}</td>
                       <td>{formatJournalSummary(entry)}</td>
