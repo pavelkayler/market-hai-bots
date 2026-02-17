@@ -96,6 +96,14 @@ export type BotState = {
   openPositions: number;
 };
 
+export type KillSwitchResult = {
+  cancelledOrders: number;
+  closedPositions: number;
+  warning: string | null;
+  activeOrdersRemaining: number;
+  openPositionsRemaining: number;
+};
+
 type BotStatsSideBreakdown = {
   trades: number;
   wins: number;
@@ -1015,18 +1023,16 @@ export class BotEngine {
     return true;
   }
 
-  async killSwitch(getMarketState: (symbol: string) => MarketState | undefined): Promise<number> {
-    let cancelled = 0;
+  async killSwitch(getMarketState: (symbol: string) => MarketState | undefined): Promise<KillSwitchResult> {
+    let cancelledOrders = 0;
+    let closedPositions = 0;
+    const warnings: string[] = [];
     this.pauseWithGuardrail('KILL_SWITCH');
 
     for (const symbolState of this.symbols.values()) {
-      if (symbolState.fsmState !== 'ENTRY_PENDING' || !symbolState.pendingOrder) {
-        continue;
-      }
-
       const marketState =
         getMarketState(symbolState.symbol) ?? {
-          markPrice: symbolState.pendingOrder.limitPrice,
+          markPrice: symbolState.pendingOrder?.limitPrice ?? symbolState.position?.entryPrice ?? 0,
           openInterestValue: symbolState.baseline?.baseOiValue ?? 0,
           ts: this.now(),
           lastPrice: null,
@@ -1036,13 +1042,103 @@ export class BotEngine {
           lastTickTs: this.now()
         };
 
-      await this.cancelSymbolPendingOrder(symbolState, marketState, 'CANCELLED');
-      cancelled += 1;
+      if (symbolState.fsmState === 'ENTRY_PENDING' && symbolState.pendingOrder) {
+        await this.cancelSymbolPendingOrder(symbolState, marketState, 'CANCELLED');
+        cancelledOrders += 1;
+      }
+
+      if (!symbolState.position) {
+        continue;
+      }
+
+      if (this.state.config?.mode === 'demo' && this.deps.demoTradeClient) {
+        try {
+          const openOrders = await this.deps.demoTradeClient.getOpenOrders(symbolState.symbol);
+          for (const order of openOrders) {
+            await this.deps.demoTradeClient.cancelOrder({ symbol: symbolState.symbol, orderId: order.orderId, orderLinkId: order.orderLinkId });
+          }
+
+          await this.deps.demoTradeClient.closePositionMarket({
+            symbol: symbolState.symbol,
+            side: symbolState.position.side === 'LONG' ? 'Sell' : 'Buy',
+            qty: symbolState.position.qty.toString()
+          });
+        } catch (error) {
+          warnings.push(`Demo close failed for ${symbolState.symbol}: ${(error as Error).message}`);
+        }
+      }
+
+      this.forceClosePosition(symbolState, marketState);
+      closedPositions += 1;
     }
 
     this.updateSummaryCounts();
     this.persistSnapshot();
-    return cancelled;
+    const metrics = this.getActivityMetrics();
+    return {
+      cancelledOrders,
+      closedPositions,
+      warning: warnings.length > 0 ? warnings.join(' | ') : null,
+      activeOrdersRemaining: metrics.activeOrders,
+      openPositionsRemaining: metrics.openPositions
+    };
+  }
+
+  private forceClosePosition(symbolState: SymbolRuntimeState, marketState: MarketState): void {
+    const position = symbolState.position;
+    if (!position) {
+      return;
+    }
+
+    const exitPrice = marketState.markPrice;
+    const grossPnl = position.side === 'LONG' ? (exitPrice - position.entryPrice) * position.qty : (position.entryPrice - exitPrice) * position.qty;
+    const entryFeeRate = PAPER_FEES.makerFeeRate;
+    const exitFeeRate = PAPER_FEES.takerFeeRate;
+    const entryFeeUSDT = entryFeeRate * position.qty * position.entryPrice;
+    const exitFeeUSDT = exitFeeRate * position.qty * exitPrice;
+    const feeTotalUSDT = entryFeeUSDT + exitFeeUSDT;
+    const netPnlUSDT = grossPnl - feeTotalUSDT;
+
+    const closedPosition: PaperPosition = {
+      ...position,
+      closeReason: 'KILL_SWITCH',
+      exitPrice,
+      realizedGrossPnlUSDT: grossPnl,
+      grossPnlUSDT: grossPnl,
+      feesUSDT: feeTotalUSDT,
+      entryFeeUSDT,
+      exitFeeUSDT,
+      feeTotalUSDT,
+      realizedNetPnlUSDT: netPnlUSDT,
+      netPnlUSDT,
+      entryFeeRate,
+      exitFeeRate,
+      exitSlippageBpsApplied: 0,
+      spreadBpsAtExit: marketState.spreadBps ?? null,
+      slippageUSDT: null,
+      lastPnlUSDT: netPnlUSDT
+    };
+
+    symbolState.position = null;
+    symbolState.fsmState = 'IDLE';
+    symbolState.holdStartTs = null;
+    this.resetBaseline(symbolState, marketState);
+    this.deps.emitPositionUpdate({
+      symbol: symbolState.symbol,
+      status: 'CLOSED',
+      position: closedPosition,
+      exitPrice,
+      pnlUSDT: netPnlUSDT,
+      closeReason: 'KILL_SWITCH',
+      realizedGrossPnlUSDT: grossPnl,
+      feesUSDT: feeTotalUSDT,
+      realizedNetPnlUSDT: netPnlUSDT,
+      entryFeeUSDT,
+      exitFeeUSDT,
+      entryFeeRate,
+      exitFeeRate
+    });
+    this.recordClosedTrade(symbolState.symbol, position.side, grossPnl, feeTotalUSDT, netPnlUSDT, 'KILL_SWITCH', entryFeeUSDT, exitFeeUSDT, position.openedTs, null, position.spreadBpsAtEntry ?? null, marketState.spreadBps ?? null);
   }
 
   async pollDemoOrders(allMarketStates: Record<string, MarketState>): Promise<void> {

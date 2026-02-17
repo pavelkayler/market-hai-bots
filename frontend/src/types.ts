@@ -61,6 +61,9 @@ export type BotState = {
   openPositions: number;
   startedAt?: number | null;
   uptimeMs: number;
+  killInProgress?: boolean;
+  killCompletedAt?: number | null;
+  killWarning?: string | null;
 };
 
 

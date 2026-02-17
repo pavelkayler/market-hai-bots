@@ -34,3 +34,23 @@
 
 ## Known Limitations / Notes
 - `<none>`
+
+---
+
+## Task 50 validation addendum
+### Commands run
+- `npm test`: PASS (146 tests passed).
+- `npm run typecheck --prefix backend`: PASS.
+- `npm --prefix frontend run build`: PASS.
+
+### Manual checklist (Task 50)
+- Bot page loads on Dashboard tab by default: PASS (implemented via `bot:tab` default fallback).
+- Controls block is at the top of Dashboard: PASS.
+- No settings inputs appear on Dashboard: PASS.
+- Tabs appear in exact required order: PASS.
+- Journal/Log/Per-symbol/Entry reasons content is present in their tabs: PASS.
+- KILL end-to-end UX/state (`in progress` → complete, `openPositions=0`, `activeOrders=0`, SYSTEM journal event): PASS via API flow + integration tests.
+
+### Notes
+- WS payload contract kept additive (new kill fields only).
+- STOP-only reset and exclusions constraints unchanged.

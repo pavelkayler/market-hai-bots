@@ -83,6 +83,12 @@ class BlockingDemoTradeClient implements IDemoTradeClient {
   async getOpenOrders(): Promise<[]> {
     return [];
   }
+
+  async getPosition(): Promise<null> {
+    return null;
+  }
+
+  async closePositionMarket(): Promise<void> {}
 }
 
 const buildIsolatedServer = (options: Parameters<typeof buildServer>[0] = {}) => {
@@ -378,7 +384,10 @@ describe('server routes', () => {
       activeOrders: 0,
       openPositions: 0,
       startedAt: null,
-      uptimeMs: 0
+      uptimeMs: 0,
+      killInProgress: false,
+      killCompletedAt: null,
+      killWarning: null
     });
   });
 
@@ -1345,7 +1354,7 @@ describe('server routes', () => {
   });
 
 
-  it('/api/bot/kill cancels all pending orders and leaves positions intact', async () => {
+  it('/api/bot/kill cancels all pending orders and closes open positions', async () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const tickerStream = new FakeTickerStream();
     app = buildIsolatedServer({
@@ -1401,10 +1410,10 @@ describe('server routes', () => {
 
     const killResponse = await app.inject({ method: 'POST', url: '/api/bot/kill', payload: {} });
     expect(killResponse.statusCode).toBe(200);
-    expect(killResponse.json()).toEqual({ ok: true, cancelled: 1 });
+    expect(killResponse.json()).toMatchObject({ ok: true, cancelledOrders: 1, closedPositions: 1, activeOrdersRemaining: 0, openPositionsRemaining: 0 });
 
     const afterKill = await app.inject({ method: 'GET', url: '/api/bot/state' });
-    expect(afterKill.json()).toMatchObject({ paused: true, activeOrders: 0, openPositions: 1 });
+    expect(afterKill.json()).toMatchObject({ running: false, paused: false, activeOrders: 0, openPositions: 0 });
   });
 
   it('GET /api/bot/state reflects demo queueDepth', async () => {

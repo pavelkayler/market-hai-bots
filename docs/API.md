@@ -93,3 +93,23 @@ Journal entry shape:
 - `POST /api/replay/stop`
 - `GET /api/replay/state`
 - `GET /api/replay/files`
+
+### `/api/bot/state` additive kill lifecycle fields
+`GET /api/bot/state` now includes additive fields for kill-progress visibility:
+- `killInProgress: boolean`
+- `killCompletedAt: number | null` (epoch ms)
+- `killWarning: string | null`
+
+### `POST /api/bot/kill` response
+Kill response includes deterministic close/cancel outcome fields:
+```json
+{
+  "ok": true,
+  "cancelledOrders": 0,
+  "closedPositions": 0,
+  "activeOrdersRemaining": 0,
+  "openPositionsRemaining": 0,
+  "warning": null
+}
+```
+- `warning` is populated when bounded best-effort cleanup cannot fully confirm closure/cancellation.

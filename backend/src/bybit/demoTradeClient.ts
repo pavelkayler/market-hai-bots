@@ -26,6 +26,7 @@ export interface IDemoTradeClient {
   cancelOrder(params: { symbol: string; orderId?: string; orderLinkId?: string }): Promise<void>;
   getOpenOrders(symbol: string): Promise<DemoOpenOrder[]>;
   getPosition(symbol: string): Promise<DemoPosition | null>;
+  closePositionMarket(params: { symbol: string; side: 'Buy' | 'Sell'; qty: string }): Promise<void>;
 }
 
 type BybitV5Response = {
@@ -130,6 +131,24 @@ export class DemoTradeClient implements IDemoTradeClient {
     }
 
     return parsePositions(json).find((entry) => entry.symbol === symbol) ?? null;
+  }
+
+  async closePositionMarket(params: { symbol: string; side: 'Buy' | 'Sell'; qty: string }): Promise<void> {
+    const body = JSON.stringify({
+      category: 'linear',
+      symbol: params.symbol,
+      side: params.side,
+      orderType: 'Market',
+      qty: params.qty,
+      reduceOnly: true,
+      closeOnTrigger: true,
+      timeInForce: 'IOC'
+    });
+
+    const json = await this.post('/v5/order/create', body);
+    if (json.retCode !== 0) {
+      throw new Error(`Demo close position failed: ${json.retCode} ${json.retMsg}`);
+    }
   }
 
   private async post(path: string, body: string): Promise<BybitV5Response> {

@@ -96,7 +96,7 @@ export async function getBotStats(): Promise<{ ok: true; stats: BotStats }> {
 }
 
 
-export async function killBot(): Promise<{ ok: true; cancelled: number }> {
+export async function killBot(): Promise<{ ok: true; cancelledOrders: number; closedPositions: number; warning: string | null; activeOrdersRemaining: number; openPositionsRemaining: number }> {
   return request('/api/bot/kill', { method: 'POST', body: JSON.stringify({}) });
 }
 
