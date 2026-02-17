@@ -1028,7 +1028,12 @@ export class BotEngine {
         getMarketState(symbolState.symbol) ?? {
           markPrice: symbolState.pendingOrder.limitPrice,
           openInterestValue: symbolState.baseline?.baseOiValue ?? 0,
-          ts: this.now()
+          ts: this.now(),
+          lastPrice: null,
+          bid: null,
+          ask: null,
+          spreadBps: null,
+          lastTickTs: this.now()
         };
 
       await this.cancelSymbolPendingOrder(symbolState, marketState, 'CANCELLED');

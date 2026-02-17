@@ -304,7 +304,12 @@ export class ReplayService {
         this.deps.feedTick(tick.symbol, {
           markPrice: tick.markPrice,
           openInterestValue: tick.openInterestValue,
-          ts: tick.ts
+          ts: tick.ts,
+          lastPrice: null,
+          bid: null,
+          ask: null,
+          spreadBps: null,
+          lastTickTs: tick.ts
         });
 
         this.replay.read += 1;

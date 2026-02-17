@@ -372,17 +372,21 @@ export class UniverseService {
       minVolPct: parsed.filters.minVolPct
     };
 
+    const metricDefinitionLegacy = parsed.metricDefinition && typeof parsed.metricDefinition === 'object'
+      ? parsed.metricDefinition as { turnoverDefinition?: unknown; volDefinition?: unknown }
+      : null;
+    const metricDefinition = typeof parsed.metricDefinition === 'string'
+      ? parsed.metricDefinition
+      : metricDefinitionLegacy &&
+          (typeof metricDefinitionLegacy.turnoverDefinition === 'string' || typeof metricDefinitionLegacy.volDefinition === 'string')
+        ? `${typeof metricDefinitionLegacy.turnoverDefinition === 'string' ? metricDefinitionLegacy.turnoverDefinition : TURNOVER_DEFINITION} ${typeof metricDefinitionLegacy.volDefinition === 'string' ? metricDefinitionLegacy.volDefinition : VOLATILITY_DEFINITION}`
+        : `${TURNOVER_DEFINITION} ${VOLATILITY_DEFINITION}`;
+
     return {
       createdAt: parsed.createdAt,
       ready: parsed.ready,
       filters,
-      metricDefinition:
-        typeof parsed.metricDefinition === 'string'
-          ? parsed.metricDefinition
-          : typeof (parsed.metricDefinition as { turnoverDefinition?: unknown; volDefinition?: unknown } | undefined)?.turnoverDefinition === 'string' ||
-              typeof (parsed.metricDefinition as { turnoverDefinition?: unknown; volDefinition?: unknown } | undefined)?.volDefinition === 'string'
-            ? `${typeof (parsed.metricDefinition as { turnoverDefinition?: unknown }).turnoverDefinition === 'string' ? (parsed.metricDefinition as { turnoverDefinition: string }).turnoverDefinition : TURNOVER_DEFINITION} ${typeof (parsed.metricDefinition as { volDefinition?: unknown }).volDefinition === 'string' ? (parsed.metricDefinition as { volDefinition: string }).volDefinition : VOLATILITY_DEFINITION}`
-            : `${TURNOVER_DEFINITION} ${VOLATILITY_DEFINITION}`,
+      metricDefinition,
       symbols: symbols.map((entry) => ({
         ...entry,
         turnover24hUSDT: entry.turnover24hUSDT ?? entry.turnover24h,
