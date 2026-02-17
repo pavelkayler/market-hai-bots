@@ -251,7 +251,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           slPrice: payload.position.slPrice,
           openedTs: payload.position.openedTs,
           exitPrice: payload.exitPrice,
-          pnlUSDT: payload.pnlUSDT
+          pnlUSDT: payload.pnlUSDT,
+          closeReason: payload.closeReason,
+          realizedGrossPnlUSDT: payload.realizedGrossPnlUSDT,
+          feesUSDT: payload.feesUSDT,
+          realizedNetPnlUSDT: payload.realizedNetPnlUSDT,
+          entryFeeUSDT: payload.entryFeeUSDT,
+          exitFeeUSDT: payload.exitFeeUSDT,
+          entryFeeRate: payload.entryFeeRate,
+          exitFeeRate: payload.exitFeeRate
         }
       });
     },

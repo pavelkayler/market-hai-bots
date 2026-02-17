@@ -21,10 +21,16 @@ export type PaperPosition = {
   slPrice: number;
   openedTs: number;
   closeReason?: string;
+  exitPrice?: number;
+  realizedGrossPnlUSDT?: number;
+  feesUSDT?: number;
+  realizedNetPnlUSDT?: number;
   grossPnlUSDT?: number;
   feeTotalUSDT?: number;
   netPnlUSDT?: number;
   entryFeeUSDT?: number;
   exitFeeUSDT?: number;
+  entryFeeRate?: number;
+  exitFeeRate?: number;
   lastPnlUSDT?: number;
 };

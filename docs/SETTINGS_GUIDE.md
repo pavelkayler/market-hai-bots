@@ -8,9 +8,11 @@ Percent convention: **`3` means 3%** (not `0.03`).
 - Entry qty: `qty = notional / entryPrice` (then lot-size normalization)
 - `entryOffsetPct` is applied first (entry limit), then TP/SL are derived from that entry price.
 - ROI→price mapping:
-  - `movePct = roiPct / leverage`
-  - LONG: `tp=entry*(1+tpRoiPct/100/leverage)`, `sl=entry*(1-slRoiPct/100/leverage)`
-  - SHORT: `tp=entry*(1-tpRoiPct/100/leverage)`, `sl=entry*(1+slRoiPct/100/leverage)`
+  - `tpMovePct = tpRoiPct / leverage / 100`
+  - `slMovePct = slRoiPct / leverage / 100`
+  - LONG: `tp=entry*(1+tpMovePct)`, `sl=entry*(1-slMovePct)`
+  - SHORT: `tp=entry*(1-tpMovePct)`, `sl=entry*(1+slMovePct)`
+  - Guardrail: `tpRoiPct` and `slRoiPct` must be strictly positive.
 
 ## Paper fill model
 
@@ -28,6 +30,12 @@ Fees are charged on both legs:
 - `entryFee = entryFeeRate * qty * entryPrice`
 - `exitFee = exitFeeRate * qty * exitPrice`
 - `feeTotal = entryFee + exitFee`
+
+PAPER assumptions used in engine:
+- Entry limit fill => **maker fee rate**.
+- TP close => **taker fee rate**.
+- SL close => **taker fee rate**.
+This is intentionally conservative so paper performance is not overstated.
 
 PnL:
 - LONG gross: `(exit - entry) * qty`
@@ -85,3 +93,17 @@ Check WS `symbol:update.topReasons` and bot logs:
 5. Verify trend mismatch blocks entries.
 6. Verify guardrail auto-pause reason in stats.
 7. Verify snapshot pause/resume keeps open-position monitoring and active-only uptime accounting.
+
+
+## Numeric example (why positive winrate can still be negative net)
+
+Given `entry=100`, `qty=1`, `tp=101`, `sl=99`, `maker=0.02%`, `taker=0.055%`:
+- Win gross: `+1.0000`
+- Win fees: `100*0.0002 + 101*0.00055 = 0.07555`
+- Win net: `+0.92445`
+
+- Loss gross: `-1.0000`
+- Loss fees: `100*0.0002 + 99*0.00055 = 0.07445`
+- Loss net: `-1.07445`
+
+With these settings, a 50% winrate is still net negative because the loss magnitude and fees outweigh the average win.
