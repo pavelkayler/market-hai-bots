@@ -120,7 +120,7 @@ describe('server routes', () => {
     expect(response.json()).toEqual({
       ok: true,
       activeProfile: 'default',
-      names: ['default', 'fast_test_1m', 'overnight_1m_safe']
+      names: ['default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m']
     });
   });
 
@@ -583,7 +583,7 @@ describe('server routes', () => {
 
     const profilesResponse = await app.inject({ method: 'GET', url: '/api/profiles' });
     expect(profilesResponse.statusCode).toBe(200);
-    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['default', 'fast_test_1m', 'overnight_1m_safe'] });
+    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m'] });
 
     await rm(tempDir, { recursive: true, force: true });
   });

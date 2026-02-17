@@ -477,6 +477,24 @@ export function BotPage({
     }
   };
 
+  const handleQuickApplyProfile = async (name: string) => {
+    setError('');
+    try {
+      const response = await getProfile(name);
+      persistSettings(response.config);
+      await saveProfile(name, response.config);
+      await refreshProfiles();
+      setSelectedProfile(name);
+      if (name === 'smoke_min_1m') {
+        setMinTurnover(1_000_000);
+        setMinVolPct(1);
+      }
+      setStatus(`Quick-applied profile: ${name}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const handleSaveProfile = async (name: string, withConfirm = false) => {
     setError('');
     try {
@@ -1471,11 +1489,14 @@ export function BotPage({
                       <Button size="sm" variant="outline-secondary" onClick={() => profileUploadInputRef.current?.click()}>
                         Import
                       </Button>
-                      <Button size="sm" variant="outline-info" onClick={() => void handleLoadProfile('fast_test_1m')} disabled={!profileNames.includes('fast_test_1m')}>
+                      <Button size="sm" variant="outline-info" onClick={() => void handleQuickApplyProfile('fast_test_1m')} disabled={!profileNames.includes('fast_test_1m') || disableSettings}>
                         Apply fast_test_1m
                       </Button>
-                      <Button size="sm" variant="outline-info" onClick={() => void handleLoadProfile('overnight_1m_safe')} disabled={!profileNames.includes('overnight_1m_safe')}>
+                      <Button size="sm" variant="outline-info" onClick={() => void handleQuickApplyProfile('overnight_1m_safe')} disabled={!profileNames.includes('overnight_1m_safe') || disableSettings}>
                         Apply overnight_1m_safe
+                      </Button>
+                      <Button size="sm" variant="outline-info" onClick={() => void handleQuickApplyProfile('smoke_min_1m')} disabled={!profileNames.includes('smoke_min_1m') || disableSettings}>
+                        Apply smoke_min_1m
                       </Button>
                       <input
                         ref={profileUploadInputRef}
@@ -1484,6 +1505,7 @@ export function BotPage({
                         onChange={(event) => void handleImportProfilesFile(event)}
                         style={{ display: 'none' }}
                       />
+                    <div className="small text-muted mt-2">Smoke preset is for lifecycle validation; may be unprofitable due to fees/slippage.</div>
                     </div>
                   </Col>
                 </Row>

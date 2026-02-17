@@ -175,6 +175,7 @@ Starter profiles are auto-seeded when missing (without overwriting existing prof
 - `default`
 - `fast_test_1m`
 - `overnight_1m_safe`
+- `smoke_min_1m`
 
 
 ## Signal gating semantics (canonical)
@@ -189,6 +190,43 @@ Starter profiles are auto-seeded when missing (without overwriting existing prof
   - `longPriority`: chooses LONG.
   - Diagnostics surface selected side and no-entry reasons in `symbol:update.topReasons` / journal fields.
 
+## Operator presets
+
+- `fast_test_1m`: speed-biased supervised checks over short sessions.
+- `overnight_1m_safe`: safety-biased unattended paper/demo run with tighter guardrails.
+- `smoke_min_1m`: very permissive lifecycle validation preset to trigger quickly; **not for profitability**.
+
+### smoke_min_1m values
+
+| Setting | Value |
+| --- | --- |
+| mode | `paper` |
+| direction | `both` |
+| tf | `1` |
+| signalCounterThreshold | `1` |
+| priceUpThrPct | `0.2` |
+| oiUpThrPct | `0.2` |
+| oiCandleThrPct | `0` |
+| marginUSDT | `25` |
+| leverage | `5` |
+| tpRoiPct | `2` |
+| slRoiPct | `2` |
+| entryOffsetPct | `0.01` |
+| maxActiveSymbols | `20` |
+| dailyLossLimitUSDT | `0` |
+| maxConsecutiveLosses | `0` |
+| trendTfMinutes | `5` |
+| trendLookbackBars | `10` |
+| trendMinMovePct | `0` |
+| confirmWindowBars | `1` |
+| confirmMinContinuationPct | `0` |
+| impulseMaxAgeBars | `1` |
+| requireOiTwoCandles | `false` |
+| minNotionalUSDT | `0` |
+| maxSpreadBps | `9999` |
+| maxTickStalenessMs | `60000` |
+| Universe defaults (UI) `minTurnover` / `minVolPct` | `1000000` / `1` |
+
 ## Recommended presets (paper testing ready)
 
 - `fast_test_1m` (speed-biased smoke run; use for 1–2h supervised checks):
@@ -200,7 +238,7 @@ Starter profiles are auto-seeded when missing (without overwriting existing prof
   - Conservative liquidity gates (`maxSpreadBps`, `maxTickStalenessMs`) and non-zero loss guardrails.
   - `signalCounterThreshold>=2`, `entryOffsetPct=0.01`, `oiCandleThrPct>=0`.
 
-Both presets are seeded only when missing profile names, so edited values are preserved across restarts/upgrades.
+All operator presets are seeded only when missing profile names, so edited values are preserved across restarts/upgrades.
 
 ## STOP-only exclusions and clear-all semantics
 

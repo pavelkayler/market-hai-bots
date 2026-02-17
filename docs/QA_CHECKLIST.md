@@ -57,7 +57,19 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 7. Remove `UNIVERSE_FORCE_UPSTREAM_ERROR` and click **Refresh** again.
    - Expect return to ready or built-empty success state.
 
-## C) Start → signal gating → order → position → close
+## C) smoke_min_1m operator smoke preset
+1. Open Bot page → **Settings** tab → Profiles.
+2. Click **Apply smoke_min_1m**.
+   - Expect profile appears in selector and settings update to smoke values.
+3. Click **Save** and then **Set Active**.
+   - Expect success toasts/status; bot does not auto-start.
+4. In Universe controls set `minTurnover=1000000` and `minVolPct=1`, then click **Create**.
+   - Expect READY or BUILT_EMPTY according to market conditions.
+5. Start bot in paper mode and observe lifecycle under active markets.
+   - Expect at least one signal/order/position in a reasonable window (market-dependent).
+6. After a close event (TP/SL/manual), verify stats and journal entries update.
+
+## D) Start → signal gating → order → position → close
 1. Ensure universe exists, configure paper settings, click **Start**.
    - Expect bot state shows `running=true`.
 2. Wait for a qualifying signal.
@@ -69,7 +81,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 5. Confirm close (TP/SL/manual scenario).
    - Expect `POSITION_CLOSED` journal entry and stats update (net PnL includes fees).
 
-## D) Pause / Resume / Kill behavior
+## E) Pause / Resume / Kill behavior
 1. Click **Pause** while running.
    - Expect `paused=true`, snapshot available (`hasSnapshot=true`), and success alert.
 2. Click **Resume**.
@@ -77,7 +89,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 3. Click **Kill**.
    - Expect pending entries canceled; open positions are not force-closed.
 
-## E) Ops journaling + export pack
+## F) Ops journaling + export pack
 1. Execute lifecycle ops in order: Pause → Resume → Kill → Stop → Reset All.
 2. Open Journal tail.
    - Expect SYSTEM entries for `BOT_PAUSE`, `BOT_RESUME`, `BOT_KILL`, `SYSTEM_RESET_ALL`.
@@ -93,7 +105,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - Expect `createdAt`, `appVersion`, `notes[]`, `paths`, and optional `counts`.
    - If files are missing, expect diagnostics in `notes[]` (partial export semantics).
 
-## F) Reset all (STOP-only)
+## G) Reset all (STOP-only)
 1. With bot running, click **Reset All**.
    - Expect failure (`BOT_RUNNING` / UI error); no reset performed.
 2. Stop bot, click **Reset All** again.

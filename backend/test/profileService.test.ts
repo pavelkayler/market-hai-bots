@@ -91,7 +91,7 @@ describe('ProfileService', () => {
 
       const list = await service.list();
       expect(list.activeProfile).toBe('balanced');
-      expect(list.names).toEqual(['aggressive', 'balanced', 'default', 'fast_test_1m', 'overnight_1m_safe']);
+      expect(list.names).toEqual(['aggressive', 'balanced', 'default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m']);
       expect(await service.get('aggressive')).toMatchObject({ ...aggressiveConfig, leverage: 5 });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
@@ -159,6 +159,7 @@ describe('ProfileService', () => {
     try {
       const fast = await service.get('fast_test_1m');
       const overnight = await service.get('overnight_1m_safe');
+      const smoke = await service.get('smoke_min_1m');
       expect(fast?.leverage).toBe(7);
       expect(fast?.signalCounterThreshold).toBe(2);
       expect(overnight?.signalCounterThreshold).toBe(3);
@@ -166,6 +167,82 @@ describe('ProfileService', () => {
       expect(overnight?.oiUpThrPct).toBe(0.8);
       expect(overnight?.entryOffsetPct).toBe(0.01);
       expect(overnight?.maxTickStalenessMs).toBe(1200);
+      expect(smoke?.signalCounterThreshold).toBe(1);
+      expect(smoke?.oiCandleThrPct).toBe(0);
+      expect(smoke?.priceUpThrPct).toBe(0.2);
+      expect(smoke?.oiUpThrPct).toBe(0.2);
+      expect(smoke?.entryOffsetPct).toBe(0.01);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not overwrite existing smoke_min_1m profile', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'profile-service-smoke-seed-test-'));
+    const filePath = path.join(tempDir, 'profiles.json');
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        activeProfile: 'default',
+        profiles: {
+          default: aggressiveConfig,
+          smoke_min_1m: { ...aggressiveConfig, signalCounterThreshold: 9, oiCandleThrPct: 0.9, priceUpThrPct: 9.9 }
+        }
+      }),
+      'utf-8'
+    );
+    const service = new ProfileService(filePath);
+
+    try {
+      const smoke = await service.get('smoke_min_1m');
+      const defaultProfile = await service.get('default');
+      const fast = await service.get('fast_test_1m');
+      const overnight = await service.get('overnight_1m_safe');
+
+      expect(smoke?.signalCounterThreshold).toBe(9);
+      expect(smoke?.oiCandleThrPct).toBe(0.9);
+      expect(smoke?.priceUpThrPct).toBe(9.9);
+      expect(defaultProfile).toMatchObject(aggressiveConfig);
+      expect(fast).toBeTruthy();
+      expect(overnight).toBeTruthy();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('ships smoke_min_1m with permissive lifecycle validation values', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'profile-service-smoke-values-test-'));
+    const service = new ProfileService(path.join(tempDir, 'profiles.json'));
+
+    try {
+      const smoke = await service.get('smoke_min_1m');
+      expect(smoke).toMatchObject({
+        mode: 'paper',
+        direction: 'both',
+        tf: 1,
+        signalCounterThreshold: 1,
+        priceUpThrPct: 0.2,
+        oiUpThrPct: 0.2,
+        oiCandleThrPct: 0,
+        marginUSDT: 25,
+        leverage: 5,
+        tpRoiPct: 2,
+        slRoiPct: 2,
+        entryOffsetPct: 0.01,
+        maxActiveSymbols: 20,
+        dailyLossLimitUSDT: 0,
+        maxConsecutiveLosses: 0,
+        trendTfMinutes: 5,
+        trendLookbackBars: 10,
+        trendMinMovePct: 0,
+        confirmWindowBars: 1,
+        confirmMinContinuationPct: 0,
+        impulseMaxAgeBars: 1,
+        requireOiTwoCandles: false,
+        minNotionalUSDT: 0,
+        maxSpreadBps: 9999,
+        maxTickStalenessMs: 60000
+      });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

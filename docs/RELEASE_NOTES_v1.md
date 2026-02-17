@@ -16,6 +16,7 @@
 - Compact operator layout pass: denser card/table spacing with unchanged controls/help text.
 - V1 Step 3/3 QA closure: checklist/report/docs aligned as single source of truth, including export header contract and operator state strings.
 - Starter preset hardening: `fast_test_1m` and `overnight_1m_safe` guardrails remain non-zero by default, with `entryOffsetPct=0.01` preserved for paper-testing readiness.
+- Added `smoke_min_1m` operator preset for end-to-end smoke testing.
 
 ## Invariants
 - Percent inputs follow: `3` means `3%`.
