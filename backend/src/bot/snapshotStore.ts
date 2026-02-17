@@ -17,6 +17,19 @@ export type RuntimeSnapshotSymbol = {
   prevCandleOi?: number | null;
   lastCandleOi?: number | null;
   lastCandleBucketStart?: number | null;
+  trend5mBucketStart?: number | null;
+  trend5mPrevClose?: number | null;
+  trend5mLastClose?: number | null;
+  trend15mBucketStart?: number | null;
+  trend15mPrevClose?: number | null;
+  trend15mLastClose?: number | null;
+  armedSignal?: {
+    side: 'LONG' | 'SHORT';
+    baselinePrice: number;
+    armedBucketStart: number;
+    expireBucketStart: number;
+  } | null;
+  lastNoEntryReasons?: Array<{ code: string; message: string; value?: number; threshold?: number }>;
 };
 
 export type RuntimeSnapshot = {

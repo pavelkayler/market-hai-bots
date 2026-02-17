@@ -129,9 +129,14 @@ const defaultSettings: BotSettings = {
   tpRoiPct: 1,
   slRoiPct: 0.7,
   entryOffsetPct: 0.01,
-  maxActiveSymbols: 5,
-  dailyLossLimitUSDT: 0,
-  maxConsecutiveLosses: 0
+  maxActiveSymbols: 3,
+  dailyLossLimitUSDT: 10,
+  maxConsecutiveLosses: 3,
+  trendTf: 5,
+  trendThrPct: 0.15,
+  confirmMovePct: 0.1,
+  confirmMaxCandles: 1,
+  maxSecondsIntoCandle: 45
 };
 
 function loadSettings(): BotSettings {
@@ -1134,7 +1139,7 @@ export function BotPage({
             <div>
               Last closed:{' '}
               {botStats.lastClosed
-                ? `${new Date(botStats.lastClosed.ts).toLocaleString()} ${botStats.lastClosed.symbol} ${formatPnl(botStats.lastClosed.pnlUSDT)}`
+                ? `${new Date(botStats.lastClosed.ts).toLocaleString()} ${botStats.lastClosed.symbol} ${formatPnl(botStats.lastClosed.netPnlUSDT)} (${botStats.lastClosed.reason})`
                 : '-'}
             </div>
           </Card.Body>
@@ -1299,7 +1304,12 @@ export function BotPage({
                   ['entryOffsetPct (%)', 'entryOffsetPct'],
                   ['maxActiveSymbols (count)', 'maxActiveSymbols'],
                   ['dailyLossLimitUSDT (USDT)', 'dailyLossLimitUSDT'],
-                  ['maxConsecutiveLosses (count)', 'maxConsecutiveLosses']
+                  ['maxConsecutiveLosses (count)', 'maxConsecutiveLosses'],
+                  ['trendTf (min: 5/15)', 'trendTf'],
+                  ['trendThrPct (%)', 'trendThrPct'],
+                  ['confirmMovePct (%)', 'confirmMovePct'],
+                  ['confirmMaxCandles', 'confirmMaxCandles'],
+                  ['maxSecondsIntoCandle (sec)', 'maxSecondsIntoCandle']
                 ] as const
               ).map(([label, key]) => (
                 <Col md={4} key={key}>

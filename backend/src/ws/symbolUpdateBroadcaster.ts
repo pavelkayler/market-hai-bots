@@ -1,4 +1,4 @@
-import type { SymbolBaseline, SymbolFsmState } from '../bot/botEngine.js';
+import type { NoEntryReason, SymbolBaseline, SymbolFsmState } from '../bot/botEngine.js';
 import type { PaperPendingOrder, PaperPosition } from '../bot/paperTypes.js';
 import type { MarketState } from '../market/marketHub.js';
 
@@ -16,6 +16,7 @@ type SymbolBroadcastPayload = {
   baseline: SymbolBaseline | null;
   pendingOrder: PaperPendingOrder | null;
   position: PaperPosition | null;
+  topReasons?: NoEntryReason[];
 };
 
 export type SymbolUpdateMode = 'single' | 'batch' | 'both';
@@ -94,7 +95,8 @@ export class SymbolUpdateBroadcaster {
       oiPrevCandleValue: null,
       oiCandleDeltaValue: null,
       oiCandleDeltaPct: null
-    }
+    },
+    topReasons: NoEntryReason[] = []
   ): void {
     const now = Date.now();
     const lastSentAt = this.lastSentAtBySymbol.get(symbol) ?? 0;
@@ -115,7 +117,8 @@ export class SymbolUpdateBroadcaster {
       oiCandleDeltaPct: oiCandle.oiCandleDeltaPct,
       baseline,
       pendingOrder,
-      position
+      position,
+      ...(topReasons.length > 0 ? { topReasons } : {})
     };
 
     if (this.mode === 'single' || this.mode === 'both') {

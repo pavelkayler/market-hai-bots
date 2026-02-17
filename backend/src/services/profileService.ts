@@ -24,15 +24,46 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   tpRoiPct: 1,
   slRoiPct: 0.7,
   entryOffsetPct: 0.01,
-  maxActiveSymbols: 5,
-  dailyLossLimitUSDT: 0,
-  maxConsecutiveLosses: 0
+  maxActiveSymbols: 3,
+  dailyLossLimitUSDT: 10,
+  maxConsecutiveLosses: 3,
+  trendTf: 5,
+  trendThrPct: 0.15,
+  confirmMovePct: 0.1,
+  confirmMaxCandles: 1,
+  maxSecondsIntoCandle: 45
+};
+
+const FAST_TEST_1M_PROFILE: BotConfig = {
+  ...DEFAULT_PROFILE_CONFIG,
+  tf: 1,
+  signalCounterThreshold: 1,
+  priceUpThrPct: 0.35,
+  oiUpThrPct: 25,
+  maxActiveSymbols: 2,
+  dailyLossLimitUSDT: 8,
+  maxConsecutiveLosses: 3
+};
+
+const OVERNIGHT_1M_SAFE_PROFILE: BotConfig = {
+  ...DEFAULT_PROFILE_CONFIG,
+  tf: 1,
+  signalCounterThreshold: 3,
+  priceUpThrPct: 0.7,
+  oiUpThrPct: 60,
+  trendThrPct: 0.2,
+  confirmMovePct: 0.15,
+  maxActiveSymbols: 1,
+  dailyLossLimitUSDT: 6,
+  maxConsecutiveLosses: 2
 };
 
 const DEFAULT_PROFILES_FILE: ProfilesFile = {
   activeProfile: DEFAULT_PROFILE_NAME,
   profiles: {
-    [DEFAULT_PROFILE_NAME]: DEFAULT_PROFILE_CONFIG
+    [DEFAULT_PROFILE_NAME]: DEFAULT_PROFILE_CONFIG,
+    fast_test_1m: FAST_TEST_1M_PROFILE,
+    overnight_1m_safe: OVERNIGHT_1M_SAFE_PROFILE
   }
 };
 
