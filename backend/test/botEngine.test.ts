@@ -226,6 +226,37 @@ describe('BotEngine paper execution', () => {
     expect(logs.some((entry) => entry.includes('Skipped BTCUSDT'))).toBe(true);
   });
 
+  it('computes deltas from previous TF candle close after first bucket close', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 99 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
+    let runtime = engine.getSymbolState('BTCUSDT');
+    expect(runtime?.prevTfCloseMark).toBeNull();
+    expect(runtime?.prevTfCloseOiv).toBeNull();
+
+    now += 30_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1050, openInterest: 1050, ts: now });
+    runtime = engine.getSymbolState('BTCUSDT');
+    expect(runtime?.prevTfCloseMark).toBeNull();
+    expect(runtime?.prevTfCloseOiv).toBeNull();
+
+    now += 31_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 108, openInterestValue: 1090, openInterest: 1090, ts: now });
+    runtime = engine.getSymbolState('BTCUSDT');
+    expect(runtime?.prevTfCloseMark).toBe(105);
+    expect(runtime?.prevTfCloseOiv).toBe(1050);
+  });
+
   it('auto-cancels pending order after 1 hour and resets baseline', () => {
     const orderUpdates: OrderUpdatePayload[] = [];
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);

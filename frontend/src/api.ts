@@ -47,13 +47,16 @@ export async function getUniverse(): Promise<UniverseState> { return request('/a
 export async function createUniverse(minVolPct: number, minTurnover: number): Promise<unknown> { return request('/api/universe/create', { method: 'POST', body: JSON.stringify({ minVolPct, minTurnover }) }); }
 export async function refreshUniverse(filters?: { minVolPct?: number; minTurnover?: number }): Promise<unknown> { return request('/api/universe/refresh', { method: 'POST', body: JSON.stringify(filters ?? {}) }); }
 export async function clearUniverse(): Promise<{ ok: boolean }> { return request('/api/universe/clear', { method: 'POST', body: JSON.stringify({}) }); }
-export async function getBotState(): Promise<BotState> { return request('/api/bot/state'); }
+export async function getBotState(signal?: AbortSignal): Promise<BotState> { return request('/api/bot/state', { signal }); }
 export async function getUniverseExclusions(): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions'); }
 export async function addUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions/add', { method: 'POST', body: JSON.stringify({ symbol }) }); }
 export async function removeUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions/remove', { method: 'POST', body: JSON.stringify({ symbol }) }); }
-export async function getBotStats(): Promise<{ ok: true; stats: BotStats }> { return request('/api/bot/stats'); }
+export async function getBotStats(signal?: AbortSignal): Promise<{ ok: true; stats: BotStats }> { return request('/api/bot/stats', { signal }); }
 export async function killBot(): Promise<{ ok: true; cancelledOrders: number; closedPositions: number; warning: string | null; activeOrdersRemaining: number; openPositionsRemaining: number }> { return request('/api/bot/kill', { method: 'POST', body: JSON.stringify({}) }); }
 export async function resetBotStats(): Promise<{ ok: true }> { return request('/api/bot/stats/reset', { method: 'POST', body: JSON.stringify({}) }); }
+export async function resetBot(): Promise<{ ok: true; warning: string | null; cleared: { universe: boolean; runtime: boolean } }> {
+  return request('/api/bot/reset', { method: 'POST', body: JSON.stringify({}) });
+}
 export async function resetAllRuntimeTables(): Promise<{ ok: true; cleared: { stats: boolean; journal: boolean; runtime: boolean; exclusions: boolean; universe: boolean; replay: boolean } }> { return request('/api/bot/clearAllTables', { method: 'POST', body: JSON.stringify({}) }); }
 export async function startBot(settings?: BotSettings | null): Promise<unknown> { return request('/api/bot/start', { method: 'POST', body: JSON.stringify(settings ?? null) }); }
 export async function stopBot(): Promise<unknown> { return request('/api/bot/stop', { method: 'POST', body: JSON.stringify({}) }); }

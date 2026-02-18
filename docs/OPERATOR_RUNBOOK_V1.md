@@ -50,7 +50,10 @@ Expected:
 ## 5) Stop vs Kill
 
 ### Stop
-- Graceful lifecycle stop (`POST /api/bot/stop`), no forced flatten semantics.
+- Graceful lifecycle stop (`POST /api/bot/stop`): cancels open unfilled orders, keeps open positions.
+
+### Pause
+- `POST /api/bot/pause`: keeps open orders and positions as-is, halts strategy processing.
 
 ### Kill (flatten intent)
 - `POST /api/bot/kill`:
@@ -59,6 +62,11 @@ Expected:
   - stop bot
   - write final run stats (`stats.json`) + terminal run event (`BOT_KILL`) best-effort
   - return residual counters and warning when non-zero.
+
+### Reset
+- `POST /api/bot/reset`:
+  - executes KILL flow first (cancel unfilled orders + market-close positions)
+  - then clears universe symbols so operator must Create/Refresh Universe again.
 
 ## 6) Export pack
 - Trigger `GET /api/export/pack`.
