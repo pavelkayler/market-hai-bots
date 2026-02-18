@@ -73,18 +73,18 @@ export async function getBotState(): Promise<BotState> {
 }
 
 
-export async function getUniverseExclusions(): Promise<{ ok: true; excluded: string[] }> {
+export async function getUniverseExclusions(): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> {
   return request('/api/universe/exclusions');
 }
 
-export async function addUniverseExclusion(symbol: string): Promise<{ ok: true; excluded: string[] }> {
+export async function addUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> {
   return request('/api/universe/exclusions/add', {
     method: 'POST',
     body: JSON.stringify({ symbol })
   });
 }
 
-export async function removeUniverseExclusion(symbol: string): Promise<{ ok: true; excluded: string[] }> {
+export async function removeUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> {
   return request('/api/universe/exclusions/remove', {
     method: 'POST',
     body: JSON.stringify({ symbol })
@@ -110,7 +110,7 @@ export async function resetBotStats(): Promise<{ ok: true }> {
 
 
 export async function resetAllRuntimeTables(): Promise<{ ok: true; cleared: { stats: boolean; journal: boolean; runtime: boolean; exclusions: boolean; universe: boolean; replay: boolean } }> {
-  return request('/api/reset/all', { method: 'POST', body: JSON.stringify({}) });
+  return request('/api/bot/clearAllTables', { method: 'POST', body: JSON.stringify({}) });
 }
 
 export async function startBot(settings?: BotSettings | null): Promise<unknown> {

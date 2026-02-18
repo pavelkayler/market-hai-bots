@@ -50,6 +50,7 @@ Percent convention: **`3` means `3%`** (not `0.03`).
 - `GET /api/bot/stats`
 - `POST /api/bot/stats/reset`
 - `POST /api/reset/all`
+- `POST /api/bot/clearAllTables` (alias of reset-all)
 
 ### Lifecycle + invariants
 - Active symbols are only `ENTRY_PENDING` or `POSITION_OPEN`.
@@ -58,7 +59,8 @@ Percent convention: **`3` means `3%`** (not `0.03`).
   - `side=null`
   - `data` as object
 - Ops journaling is best-effort (warn-only on append failure).
-- `POST /api/reset/all` is **STOP-only** (`BOT_RUNNING` when running) and preserves profiles while clearing runtime/journal/stats/universe/exclusions/replay state.
+- `POST /api/reset/all`
+- `POST /api/bot/clearAllTables` (alias of reset-all) is **STOP-only** (`BOT_RUNNING` when running) and preserves profiles while clearing runtime/journal/stats/universe/exclusions/replay state.
 
 ## Execution math (v1)
 - `notional = marginUSDT * leverage`

@@ -58,6 +58,7 @@ export type ProfilesState = {
 export type BotState = {
   running: boolean;
   paused: boolean;
+  pauseReason?: string | null;
   hasSnapshot: boolean;
   lastConfig: BotConfig | null;
   mode: BotMode | null;

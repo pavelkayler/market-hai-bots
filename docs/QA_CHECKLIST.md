@@ -90,7 +90,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - Expect pending entries canceled; open positions are not force-closed.
 
 ## F) Ops journaling + export pack
-1. Execute lifecycle ops in order: Pause → Resume → Kill → Stop → Reset All.
+1. Execute lifecycle ops in order: Pause → Resume → Kill → Stop → Reset All / Clear all tables.
 2. Open Journal tail.
    - Expect SYSTEM entries for `BOT_PAUSE`, `BOT_RESUME`, `BOT_KILL`, `SYSTEM_RESET_ALL`.
    - Expect each has `symbol="SYSTEM"`, `side=null`, and `data` as object.
@@ -106,9 +106,9 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - If files are missing, expect diagnostics in `notes[]` (partial export semantics).
 
 ## G) Reset all (STOP-only)
-1. With bot running, click **Reset All**.
+1. With bot running, click **Reset All / Clear all tables**.
    - Expect failure (`BOT_RUNNING` / UI error); no reset performed.
-2. Stop bot, click **Reset All** again.
+2. Stop bot, click **Reset All / Clear all tables** again.
    - Expect success; runtime tables are cleared.
 3. Verify post-reset:
    - Runtime state, journal tail, stats, exclusions, universe, replay state are cleared.

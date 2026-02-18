@@ -796,7 +796,7 @@ export function BotPage({
     } catch (err) {
       const apiError = err as ApiRequestError;
       if (apiError.code === 'BOT_RUNNING') {
-        alert('Stop the bot first.');
+        alert('Clear all tables is STOP-only. Stop the bot first.');
       } else {
         alert(apiError.message);
       }
@@ -934,7 +934,7 @@ export function BotPage({
   );
 
   const handleToggleExclude = async (symbol: string, excluded: boolean) => {
-    if (botState.running) {
+    if (botState.running || botState.paused) {
       return;
     }
 
@@ -1037,7 +1037,7 @@ export function BotPage({
               <Col md={3}>
                 <div><strong>Guardrail pause reason:</strong> {botStats.guardrailPauseReason ?? '-'}</div>
                 <div><strong>Guardrail state:</strong> {botState.paused ? 'paused' : 'active'}</div>
-                <div><strong>Bot:</strong> {botState.running ? (botState.paused ? 'paused' : 'running') : 'stopped'}</div>
+                <div><strong>Bot:</strong> {botState.running ? (botState.paused ? 'paused' : 'running') : 'stopped'}{botState.pauseReason ? ` (${botState.pauseReason})` : ''}</div>
                 <div><strong>Mode:</strong> {botState.mode ?? '-'}</div>
                 <div><strong>TF:</strong> {botState.tf ?? '-'}</div>
                 <div><strong>Direction:</strong> {botState.direction ?? '-'}</div>
@@ -1058,7 +1058,7 @@ export function BotPage({
               <Button variant="outline-primary" onClick={() => void refreshDashboardEvents()}>
                 Refresh
               </Button>
-              <Button variant="danger" onClick={() => void handleClearAllTables()} disabled={botState.running}>
+              <Button variant="danger" onClick={() => void handleClearAllTables()} disabled={botState.running || botState.paused}>
                 Clear all tables
               </Button>
               <Button variant="outline-danger" onClick={() => void handleResetStats()}>
@@ -1179,6 +1179,26 @@ export function BotPage({
               {universeExists ? <div>Created At: {new Date(universeState.createdAt as number).toLocaleString()}</div> : null}
               <div>Symbols: {universeSymbolCount}</div>
               <div>Excluded: {excludedSymbols.length}</div>
+              <div className="mt-1">
+                Manage exclusions (STOP-only):{' '}
+                {excludedSymbols.length === 0 ? (
+                  <span className="text-muted">none</span>
+                ) : (
+                  <span className="d-inline-flex gap-1 flex-wrap align-items-center">
+                    {excludedSymbols.map((symbol) => (
+                      <Button
+                        key={`universe-excluded-${symbol}`}
+                        size="sm"
+                        variant="outline-secondary"
+                        disabled={botState.running || botState.paused}
+                        onClick={() => void handleToggleExclude(symbol, true)}
+                      >
+                        {symbol} ×
+                      </Button>
+                    ))}
+                  </span>
+                )}
+              </div>
               <div>
                 Filters: {universeState.filters ? `minTurnover ${universeState.filters.minTurnover.toLocaleString()}, minVolPct ${universeState.filters.minVolPct}` : '-'}
               </div>
@@ -1312,7 +1332,7 @@ export function BotPage({
                         <Button
                           size="sm"
                           variant={row.excluded ? 'outline-success' : 'outline-danger'}
-                          disabled={botState.running}
+                          disabled={botState.running || botState.paused}
                           onClick={() => void handleToggleExclude(row.symbol, row.excluded)}
                         >
                           {row.excluded ? '+' : '-'}
@@ -1696,7 +1716,7 @@ export function BotPage({
             <Card.Header>Controls</Card.Header>
           <Card.Body>
             <div className="d-flex gap-2 mb-3">
-              <Button variant="success" onClick={() => void handleStart()} disabled={botState.running}>
+              <Button variant="success" onClick={() => void handleStart()} disabled={botState.running || botState.paused}>
                 Start
               </Button>
               <Button variant="warning" onClick={() => void handlePause()} disabled={!botState.running || botState.paused}>
@@ -1719,7 +1739,7 @@ export function BotPage({
               label="Use active profile on start"
               checked={useActiveProfileOnStart}
               onChange={(event) => setUseActiveProfileOnStart(event.target.checked)}
-              disabled={botState.running}
+              disabled={botState.running || botState.paused}
             />
             {botState.killInProgress ? <Alert variant="warning">KILL in progress: cancelling orders and closing all positions…</Alert> : null}
             {!botState.killInProgress && botState.killCompletedAt ? (
