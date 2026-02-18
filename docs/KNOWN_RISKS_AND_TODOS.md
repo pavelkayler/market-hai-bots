@@ -3,10 +3,9 @@
 Ниже consolidated список ограничений/расхождений по code+docs с приоритетами.
 
 ## P0
-1. **KILL всё ещё warning-only по HTTP, но demo close теперь подтверждается и не очищает локальную позицию без подтверждения.**
-   - Что исправлено: в demo добавлен poll-confirmation после `closePositionMarket`; при failure/timeout локальная позиция сохраняется, warning детерминированный.
-   - Где видно: `backend/src/bot/botEngine.ts` (`killSwitch` demo branch) + `backend/src/server.ts` (`killWarning`, residual counters).
-   - Остаточный риск: API по-прежнему возвращает `ok:true` (оператору нужно проверять warning + residual counters).
+1. **DEMO close accounting and KILL reliability improved (downgraded risk).**
+   - Что исправлено: demo KILL повторяет close при необходимости и ждёт подтверждение дольше; hedge-mode `positionIdx` mismatch обрабатывается retry на клиенте.
+   - Что осталось: endpoint `/v5/position/closed-pnl` best-effort, поэтому при его деградации используется fallback по mark-price math.
 
 ## P1
 2. **`docs/TASKS.md` не синхронизирован с фактической реализацией (много unchecked пунктов уже реализованы).**

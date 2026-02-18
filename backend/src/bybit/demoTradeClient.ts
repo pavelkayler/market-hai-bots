@@ -1,8 +1,8 @@
 import { request } from 'undici';
 
 import { buildBybitV5Headers } from './bybitSigner.js';
-import { parseOpenOrders, parsePositions } from './parsers.js';
-import type { DemoOpenOrder, DemoPosition } from './parsers.js';
+import { parseClosedPnl, parseOpenOrders, parsePositions } from './parsers.js';
+import type { DemoClosedPnlItem, DemoOpenOrder, DemoPosition } from './parsers.js';
 
 export type DemoCreateOrderParams = {
   symbol: string;
@@ -12,6 +12,7 @@ export type DemoCreateOrderParams = {
   orderLinkId: string;
   takeProfit: string;
   stopLoss: string;
+  positionIdx?: number;
 };
 
 export type DemoCreateOrderResult = {
@@ -19,15 +20,26 @@ export type DemoCreateOrderResult = {
   orderLinkId: string;
 };
 
-export type { DemoOpenOrder, DemoPosition };
+export type { DemoClosedPnlItem, DemoOpenOrder, DemoPosition };
 
 export interface IDemoTradeClient {
   createLimitOrderWithTpSl(params: DemoCreateOrderParams): Promise<DemoCreateOrderResult>;
   cancelOrder(params: { symbol: string; orderId?: string; orderLinkId?: string }): Promise<void>;
   getOpenOrders(symbol: string): Promise<DemoOpenOrder[]>;
   getPosition(symbol: string): Promise<DemoPosition | null>;
-  closePositionMarket(params: { symbol: string; side: 'Buy' | 'Sell'; qty: string }): Promise<void>;
+  closePositionMarket(params: { symbol: string; side: 'Buy' | 'Sell'; qty: string; positionIdx?: number }): Promise<void>;
+  getClosedPnl(params: { symbol: string; limit?: number }): Promise<DemoClosedPnlItem[]>;
 }
+
+export const selectBestPositionForSymbol = (symbol: string, positions: DemoPosition[]): DemoPosition | null => {
+  const bySymbol = positions.filter((entry) => entry.symbol === symbol);
+  const nonZero = bySymbol.filter((entry) => Number.isFinite(entry.size) && Math.abs(entry.size) > 0);
+  if (nonZero.length === 0) {
+    return null;
+  }
+
+  return nonZero.reduce((best, current) => (Math.abs(current.size) > Math.abs(best.size) ? current : best));
+};
 
 type BybitV5Response = {
   retCode: number;
@@ -51,22 +63,28 @@ export class DemoTradeClient implements IDemoTradeClient {
   }
 
   async createLimitOrderWithTpSl(params: DemoCreateOrderParams): Promise<DemoCreateOrderResult> {
-    const body = JSON.stringify({
-      category: 'linear',
-      symbol: params.symbol,
-      side: params.side,
-      orderType: 'Limit',
-      qty: params.qty,
-      price: params.price,
-      timeInForce: 'GTC',
-      orderLinkId: params.orderLinkId,
-      takeProfit: params.takeProfit,
-      stopLoss: params.stopLoss,
-      tpTriggerBy: 'MarkPrice',
-      slTriggerBy: 'MarkPrice'
-    });
+    const buildBody = (positionIdx: number): string =>
+      JSON.stringify({
+        category: 'linear',
+        symbol: params.symbol,
+        side: params.side,
+        orderType: 'Limit',
+        qty: params.qty,
+        price: params.price,
+        timeInForce: 'GTC',
+        orderLinkId: params.orderLinkId,
+        takeProfit: params.takeProfit,
+        stopLoss: params.stopLoss,
+        tpTriggerBy: 'MarkPrice',
+        slTriggerBy: 'MarkPrice',
+        positionIdx
+      });
 
-    const json = await this.post('/v5/order/create', body);
+    let json = await this.post('/v5/order/create', buildBody(params.positionIdx ?? 0));
+    if (json.retCode === 10001) {
+      json = await this.post('/v5/order/create', buildBody(params.side === 'Buy' ? 1 : 2));
+    }
+
     if (json.retCode !== 0 || !json.result?.orderId || !json.result.orderLinkId) {
       throw new Error(`Demo create order failed: ${json.retCode} ${json.retMsg}`);
     }
@@ -130,24 +148,60 @@ export class DemoTradeClient implements IDemoTradeClient {
       throw new Error(`Demo position list failed: ${json.retCode} ${json.retMsg}`);
     }
 
-    return parsePositions(json).find((entry) => entry.symbol === symbol) ?? null;
+    return selectBestPositionForSymbol(symbol, parsePositions(json));
   }
 
-  async closePositionMarket(params: { symbol: string; side: 'Buy' | 'Sell'; qty: string }): Promise<void> {
-    const body = JSON.stringify({
-      category: 'linear',
-      symbol: params.symbol,
-      side: params.side,
-      orderType: 'Market',
-      qty: params.qty,
-      reduceOnly: true,
-      closeOnTrigger: true,
-      timeInForce: 'IOC'
-    });
+  async closePositionMarket(params: { symbol: string; side: 'Buy' | 'Sell'; qty: string; positionIdx?: number }): Promise<void> {
+    const buildBody = (positionIdx: number): string =>
+      JSON.stringify({
+        category: 'linear',
+        symbol: params.symbol,
+        side: params.side,
+        orderType: 'Market',
+        qty: params.qty,
+        reduceOnly: true,
+        closeOnTrigger: true,
+        timeInForce: 'IOC',
+        positionIdx
+      });
 
-    const json = await this.post('/v5/order/create', body);
+    let json = await this.post('/v5/order/create', buildBody(params.positionIdx ?? 0));
+    if (json.retCode === 10001) {
+      const retryPositionIdx = params.positionIdx ?? (params.side === 'Sell' ? 1 : 2);
+      json = await this.post('/v5/order/create', buildBody(retryPositionIdx));
+    }
+
     if (json.retCode !== 0) {
       throw new Error(`Demo close position failed: ${json.retCode} ${json.retMsg}`);
+    }
+  }
+
+  async getClosedPnl(params: { symbol: string; limit?: number }): Promise<DemoClosedPnlItem[]> {
+    try {
+      const query = new URLSearchParams({
+        category: 'linear',
+        symbol: params.symbol,
+        limit: String(params.limit ?? 3)
+      });
+      const queryString = query.toString();
+      const headers = this.buildSignedHeaders('GET', queryString);
+      const response = await request(`${this.baseUrl}/v5/position/closed-pnl?${queryString}`, {
+        method: 'GET',
+        headers
+      });
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return [];
+      }
+
+      const json = (await response.body.json()) as BybitV5Response;
+      if (json.retCode !== 0) {
+        return [];
+      }
+
+      return parseClosedPnl(json.result?.list);
+    } catch {
+      return [];
     }
   }
 

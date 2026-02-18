@@ -89,6 +89,10 @@ class BlockingDemoTradeClient implements IDemoTradeClient {
   }
 
   async closePositionMarket(): Promise<void> {}
+
+  async getClosedPnl(): Promise<[]> {
+    return [];
+  }
 }
 
 const buildIsolatedServer = (options: Parameters<typeof buildServer>[0] = {}) => {

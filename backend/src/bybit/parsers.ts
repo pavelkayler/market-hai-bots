@@ -29,6 +29,19 @@ export type DemoPosition = {
   unrealisedPnl?: number | null;
 };
 
+export type DemoClosedPnlItem = {
+  symbol: string;
+  side: 'Buy' | 'Sell';
+  qty: number;
+  avgEntryPrice?: number;
+  avgExitPrice?: number;
+  closedPnl?: number;
+  createdTime?: number;
+  updatedTime?: number;
+  orderId?: string;
+  orderLinkId?: string;
+};
+
 type DemoPositionListEntry = {
   positionIdx?: number;
   symbol?: string;
@@ -208,4 +221,45 @@ export const parsePositions = (json: unknown): DemoPosition[] => {
   }
 
   return positions;
+};
+
+export const parseClosedPnl = (list?: unknown[]): DemoClosedPnlItem[] => {
+  const rows = Array.isArray(list) ? list : [];
+  const items: DemoClosedPnlItem[] = [];
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') {
+      console.warn('[bybit/parsers] Skipping closed-pnl row: invalid object');
+      continue;
+    }
+
+    const symbol = typeof (row as { symbol?: unknown }).symbol === 'string' ? (row as { symbol: string }).symbol : null;
+    const side = (row as { side?: unknown }).side;
+    const qty = parseFiniteNumber((row as { qty?: unknown }).qty);
+
+    if (!symbol || (side !== 'Buy' && side !== 'Sell') || qty === null) {
+      console.warn('[bybit/parsers] Skipping closed-pnl row: missing symbol/side/qty');
+      continue;
+    }
+
+    const parsed: DemoClosedPnlItem = {
+      symbol,
+      side,
+      qty,
+      avgEntryPrice: parseFiniteNumber((row as { avgEntryPrice?: unknown }).avgEntryPrice) ?? undefined,
+      avgExitPrice: parseFiniteNumber((row as { avgExitPrice?: unknown }).avgExitPrice) ?? undefined,
+      closedPnl: parseFiniteNumber((row as { closedPnl?: unknown }).closedPnl) ?? undefined,
+      createdTime: parseFiniteNumber((row as { createdTime?: unknown }).createdTime) ?? undefined,
+      updatedTime: parseFiniteNumber((row as { updatedTime?: unknown }).updatedTime) ?? undefined,
+      orderId: typeof (row as { orderId?: unknown }).orderId === 'string' ? (row as { orderId: string }).orderId : undefined,
+      orderLinkId:
+        typeof (row as { orderLinkId?: unknown }).orderLinkId === 'string'
+          ? (row as { orderLinkId: string }).orderLinkId
+          : undefined
+    };
+
+    items.push(parsed);
+  }
+
+  return items;
 };
