@@ -153,3 +153,12 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 - [ ] KILL while running and verify current run directory gets updated `stats.json` and terminal `BOT_KILL` event in `events.ndjson`.
 - [ ] Auto-Tune OFF: no parameter changes applied.
 - [ ] Auto-Tune ON: at most one bounded change per tuning step, change appears in journal and settings/dashboard indicator.
+
+
+## Task 52 checks
+- [ ] Verify `priceDeltaPct` is computed vs previous TF candle mark (UTC bucket), not run baseline.
+- [ ] Verify `oiDeltaPct` is computed vs previous TF candle OI value (UTC bucket), not run baseline.
+- [ ] Verify TF bucket behavior for `tf=1`, `tf=3`, and `tf=5` minute settings (UTC boundaries).
+- [ ] Verify SHORT_DIVERGENCE uses OI-up candle gate (`oiCandleDeltaPct >= oiCandleThrPct`).
+- [ ] Verify SHORT_CONTINUATION uses OI-down candle gate (`oiCandleDeltaPct <= -oiCandleThrPct`).
+- [ ] Verify `requireOiTwoCandles=true` is sign-aware by `entryReason` (LONG_CONTINUATION/SHORT_DIVERGENCE: up; SHORT_CONTINUATION: down).

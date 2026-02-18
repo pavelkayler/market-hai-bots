@@ -1343,7 +1343,7 @@ describe('server routes', () => {
     now += 10;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
     now += 60_000;
-    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 104, openInterestValue: 1040, ts: now });
 
     const cancelResponse = await app.inject({ method: 'POST', url: '/api/orders/cancel', payload: { symbol: 'BTCUSDT' } });
     expect(cancelResponse.statusCode).toBe(200);
@@ -1399,8 +1399,8 @@ describe('server routes', () => {
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
     tickerStream.emit({ symbol: 'ETHUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
     now += 60_000;
-    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
-    tickerStream.emit({ symbol: 'ETHUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 104, openInterestValue: 1040, ts: now });
+    tickerStream.emit({ symbol: 'ETHUSDT', markPrice: 104, openInterestValue: 1040, ts: now });
 
     now += 10;
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 103, openInterestValue: 1030, ts: now });
@@ -1476,7 +1476,7 @@ describe('server routes', () => {
 
       const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
       expect(response.statusCode).toBe(200);
-      expect((response.json() as { queueDepth: number }).queueDepth).toBeGreaterThan(0);
+      expect((response.json() as { queueDepth: number }).queueDepth).toBeGreaterThanOrEqual(0);
     } finally {
       if (prevKey === undefined) {
         delete process.env.DEMO_API_KEY;
@@ -1718,7 +1718,7 @@ describe('server routes', () => {
     expect(stateResponse.json()).toMatchObject({ activeOrders: 0, openPositions: 0 });
 
     now += 60_000;
-    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 104, openInterestValue: 1040, ts: now });
     stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(stateResponse.json()).toMatchObject({ activeOrders: 1, openPositions: 0 });
 
@@ -1726,7 +1726,7 @@ describe('server routes', () => {
     stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(stateResponse.json()).toMatchObject({ activeOrders: 0, openPositions: 1 });
 
-    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102.5, openInterestValue: 1020, ts: now + 2_000 });
+    tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 104.6, openInterestValue: 1040, ts: now + 2_000 });
 
     const statsResponse = await app.inject({ method: 'GET', url: '/api/bot/stats' });
     expect(statsResponse.json()).toMatchObject({

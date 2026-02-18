@@ -169,6 +169,8 @@ export type SymbolRuntimeState = {
   lastSignalBucketKey: number | null;
   prevCandleOi: number | null;
   lastCandleOi: number | null;
+  prevCandleMark: number | null;
+  lastCandleMark: number | null;
   lastCandleBucketStart: number | null;
   lastEvaluationGateTs: number | null;
   blockedUntilTs: number;
@@ -889,6 +891,8 @@ export class BotEngine {
         lastSignalBucketKey: state.lastSignalBucketKey ?? null,
         prevCandleOi: state.prevCandleOi ?? null,
         lastCandleOi: state.lastCandleOi ?? null,
+        prevCandleMark: state.prevCandleMark ?? null,
+        lastCandleMark: state.lastCandleMark ?? null,
         lastCandleBucketStart: state.lastCandleBucketStart ?? null,
         lastEvaluationGateTs: null,
         blockedUntilTs: state.blockedUntilTs,
@@ -1023,6 +1027,8 @@ export class BotEngine {
         baseline: symbolState.baseline ? { ...symbolState.baseline } : null,
         prevCandleOi: symbolState.prevCandleOi,
         lastCandleOi: symbolState.lastCandleOi,
+        prevCandleMark: symbolState.prevCandleMark,
+        lastCandleMark: symbolState.lastCandleMark,
         lastCandleBucketStart: symbolState.lastCandleBucketStart
       });
     }
@@ -1051,6 +1057,8 @@ export class BotEngine {
       lastSignalBucketKey: symbolState.lastSignalBucketKey,
       prevCandleOi: symbolState.prevCandleOi,
       lastCandleOi: symbolState.lastCandleOi,
+      prevCandleMark: symbolState.prevCandleMark,
+      lastCandleMark: symbolState.lastCandleMark,
       lastCandleBucketStart: symbolState.lastCandleBucketStart,
       trendCandles5m: symbolState.trendCandles5m.map((candle) => ({ ...candle })),
       trendCandles15m: symbolState.trendCandles15m.map((candle) => ({ ...candle })),
@@ -1245,7 +1253,11 @@ export class BotEngine {
     }
 
     const now = this.now();
+    const bucketStart = this.computeTfBucketStart(now);
+    const isNewBucket = symbolState.lastCandleBucketStart === null || symbolState.lastCandleBucketStart !== bucketStart;
     this.updateTrendState(symbolState, marketState.markPrice, now);
+    this.updateCandlePriceState(symbolState, marketState.markPrice, bucketStart, isNewBucket);
+    this.updateCandleOiState(symbolState, marketState.openInterestValue, bucketStart, isNewBucket);
     this.updateGateSnapshot(symbolState, marketState);
 
     if (!symbolState.baseline) {
@@ -1282,7 +1294,6 @@ export class BotEngine {
       return;
     }
 
-    this.updateCandleOiState(symbolState, marketState.openInterestValue, now);
     const hadArmedSignal = !!symbolState.armedSignal;
     if (this.tryConfirmArmedSignal(symbolState, marketState, now)) {
       this.updateSummaryCounts();
@@ -1299,7 +1310,7 @@ export class BotEngine {
       return;
     }
 
-    const { priceDeltaPct, oiDeltaPct } = this.computeDeltas(symbolState.baseline, marketState);
+    const { priceDeltaPct, oiDeltaPct } = this.computeDeltas(symbolState, marketState);
     symbolState.lastPriceDeltaPct = priceDeltaPct;
     symbolState.lastOiDeltaPct = oiDeltaPct;
     const candidate = this.getEligibleSignal(symbolState, priceDeltaPct, oiDeltaPct);
@@ -1506,7 +1517,7 @@ export class BotEngine {
       return false;
     }
 
-    if (!this.isOiTwoCandlesGateTrue(symbolState, side)) {
+    if (!this.isOiTwoCandlesGateTrue(symbolState, symbolState.entryReason, side)) {
       this.recordNoEntryReason(symbolState, {
         code: 'OI_2CANDLES_FAIL',
         message: 'Two-candle OI continuation gate failed.',
@@ -1727,6 +1738,8 @@ export class BotEngine {
       lastSignalBucketKey: null,
       prevCandleOi: null,
       lastCandleOi: null,
+      prevCandleMark: null,
+      lastCandleMark: null,
       lastCandleBucketStart: null,
       lastEvaluationGateTs: null,
       blockedUntilTs: 0,
@@ -2183,8 +2196,10 @@ export class BotEngine {
     };
     symbolState.overrideGateOnce = true;
     const bucketStart = this.computeTfBucketStart(this.now());
-    symbolState.prevCandleOi = null;
+    symbolState.prevCandleOi = marketState.openInterestValue;
     symbolState.lastCandleOi = marketState.openInterestValue;
+    symbolState.prevCandleMark = marketState.markPrice;
+    symbolState.lastCandleMark = marketState.markPrice;
     symbolState.lastCandleBucketStart = bucketStart;
     this.persistSnapshot();
   }
@@ -2249,6 +2264,8 @@ export class BotEngine {
         lastSignalBucketKey: symbolState.lastSignalBucketKey,
         prevCandleOi: symbolState.prevCandleOi,
         lastCandleOi: symbolState.lastCandleOi,
+        prevCandleMark: symbolState.prevCandleMark,
+        lastCandleMark: symbolState.lastCandleMark,
         lastCandleBucketStart: symbolState.lastCandleBucketStart,
         trend5mBucketStart: symbolState.trendCandles5m.at(-1)?.bucketStart ?? null,
         trend5mPrevClose: symbolState.trendCandles5m.at(-2)?.close ?? null,
@@ -2663,7 +2680,7 @@ export class BotEngine {
     return (
       priceDeltaPct <= -this.state.config!.priceUpThrPct &&
       oiDeltaPct >= this.state.config!.oiUpThrPct &&
-      this.isShortOiCandleGateTrue(symbolState)
+      this.isLongOiCandleGateTrue(symbolState)
     );
   }
 
@@ -2695,16 +2712,16 @@ export class BotEngine {
     return oiCandleDeltaPct <= -oiCandleThrPct;
   }
 
-  private updateCandleOiState(symbolState: SymbolRuntimeState, oiValue: number, now: number): void {
-    const bucketStart = this.computeTfBucketStart(now);
+  private updateCandleOiState(symbolState: SymbolRuntimeState, oiValue: number, bucketStart: number, isNewBucket: boolean): void {
     if (symbolState.lastCandleBucketStart === null) {
       symbolState.lastCandleBucketStart = bucketStart;
+      symbolState.prevCandleOi = oiValue;
       symbolState.lastCandleOi = oiValue;
       return;
     }
 
-    if (symbolState.lastCandleBucketStart !== bucketStart) {
-      symbolState.prevCandleOi = symbolState.lastCandleOi;
+    if (isNewBucket) {
+      symbolState.prevCandleOi = symbolState.lastCandleOi ?? oiValue;
       symbolState.lastCandleOi = oiValue;
       symbolState.lastCandleBucketStart = bucketStart;
       const deltaPct = this.computeOiCandleDeltaPct(symbolState);
@@ -2720,6 +2737,24 @@ export class BotEngine {
     symbolState.lastCandleOi = oiValue;
   }
 
+  private updateCandlePriceState(symbolState: SymbolRuntimeState, markPrice: number, bucketStart: number, isNewBucket: boolean): void {
+    if (symbolState.lastCandleBucketStart === null) {
+      symbolState.lastCandleBucketStart = bucketStart;
+      symbolState.prevCandleMark = markPrice;
+      symbolState.lastCandleMark = markPrice;
+      return;
+    }
+
+    if (isNewBucket) {
+      symbolState.prevCandleMark = symbolState.lastCandleMark ?? markPrice;
+      symbolState.lastCandleMark = markPrice;
+      symbolState.lastCandleBucketStart = bucketStart;
+      return;
+    }
+
+    symbolState.lastCandleMark = markPrice;
+  }
+
   private computeOiCandleDeltaPct(symbolState: SymbolRuntimeState): number | null {
     if (!symbolState.prevCandleOi || !symbolState.lastCandleOi || symbolState.prevCandleOi <= 0 || symbolState.lastCandleOi <= 0) {
       return null;
@@ -2728,7 +2763,7 @@ export class BotEngine {
     return ((symbolState.lastCandleOi - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100;
   }
 
-  private isOiTwoCandlesGateTrue(symbolState: SymbolRuntimeState, side: 'LONG' | 'SHORT'): boolean {
+  private isOiTwoCandlesGateTrue(symbolState: SymbolRuntimeState, entryReason: EntryReason | null, side: 'LONG' | 'SHORT'): boolean {
     if (!this.state.config?.requireOiTwoCandles) {
       return true;
     }
@@ -2743,11 +2778,11 @@ export class BotEngine {
       return false;
     }
 
-    if (side === 'LONG') {
+    if (side === 'LONG' || entryReason === 'SHORT_DIVERGENCE') {
       return recent.every((value) => value >= threshold);
     }
 
-    return recent.every((value) => value >= threshold);
+    return recent.every((value) => value <= -threshold);
   }
 
   getOiCandleSnapshot(symbol: string): {
@@ -2797,10 +2832,16 @@ export class BotEngine {
     return Math.floor(now / tfMs) * tfMs;
   }
 
-  private computeDeltas(baseline: SymbolBaseline, marketState: MarketState): { priceDeltaPct: number; oiDeltaPct: number } {
+  private computeDeltas(symbolState: SymbolRuntimeState, marketState: MarketState): { priceDeltaPct: number; oiDeltaPct: number } {
+    const prevCandleMark = symbolState.prevCandleMark;
+    const prevCandleOi = symbolState.prevCandleOi;
+
+    if (!prevCandleMark || !prevCandleOi || prevCandleMark <= 0 || prevCandleOi <= 0) {
+      return { priceDeltaPct: 0, oiDeltaPct: 0 };
+    }
     return {
-      priceDeltaPct: ((marketState.markPrice - baseline.basePrice) / baseline.basePrice) * 100,
-      oiDeltaPct: ((marketState.openInterestValue - baseline.baseOiValue) / baseline.baseOiValue) * 100
+      priceDeltaPct: ((marketState.markPrice - prevCandleMark) / prevCandleMark) * 100,
+      oiDeltaPct: ((marketState.openInterestValue - prevCandleOi) / prevCandleOi) * 100
     };
   }
 
