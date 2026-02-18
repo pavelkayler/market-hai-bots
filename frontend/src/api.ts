@@ -1,4 +1,4 @@
-import type { BotSettings, BotState, BotStats, DoctorResponse, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, UniverseState } from './types';
+import type { AutoTuneRuntimeState, BotSettings, BotState, BotStats, DoctorResponse, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -278,4 +278,8 @@ export async function uploadProfiles(rawJson: unknown): Promise<{ ok: boolean }>
     method: 'POST',
     body: JSON.stringify(rawJson)
   });
+}
+
+export async function getAutoTuneState(): Promise<{ ok: true; state: AutoTuneRuntimeState }> {
+  return request('/api/autotune/state');
 }

@@ -54,3 +54,9 @@
 ### Notes
 - WS payload contract kept additive (new kill fields only).
 - STOP-only reset and exclusions constraints unchanged.
+
+## Task 51 validation template
+- Preset `smoke_min_thresholds_1m`: PASS/FAIL
+- `PUMP_DUMP_2ND_TRIGGER` (2nd/3rd gating): PASS/FAIL
+- Run recording folder after Start: PASS/FAIL
+- Auto-Tune persistence + last change visible after restart: PASS/FAIL

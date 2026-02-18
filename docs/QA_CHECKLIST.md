@@ -142,3 +142,9 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - Trigger KILL with active order/position.
    - Expect UI to show KILL in progress, then completion.
    - Final state should report `activeOrders=0` and `openPositions=0` (or explicit warning state if upstream unreachable).
+
+## Task 51 checks
+- [ ] Select `PUMP_DUMP_2ND_TRIGGER`, verify only 2nd/3rd signal counts are eligible (1st blocked).
+- [ ] Press Start and verify `data/runs/<ISO_TIMESTAMP>/meta.json` and `events.ndjson` exist.
+- [ ] Auto-Tune OFF: no parameter changes applied.
+- [ ] Auto-Tune ON: at most one bounded change per tuning step, change appears in journal and settings/dashboard indicator.

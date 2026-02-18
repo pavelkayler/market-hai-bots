@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
 
@@ -16,6 +17,8 @@ import { ReplayService, type ReplaySpeed } from './replay/replayService.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
 import { JournalService, type JournalEntry } from './services/journalService.js';
 import { ProfileService } from './services/profileService.js';
+import { RunRecorderService } from './services/runRecorderService.js';
+import { AutoTuneService } from './services/autoTuneService.js';
 import { resolveStoragePaths } from './services/storagePaths.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
 import { UniverseExclusionsService } from './services/universeExclusionsService.js';
@@ -85,6 +88,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const journalPath = storagePaths.journalPath;
   const journalService = new JournalService(journalPath);
   const profileService = new ProfileService(storagePaths.profilesPath);
+  const runRecorder = new RunRecorderService();
+  const autoTuneService = new AutoTuneService();
+  void autoTuneService.init();
 
   const isDemoConfigured = (): boolean => {
     const apiKey = (process.env.DEMO_API_KEY ?? '').trim();
@@ -99,6 +105,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return typeof parsed.version === 'string' ? parsed.version : 'unknown';
     } catch {
       return 'unknown';
+    }
+  };
+
+
+  const getCommitHash = (): string | null => {
+    try {
+      return execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
+    } catch {
+      return null;
     }
   };
 
@@ -126,6 +141,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     } catch (error) {
       app.log.warn({ err: error, event }, 'Failed to append ops journal event');
     }
+
+    await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event, data });
   };
 
   const broadcast = (type: string, payload: unknown): void => {
@@ -198,6 +215,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       broadcast('signal:new', payload);
       const mode = botEngine.getState().config?.mode;
       if (mode) {
+        void runRecorder.appendEvent({ ts: Date.now(), type: 'signal:new', payload });
         void journalService.append({
           ts: Date.now(),
           mode,
@@ -221,6 +239,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       if (!mode) {
         return;
       }
+
+      void runRecorder.appendEvent({ ts: Date.now(), type: 'order:update', payload });
 
       const eventByStatus: Record<typeof payload.status, JournalEntry['event']> = {
         PLACED: 'ORDER_PLACED',
@@ -254,6 +274,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         return;
       }
 
+      void runRecorder.appendEvent({ ts: Date.now(), type: 'position:update', payload });
       void journalService.append({
         ts: Date.now(),
         mode,
@@ -281,6 +302,52 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           impact: payload.impact
         }
       });
+
+      if (payload.status === 'CLOSED') {
+        void autoTuneService.noteCloseSeen();
+        const currentConfig = botEngine.getState().config;
+        const tuneState = autoTuneService.getState();
+        if (currentConfig && tuneState.enabled) {
+          const candidates = [
+            {
+              parameter: 'priceUpThrPct',
+              before: currentConfig.priceUpThrPct,
+              after: Math.max(0.05, Number((currentConfig.priceUpThrPct - 0.05).toFixed(4))),
+              reason: 'recent close suggests reducing entry strictness (too few entries)',
+              bounds: { min: 0.05, max: 5 }
+            },
+            {
+              parameter: 'minNotionalUSDT',
+              before: currentConfig.minNotionalUSDT,
+              after: Math.min(100, Number((currentConfig.minNotionalUSDT + 1).toFixed(4))),
+              reason: 'fees dominate, nudging notional floor upward',
+              bounds: { min: 1, max: 100 }
+            }
+          ].filter((entry) => entry.before !== entry.after);
+
+          const next = candidates[0];
+          if (next) {
+            botEngine.applyConfigPatch({ [next.parameter]: next.after } as never);
+            void autoTuneService.noteApplied(next);
+            void journalService.append({
+              ts: Date.now(),
+              mode,
+              symbol: 'SYSTEM',
+              event: 'BOT_RESUME',
+              side: null,
+              data: {
+                kind: 'AUTO_TUNE_CHANGE',
+                parameter: next.parameter,
+                before: next.before,
+                after: next.after,
+                reason: next.reason,
+                bounds: next.bounds
+              }
+            });
+            void runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'AUTO_TUNE_CHANGE', payload: next });
+          }
+        }
+      }
     },
     emitQueueUpdate: (payload) => {
       broadcast('queue:update', payload);
@@ -308,6 +375,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     broadcastBotState();
 
+    const currentConfig = botEngine.getState().config;
+
     symbolUpdateBroadcaster.broadcast(
       symbol,
       state,
@@ -322,7 +391,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         priceDeltaPct: symbolState.lastPriceDeltaPct,
         oiDeltaPct: symbolState.lastOiDeltaPct,
         signalCount24h: symbolState.lastSignalCount24h,
-        signalCounterThreshold: botEngine.getState().config?.signalCounterThreshold,
+        signalCounterThreshold: currentConfig?.signalCounterThreshold,
+        signalCounterMin: currentConfig?.signalCounterMin,
+        signalCounterMax: currentConfig?.signalCounterMax,
+        signalCounterEligible: currentConfig ? symbolState.lastSignalCount24h >= currentConfig.signalCounterMin && symbolState.lastSignalCount24h <= currentConfig.signalCounterMax : undefined,
         gates: symbolState.gates,
         bothCandidate: symbolState.lastBothCandidate
       }
@@ -458,6 +530,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
     botEngine.setUniverseEntries(effectiveEntries);
+    await autoTuneService.setEnabledScope(config.autoTuneEnabled, config.autoTuneScope);
+    await runRecorder.startRun({
+      startTime: Date.now(),
+      configSnapshot: config,
+      universeSummary: { total: universe.symbols.length, effective: effectiveEntries.length },
+      commitHash: getCommitHash()
+    });
+    await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_START' });
     botEngine.start(config);
     broadcastBotState();
 
@@ -466,6 +546,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/bot/stop', async () => {
     botEngine.stop();
+    await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
+    await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_STOP' });
     broadcastBotState();
     return { ok: true, ...botEngine.getState() };
   });
@@ -697,6 +779,37 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return { ok: true, files: await replayService.listFiles() };
   });
 
+
+  app.get('/api/runs', async (request) => {
+    const query = request.query as { limit?: string | number };
+    const parsedLimit = Number(query.limit ?? 20);
+    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(200, Math.floor(parsedLimit))) : 20;
+    const runs = await runRecorder.listRecent(limit);
+    return { ok: true, runs };
+  });
+
+  app.get('/api/runs/:id/download', async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    const payloadByFile = await runRecorder.getRunPayload(id);
+    if (!payloadByFile) {
+      return reply.code(404).send({ ok: false, error: 'RUN_NOT_FOUND' });
+    }
+
+    const zip = new JSZip();
+    for (const [name, content] of Object.entries(payloadByFile)) {
+      zip.file(name, content);
+    }
+    const payload = await zip.generateAsync({ type: 'nodebuffer' });
+    reply.header('Content-Type', 'application/zip');
+    reply.header('Content-Disposition', `attachment; filename="run_${id}.zip"`);
+    return reply.send(payload);
+  });
+
+  app.get('/api/autotune/state', async () => {
+    await autoTuneService.init();
+    return { ok: true, state: autoTuneService.getState() };
+  });
+
   app.get('/api/journal/tail', async (request, reply) => {
     const query = request.query as { limit?: string | number };
     const parsedLimit = Number(query.limit ?? 200);
@@ -842,6 +955,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       )
     );
     includedFiles.push('meta.json');
+
+
+    const recentRuns = await runRecorder.listRecent(1);
+    if (recentRuns.length > 0) {
+      const latestRun = await runRecorder.getRunPayload(recentRuns[0].id);
+      if (latestRun) {
+        for (const [name, content] of Object.entries(latestRun)) {
+          zip.file(`latest-run/${name}`, content);
+          includedFiles.push(`latest-run/${name}`);
+        }
+      }
+    }
 
     const payload = await zip.generateAsync({ type: 'nodebuffer' });
     const safeTs = new Date().toISOString().replaceAll(':', '-');

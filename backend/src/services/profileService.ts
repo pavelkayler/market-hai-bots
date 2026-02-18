@@ -15,8 +15,11 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   direction: 'both',
   bothTieBreak: 'shortPriority',
   tf: 1,
+  strategyMode: 'IMPULSE',
   holdSeconds: 3,
   signalCounterThreshold: 2,
+  signalCounterMin: 2,
+  signalCounterMax: Number.MAX_SAFE_INTEGER,
   priceUpThrPct: 0.5,
   oiUpThrPct: 50,
   oiCandleThrPct: 0,
@@ -39,7 +42,9 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   minSpreadBps: 0,
   maxSpreadBps: 35,
   maxTickStalenessMs: 2500,
-  minNotionalUSDT: 5
+  minNotionalUSDT: 5,
+  autoTuneEnabled: false,
+  autoTuneScope: 'GLOBAL'
 };
 
 const FAST_TEST_1M_PROFILE: BotConfig = {
@@ -59,7 +64,9 @@ const FAST_TEST_1M_PROFILE: BotConfig = {
   maxTickStalenessMs: 1500,
   trendTfMinutes: 5,
   trendLookbackBars: 24,
-  minNotionalUSDT: 5
+  minNotionalUSDT: 5,
+  autoTuneEnabled: false,
+  autoTuneScope: 'GLOBAL'
 };
 
 const OVERNIGHT_1M_SAFE_PROFILE: BotConfig = {
@@ -88,27 +95,32 @@ const SMOKE_MIN_1M_PROFILE: BotConfig = {
   direction: 'both',
   tf: 1,
   signalCounterThreshold: 1,
-  priceUpThrPct: 0.2,
-  oiUpThrPct: 0.2,
+  signalCounterMin: 1,
+  signalCounterMax: 9999,
+  strategyMode: 'IMPULSE',
+  priceUpThrPct: 0.15,
+  oiUpThrPct: 0.3,
   oiCandleThrPct: 0,
   marginUSDT: 25,
   leverage: 5,
-  tpRoiPct: 2,
-  slRoiPct: 2,
+  tpRoiPct: 1.5,
+  slRoiPct: 1.2,
   entryOffsetPct: 0.01,
   maxActiveSymbols: 20,
   dailyLossLimitUSDT: 0,
   maxConsecutiveLosses: 0,
   trendTfMinutes: 5,
   trendLookbackBars: 10,
-  trendMinMovePct: 0,
+  trendMinMovePct: 0.1,
   confirmWindowBars: 1,
   confirmMinContinuationPct: 0,
-  impulseMaxAgeBars: 1,
+  impulseMaxAgeBars: 3,
   requireOiTwoCandles: false,
-  minNotionalUSDT: 0,
-  maxSpreadBps: 9999,
-  maxTickStalenessMs: 60000
+  minNotionalUSDT: 1,
+  maxSpreadBps: 120,
+  maxTickStalenessMs: 5000,
+  autoTuneEnabled: false,
+  autoTuneScope: 'GLOBAL'
 };
 
 const DEFAULT_PROFILES_FILE: ProfilesFile = {
@@ -117,7 +129,8 @@ const DEFAULT_PROFILES_FILE: ProfilesFile = {
     [DEFAULT_PROFILE_NAME]: DEFAULT_PROFILE_CONFIG,
     fast_test_1m: FAST_TEST_1M_PROFILE,
     overnight_1m_safe: OVERNIGHT_1M_SAFE_PROFILE,
-    smoke_min_1m: SMOKE_MIN_1M_PROFILE
+    smoke_min_1m: SMOKE_MIN_1M_PROFILE,
+    smoke_min_thresholds_1m: SMOKE_MIN_1M_PROFILE
   }
 };
 
@@ -302,6 +315,10 @@ export class ProfileService {
 
     if (!state.profiles.smoke_min_1m) {
       state.profiles.smoke_min_1m = SMOKE_MIN_1M_PROFILE;
+    }
+
+    if (!state.profiles.smoke_min_thresholds_1m) {
+      state.profiles.smoke_min_thresholds_1m = SMOKE_MIN_1M_PROFILE;
     }
   }
 }

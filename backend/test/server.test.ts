@@ -126,7 +126,7 @@ describe('server routes', () => {
     expect(response.json()).toEqual({
       ok: true,
       activeProfile: 'default',
-      names: ['default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m']
+      names: ['default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m', 'smoke_min_thresholds_1m']
     });
   });
 
@@ -300,11 +300,11 @@ describe('server routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('application/zip');
     expect(response.headers['content-disposition']).toContain('attachment; filename="export-pack_');
-    expect(response.headers['x-export-included']).toBe('universe.json,profiles.json,runtime.json,journal.ndjson,meta.json');
+    expect(response.headers['x-export-included']).toContain('universe.json,profiles.json,runtime.json,journal.ndjson,meta.json');
 
     const zip = await JSZip.loadAsync(response.rawPayload);
     const names = Object.keys(zip.files).sort();
-    expect(names).toEqual(['journal.ndjson', 'meta.json', 'profiles.json', 'runtime.json', 'universe.json']);
+    expect(names).toEqual(['journal.ndjson', 'latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'meta.json', 'profiles.json', 'runtime.json', 'universe.json']);
 
     const metaRaw = await zip.file('meta.json')?.async('string');
     const meta = JSON.parse(metaRaw ?? '{}') as {
@@ -344,7 +344,7 @@ describe('server routes', () => {
 
     const zip = await JSZip.loadAsync(response.rawPayload);
     const names = Object.keys(zip.files).sort();
-    expect(names).toEqual(['meta.json', 'profiles.json', 'universe.json']);
+    expect(names).toEqual(['latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'meta.json', 'profiles.json', 'universe.json']);
 
     const metaRaw = await zip.file('meta.json')?.async('string');
     const meta = JSON.parse(metaRaw ?? '{}') as { notes: string[] };
@@ -592,7 +592,7 @@ describe('server routes', () => {
 
     const profilesResponse = await app.inject({ method: 'GET', url: '/api/profiles' });
     expect(profilesResponse.statusCode).toBe(200);
-    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m'] });
+    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m', 'smoke_min_thresholds_1m'] });
 
     await rm(tempDir, { recursive: true, force: true });
   });

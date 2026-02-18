@@ -15,6 +15,7 @@ import {
   downloadUniverseJson,
   getBotState,
   getBotStats,
+  getAutoTuneState,
   getJournalTail,
   getProfile,
   getProfiles,
@@ -39,7 +40,7 @@ import {
   stopReplay,
   uploadProfiles
 } from '../api';
-import type { BotPerSymbolStats, BotSettings, BotState, BotStats, EntryReason, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
+import type { AutoTuneRuntimeState, BotPerSymbolStats, BotSettings, BotState, BotStats, EntryReason, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
 import { useSort } from '../hooks/useSort';
 import type { SortState } from '../utils/sort';
 import { formatDuration } from '../utils/time';
@@ -152,8 +153,11 @@ const defaultSettings: BotSettings = {
   direction: 'both',
   bothTieBreak: 'shortPriority',
   tf: 1,
+  strategyMode: 'IMPULSE',
   holdSeconds: 3,
   signalCounterThreshold: 2,
+  signalCounterMin: 2,
+  signalCounterMax: 9999,
   priceUpThrPct: 0.5,
   oiUpThrPct: 50,
   oiCandleThrPct: 0,
@@ -177,6 +181,8 @@ const defaultSettings: BotSettings = {
   maxSpreadBps: 35,
   maxTickStalenessMs: 2500,
   minNotionalUSDT: 5,
+  autoTuneEnabled: false,
+  autoTuneScope: 'GLOBAL',
   paperEntrySlippageBps: 0,
   paperExitSlippageBps: 0,
   paperPartialFillPct: 100
@@ -218,6 +224,7 @@ export function BotPage({
   const [minTurnover, setMinTurnover] = useState<number>(10_000_000);
   const [botStats, setBotStats] = useState<BotStats>(EMPTY_BOT_STATS);
   const [settings, setSettings] = useState<BotSettings>(loadSettings());
+  const [autoTuneState, setAutoTuneState] = useState<AutoTuneRuntimeState>({ enabled: false, scope: 'GLOBAL', lastApplied: null });
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>('default');
   const [activeProfile, setActiveProfile] = useState<string>('default');
@@ -250,6 +257,19 @@ export function BotPage({
   const [dashboardFetchedAt, setDashboardFetchedAt] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<BotPageTab>(loadBotPageTab());
   const profileUploadInputRef = useRef<HTMLInputElement | null>(null);
+
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const response = await getAutoTuneState();
+        setAutoTuneState(response.state);
+      } catch {
+        // ignore
+      }
+    };
+    void load();
+  }, [botState.running]);
 
   useEffect(() => {
     if (!botState.lastConfig) {
@@ -1097,6 +1117,7 @@ export function BotPage({
               </Col>
               <Col md={3}>
                 <div><strong>Bot:</strong> {botState.running ? (botState.paused ? 'paused' : 'running') : 'stopped'}</div>
+                <div><strong>Auto-Tune:</strong> {autoTuneState.enabled ? 'ON' : 'OFF'}{autoTuneState.lastApplied ? `, last ${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after}` : ''}</div>
                 <div><strong>Mode:</strong> {botState.mode ?? '-'}</div>
                 <div><strong>TF:</strong> {botState.tf ?? '-'}</div>
                 <div><strong>Direction:</strong> {botState.direction ?? '-'}</div>
@@ -1590,9 +1611,32 @@ export function BotPage({
                 <Form.Text muted className="d-block mb-2">Percent convention: 3 means 3% (not 0.03).</Form.Text>
                 <Row className="g-2">
                   <Col md={4}>
-                    <Form.Label>signalCounterThreshold <span className="text-muted small">(count)</span></Form.Label>
-                    <Form.Control disabled={disableSettings} type="number" step={1} placeholder="2" value={settings.signalCounterThreshold} onChange={(event) => persistSettings({ ...settings, signalCounterThreshold: Number(event.target.value) })} />
-                    <Form.Text muted>Signals required within rolling 24h. Default: 2.</Form.Text>
+                    <Form.Label>strategyMode</Form.Label>
+                    <Form.Select
+                      disabled={disableSettings}
+                      value={settings.strategyMode}
+                      onChange={(event) => {
+                        const nextMode = event.target.value as BotSettings['strategyMode'];
+                        persistSettings({
+                          ...settings,
+                          strategyMode: nextMode,
+                          signalCounterMin: nextMode === 'PUMP_DUMP_2ND_TRIGGER' ? 2 : settings.signalCounterMin,
+                          signalCounterMax: nextMode === 'PUMP_DUMP_2ND_TRIGGER' ? 3 : settings.signalCounterMax
+                        });
+                      }}
+                    >
+                      <option value="IMPULSE">IMPULSE</option>
+                      <option value="PUMP_DUMP_2ND_TRIGGER">PUMP_DUMP_2ND_TRIGGER</option>
+                    </Form.Select>
+                    <Form.Text muted>{settings.strategyMode === 'PUMP_DUMP_2ND_TRIGGER' ? 'Targets 2nd/3rd triggers by default (min=2 max=3).' : 'IMPULSE uses counter min/max; keep max high for >=min behavior.'}</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>signalCounterMin</Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} value={settings.signalCounterMin} onChange={(event) => persistSettings({ ...settings, signalCounterMin: Number(event.target.value), signalCounterThreshold: Number(event.target.value) })} />
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>signalCounterMax</Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} value={settings.signalCounterMax} onChange={(event) => persistSettings({ ...settings, signalCounterMax: Number(event.target.value) })} />
                   </Col>
                   <Col md={4}>
                     <Form.Label>priceUpThrPct <span className="text-muted small">(%)</span></Form.Label>
@@ -1621,6 +1665,7 @@ export function BotPage({
             <Card className="mt-3">
               <Card.Header className="py-2">Trend / confirmation</Card.Header>
               <Card.Body>
+                <div className="small text-muted mb-2">Last change: {autoTuneState.lastApplied ? `${new Date(autoTuneState.lastApplied.ts).toLocaleString()} ${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after}` : 'none'}</div>
                 <Row className="g-2">
                   <Col md={4}>
                     <Form.Label>trendTfMinutes <span className="text-muted small">(min)</span></Form.Label>
@@ -1667,6 +1712,7 @@ export function BotPage({
             <Card className="mt-3">
               <Card.Header className="py-2">Execution / risk</Card.Header>
               <Card.Body>
+                <div className="small text-muted mb-2">Last change: {autoTuneState.lastApplied ? `${new Date(autoTuneState.lastApplied.ts).toLocaleString()} ${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after}` : 'none'}</div>
                 <Row className="g-2">
                   <Col md={4}>
                     <Form.Label>marginUSDT <span className="text-muted small">(USDT)</span></Form.Label>
@@ -1714,8 +1760,32 @@ export function BotPage({
             </Card>
 
             <Card className="mt-3">
+              <Card.Header className="py-2">Auto-Tune (rule-based)</Card.Header>
+              <Card.Body>
+                <div className="small text-muted mb-2">Last change: {autoTuneState.lastApplied ? `${new Date(autoTuneState.lastApplied.ts).toLocaleString()} ${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after}` : 'none'}</div>
+                <Row className="g-2">
+                  <Col md={4}>
+                    <Form.Label>autoTuneEnabled</Form.Label>
+                    <Form.Select disabled={disableSettings} value={settings.autoTuneEnabled ? 'true' : 'false'} onChange={(event) => persistSettings({ ...settings, autoTuneEnabled: event.target.value === 'true' })}>
+                      <option value="false">OFF</option>
+                      <option value="true">ON</option>
+                    </Form.Select>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>autoTuneScope</Form.Label>
+                    <Form.Select disabled={disableSettings} value={settings.autoTuneScope} onChange={(event) => persistSettings({ ...settings, autoTuneScope: event.target.value as BotSettings['autoTuneScope'] })}>
+                      <option value="GLOBAL">GLOBAL</option>
+                      <option value="UNIVERSE_ONLY">UNIVERSE_ONLY</option>
+                    </Form.Select>
+                  </Col>
+                </Row>
+              </Card.Body>
+            </Card>
+
+            <Card className="mt-3">
               <Card.Header className="py-2">Guardrails</Card.Header>
               <Card.Body>
+                <div className="small text-muted mb-2">Last change: {autoTuneState.lastApplied ? `${new Date(autoTuneState.lastApplied.ts).toLocaleString()} ${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after}` : 'none'}</div>
                 <Row className="g-2">
                   <Col md={4}>
                     <Form.Label>maxActiveSymbols <span className="text-muted small">(count)</span></Form.Label>
@@ -1938,7 +2008,7 @@ export function BotPage({
                     ? ` | BOTH: chosen ${item.bothCandidate.chosen.toUpperCase()} (${item.bothCandidate.tieBreak}${item.bothCandidate.tieBreak === 'strongerSignal' ? ` edgeS=${(item.bothCandidate.edgeShort ?? 0).toFixed(2)} edgeL=${(item.bothCandidate.edgeLong ?? 0).toFixed(2)}` : ''})`
                     : '';
                   const signalDetails = item.baseline
-                    ? `base ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0}/${item.signalCounterThreshold ?? 0} | ${gateDetails}${bothDetails}`
+                    ? `base ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0} [${item.signalCounterMin ?? 0}-${item.signalCounterMax ?? 0}] eligible=${String(item.signalCounterEligible ?? false)} | ${gateDetails}${bothDetails}`
                     : '—';
                   return (
                     <tr key={`phase-${item.symbol}`}>

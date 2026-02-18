@@ -22,6 +22,9 @@ type SymbolBroadcastPayload = {
   oiDeltaPct?: number | null;
   signalCount24h?: number;
   signalCounterThreshold?: number;
+  signalCounterMin?: number;
+  signalCounterMax?: number;
+  signalCounterEligible?: boolean;
   gates?: GateSnapshot | null;
   bothCandidate?: BothCandidateDiagnostics | null;
 };
@@ -110,6 +113,9 @@ export class SymbolUpdateBroadcaster {
       oiDeltaPct?: number | null;
       signalCount24h?: number;
       signalCounterThreshold?: number;
+      signalCounterMin?: number;
+      signalCounterMax?: number;
+      signalCounterEligible?: boolean;
       gates?: GateSnapshot | null;
       bothCandidate?: BothCandidateDiagnostics | null;
     } = {}
@@ -140,6 +146,9 @@ export class SymbolUpdateBroadcaster {
       ...(signalDiagnostics.oiDeltaPct !== undefined ? { oiDeltaPct: signalDiagnostics.oiDeltaPct } : {}),
       ...(signalDiagnostics.signalCount24h !== undefined ? { signalCount24h: signalDiagnostics.signalCount24h } : {}),
       ...(signalDiagnostics.signalCounterThreshold !== undefined ? { signalCounterThreshold: signalDiagnostics.signalCounterThreshold } : {}),
+      ...(signalDiagnostics.signalCounterMin !== undefined ? { signalCounterMin: signalDiagnostics.signalCounterMin } : {}),
+      ...(signalDiagnostics.signalCounterMax !== undefined ? { signalCounterMax: signalDiagnostics.signalCounterMax } : {}),
+      ...(signalDiagnostics.signalCounterEligible !== undefined ? { signalCounterEligible: signalDiagnostics.signalCounterEligible } : {}),
       ...(signalDiagnostics.gates !== undefined && signalDiagnostics.gates !== null ? { gates: signalDiagnostics.gates } : {}),
       ...(signalDiagnostics.bothCandidate !== undefined && signalDiagnostics.bothCandidate !== null ? { bothCandidate: signalDiagnostics.bothCandidate } : {})
     };
