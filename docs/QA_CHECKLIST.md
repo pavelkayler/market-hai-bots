@@ -128,9 +128,11 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - Expect last selected tab restored from localStorage (`bot:tab`).
 4. Dashboard checks:
    - Controls block visible.
-   - Results / performance summary visible in Dashboard.
+   - Unified performance/costs/guardrails/runtime summary visible in Dashboard (no separate Results card).
+   - Last events table shows max 3 rows.
    - No settings input controls are visible on Dashboard.
 5. Settings checks:
+   - Universe panel is full-width and appears above Settings panel.
    - Settings form appears only in Settings tab.
    - While bot is running, settings remain locked.
 6. Tab content checks:
@@ -138,6 +140,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - Log tab contains operator/log output block.
    - Per-symbol performance tab contains sortable per-symbol table + exclude controls.
    - Entry reasons tab contains "No entry reasons (top)" and "Top entry reasons (confirmed)" cards.
+   - Replay/Recording block is absent in the UI.
 7. KILL checks:
    - Trigger KILL with active order/position.
    - Expect UI to show KILL in progress, then completion.
@@ -146,5 +149,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 ## Task 51 checks
 - [ ] Select `PUMP_DUMP_2ND_TRIGGER`, verify only 2nd/3rd signal counts are eligible (1st blocked).
 - [ ] Press Start and verify `data/runs/<ISO_TIMESTAMP>/meta.json` and `events.ndjson` exist.
+- [ ] Pause+Resume and verify a **new** run directory is created with `resumedFromSnapshot=true` in `meta.json`.
+- [ ] KILL while running and verify current run directory gets updated `stats.json` and terminal `BOT_KILL` event in `events.ndjson`.
 - [ ] Auto-Tune OFF: no parameter changes applied.
 - [ ] Auto-Tune ON: at most one bounded change per tuning step, change appears in journal and settings/dashboard indicator.

@@ -45,6 +45,7 @@ Expected:
 ## 4) Pause/Resume
 - Pause: `POST /api/bot/pause`, snapshot persists.
 - Resume: `POST /api/bot/resume`, requires snapshot + ready universe + running market.
+- Resume starts a new run-recorder session (`meta.json` + `events.ndjson`) with `resumedFromSnapshot=true` in run metadata.
 
 ## 5) Stop vs Kill
 
@@ -56,6 +57,7 @@ Expected:
   - cancel pending orders
   - close open positions
   - stop bot
+  - write final run stats (`stats.json`) + terminal run event (`BOT_KILL`) best-effort
   - return residual counters and warning when non-zero.
 
 ## 6) Export pack
@@ -69,11 +71,13 @@ Expected:
 - Running bot => `400 BOT_RUNNING`.
 - Clears: stats/journal/runtime/exclusions/universe/replay state.
 
-## 8) Replay/Record mutual exclusion
-- Recording and replay cannot run simultaneously.
-- Sequence:
-  - recording ON -> replay start rejected (`REPLAY_BUSY`)
-  - replay ON -> record start rejected (`REPLAY_BUSY`)
+## 8) Bot page tabs (operator navigation)
+- Dashboard: unified runtime + performance panel, controls, phase monitor, orders, positions.
+- Settings: Universe panel (full-width) then Settings panel (full-width).
+- Journal: journal table + limit/refresh/clear/download controls.
+- Log: last logs view.
+- Per-symbol performance: stats table + STOP-only exclude toggles.
+- Entry reasons: top no-entry reasons + confirmed entry reason stats.
 
 ## Failure modes and responses
 - `UNIVERSE_NOT_READY`: recreate universe; check upstream diagnostics.

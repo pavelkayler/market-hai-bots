@@ -38,7 +38,9 @@
 | Universe exclusions persistence | PASS | `UniverseExclusionsService` + endpoints add/remove/clear | `npm --prefix backend test -- universeExclusionsService.test.ts` | Also writes timestamp snapshots. |
 | Profiles additive/back-compat normalization | PASS | `ProfileService.load/import` with `normalizeBotConfig` | import old/incomplete profile JSON | default profile auto-restored. |
 | Runtime snapshot persistence and restore | PASS | `snapshotStore.ts` + engine restore + server onReady loading | stop/start backend and inspect state | restore into paused snapshot flow. |
-| Runs recorder present and downloadable | PARTIAL | `RunRecorderService` meta/events/stats write; API zip payload | start/stop run then download run zip | `stats.json` not included in download payload. |
+| Runs recorder present for every run session | PASS | `server.ts` start/resume/stop/kill now writes run metadata/events/stats best-effort | start -> stop, pause -> resume, kill; inspect `data/runs/*` | Download payload still excludes `stats.json` (separate contract gap). |
+| Bot UI tabs render isolated content | PASS | `frontend/src/pages/BotPage.tsx` tab-conditional blocks (journal/log/per-symbol/entry reasons) | click each tab, verify controls/table/cards render | No extra polling added for inactive tabs. |
+| Dashboard metrics are unified (no duplicate Results card) | PASS | `frontend/src/pages/BotPage.tsx` dashboard card groups performance/costs/guardrails/runtime | open dashboard and verify single metrics panel | Last events limited to 3 rows. |
 | AutoTune persisted state API | PASS | `AutoTuneService`, `/api/autotune/state` | call endpoint before/after restart | release docs wording drift exists. |
 | REST/WS contract frontend-backend alignment | PASS | `server.ts`, `symbolUpdateBroadcaster.ts`, `frontend/src/types.ts`, `frontend/src/App.tsx` | run app and inspect WS messages | Additive optional fields used. |
 
