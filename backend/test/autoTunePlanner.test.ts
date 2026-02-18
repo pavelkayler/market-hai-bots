@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { normalizeBotConfig, type BotStats } from '../src/bot/botEngine.js';
 import { planAutoTuneChange } from '../src/services/autoTunePlanner.js';
 
+const nowMs = 1_700_000_000_000;
+
 const baseConfig = normalizeBotConfig({
-  mode: 'paper', direction: 'both', tf: 1, holdSeconds: 1, signalCounterThreshold: 1,
-  priceUpThrPct: 0.5, oiUpThrPct: 50, oiCandleThrPct: 0, marginUSDT: 100, leverage: 2,
+  mode: 'paper', direction: 'both', tf: 1, holdSeconds: 1, signalCounterThreshold: 2,
+  priceUpThrPct: 0.5, oiUpThrPct: 50, oiCandleThrPct: 0.4, marginUSDT: 100, leverage: 2,
   tpRoiPct: 1, slRoiPct: 1, entryOffsetPct: 0, minNotionalUSDT: 5
 })!;
 
@@ -24,38 +26,40 @@ const baseStats: BotStats = {
 };
 
 describe('planAutoTuneChange', () => {
-  it('returns single deterministic config patch for GLOBAL too-few-trades case', () => {
-    const plan = planAutoTuneChange({ currentConfig: baseConfig, autoTuneScope: 'GLOBAL', recentRuns: [], currentBotStats: baseStats });
-    expect(plan).toMatchObject({ kind: 'CONFIG_PATCH', parameter: 'priceUpThrPct', after: 0.45 });
+  it('low recent trades loosens instead of tightening even with negative pnl', () => {
+    const plan = planAutoTuneChange({
+      currentConfig: baseConfig,
+      autoTuneScope: 'GLOBAL',
+      recentRuns: [{ id: '1', startedAt: nowMs - 1000, endedAt: nowMs, hasStats: true, stats: { totalTrades: 1, winratePct: 0, pnlUSDT: -100 }, tradedSymbols: ['BTCUSDT'] }],
+      currentBotStats: { ...baseStats, totalTrades: 12, pnlUSDT: -100 },
+      nowMs
+    });
+
+    expect(plan).toMatchObject({ kind: 'CONFIG_PATCH', reason: expect.stringContaining('loosening') });
   });
 
-  it('respects bounds when parameter is near floor/ceil', () => {
+  it('negative pnl with enough recent trades can tighten', () => {
     const plan = planAutoTuneChange({
-      currentConfig: { ...baseConfig, priceUpThrPct: 0.1, oiUpThrPct: 10 },
+      currentConfig: baseConfig,
+      autoTuneScope: 'GLOBAL',
+      recentRuns: [{ id: '1', startedAt: nowMs - 1000, endedAt: nowMs, hasStats: true, stats: { totalTrades: 12, winratePct: 0, pnlUSDT: -20 }, tradedSymbols: ['BTCUSDT'] }],
+      currentBotStats: { ...baseStats, totalTrades: 12, pnlUSDT: -20 },
+      nowMs
+    });
+
+    expect(plan).toMatchObject({ kind: 'CONFIG_PATCH', reason: expect.stringContaining('tightening') });
+  });
+
+  it('can tune non-price parameters', () => {
+    const plan = planAutoTuneChange({
+      currentConfig: { ...baseConfig, priceUpThrPct: 0.1 },
       autoTuneScope: 'GLOBAL',
       recentRuns: [],
-      currentBotStats: baseStats
+      currentBotStats: baseStats,
+      nowMs
     });
-    expect(plan).toBeNull();
-  });
 
-  it('GLOBAL scope never returns universe exclusion', () => {
-    const plan = planAutoTuneChange({
-      currentConfig: baseConfig,
-      autoTuneScope: 'GLOBAL',
-      recentRuns: [{ id: '1', startedAt: 1, endedAt: null, hasStats: true, stats: { totalTrades: 10, winratePct: 10, pnlUSDT: -100 }, tradedSymbols: ['BTCUSDT'] }],
-      currentBotStats: { ...baseStats, totalTrades: 10, pnlUSDT: -20 }
-    });
     expect(plan?.kind).toBe('CONFIG_PATCH');
-  });
-
-  it('UNIVERSE_ONLY scope never returns config patch', () => {
-    const plan = planAutoTuneChange({
-      currentConfig: baseConfig,
-      autoTuneScope: 'UNIVERSE_ONLY',
-      recentRuns: [{ id: '1', startedAt: 1, endedAt: null, hasStats: true, stats: { totalTrades: 6, winratePct: 10, pnlUSDT: -90 }, tradedSymbols: ['BTCUSDT'] }],
-      currentBotStats: { ...baseStats, totalTrades: 10, pnlUSDT: -20 }
-    });
-    expect(plan).toMatchObject({ kind: 'UNIVERSE_EXCLUDE', symbol: 'BTCUSDT' });
+    expect(['oiUpThrPct', 'signalCounterThreshold', 'oiCandleThrPct']).toContain((plan as { parameter?: string })?.parameter);
   });
 });

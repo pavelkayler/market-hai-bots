@@ -130,7 +130,7 @@ describe('server routes', () => {
     expect(response.json()).toEqual({
       ok: true,
       activeProfile: 'default',
-      names: ['default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m', 'smoke_min_thresholds_1m']
+      names: ['aggressive_1m', 'aggressive_3m', 'aggressive_5m', 'balanced_1m', 'balanced_3m', 'balanced_5m', 'conservative_1m', 'conservative_3m', 'conservative_5m', 'default', 'skip_most_trades']
     });
   });
 
@@ -625,7 +625,7 @@ describe('server routes', () => {
 
     const profilesResponse = await app.inject({ method: 'GET', url: '/api/profiles' });
     expect(profilesResponse.statusCode).toBe(200);
-    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['default', 'fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m', 'smoke_min_thresholds_1m'] });
+    expect(profilesResponse.json()).toEqual({ ok: true, activeProfile: 'default', names: ['aggressive_1m', 'aggressive_3m', 'aggressive_5m', 'balanced_1m', 'balanced_3m', 'balanced_5m', 'conservative_1m', 'conservative_3m', 'conservative_5m', 'default', 'skip_most_trades'] });
 
     await rm(tempDir, { recursive: true, force: true });
   });

@@ -13,6 +13,7 @@ describe('DoctorService', () => {
         ETHUSDT: { ts: now - 1200, lastTickTs: now - 1200 }
       }),
       getTrackedSymbols: () => ['BTCUSDT', 'ETHUSDT'],
+      getTickerStreamStatus: () => ({ running: true, connected: true, desiredSymbolsCount: 2, subscribedCount: 2, lastMessageAt: now - 200, lastTickerAt: now - 250, reconnectCount: 1, lastError: null }),
       getUniverseState: async () => ({
         contractFilter: 'USDT_LINEAR_PERPETUAL_ONLY',
         diagnostics: { excluded: { nonUSDT: 0, expiring: 0, nonPerp: 0 } },
@@ -30,6 +31,7 @@ describe('DoctorService', () => {
     expect(report.checks.length).toBeGreaterThanOrEqual(6);
     expect(report.checks.find((check) => check.id === 'ws_freshness')?.status).toBe('PASS');
     expect(report.checks.find((check) => check.id === 'run_recording_status')?.status).toBe('PASS');
+    expect(report.checks.find((check) => check.id === 'ws_freshness')?.details).toMatchObject({ streamRunning: true, streamConnected: true, desiredSymbolsCount: 2, subscribedCount: 2, reconnectCount: 1 });
   });
 
   it('maps stale market feed to WARN/FAIL and run recorder errors to FAIL', async () => {

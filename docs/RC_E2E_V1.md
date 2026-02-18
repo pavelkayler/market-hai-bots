@@ -93,10 +93,12 @@ This is the release-candidate runbook for a full operator validation pass. It is
 ## 5) Start bot in PAPER and run ≥15 minutes
 
 ### Actions
-1. In **Settings → Profiles**, set active profile to `overnight_1m_safe` (guardrails enabled).
+1. In **Settings → Profiles**, set active profile to one of shipped presets (for example `balanced_3m`) and click **Set Active**.
 2. Start bot in paper mode (`POST /api/bot/start`).
 3. Let it run at least 15 minutes.
 4. Verify runtime evidence:
+
+5. Verify profile persistence: refresh UI and restart backend, then confirm the same active profile remains selected.
    - Runs tab shows an active/new run.
    - `data/runs/<runId>/stats.json` exists.
    - Run SYSTEM tail contains `BOT_START` (`GET /api/runs/:id/events?limit=200&types=SYSTEM`).

@@ -2417,3 +2417,28 @@ describe('BotEngine diagnostics + paper model hardening', () => {
     expect(logs.some((line) => line.includes('PNL_SANITY'))).toBe(true);
   });
 });
+
+describe('BotEngine applyConfigPatch', () => {
+  it('changes only patched field', () => {
+    const engine = new BotEngine({ emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.start({ ...defaultConfig, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' });
+
+    const before = engine.getState().config!;
+    const updated = engine.applyConfigPatch({ oiCandleThrPct: 1.2 });
+
+    expect(updated?.oiCandleThrPct).toBe(1.2);
+    expect(updated?.priceUpThrPct).toBe(before.priceUpThrPct);
+    expect(updated?.signalCounterThreshold).toBe(before.signalCounterThreshold);
+  });
+
+  it('rejects invalid patch without mutation', () => {
+    const engine = new BotEngine({ emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.start({ ...defaultConfig, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' });
+
+    const before = engine.getState().config!;
+    const updated = engine.applyConfigPatch({ maxTickStalenessMs: Number.NaN });
+
+    expect(updated).toBeNull();
+    expect(engine.getState().config).toEqual(before);
+  });
+});

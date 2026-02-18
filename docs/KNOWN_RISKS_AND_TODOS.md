@@ -62,3 +62,5 @@
 3. Проверить replay error mapping вручную с несуществующим файлом.
 
 - Entry without price/qty is now blocked by explicit validation in paper fill and demo payload paths; residual risk only for upstream exchange anomalies outside local validation.
+
+- Update: ws_freshness reliability risk is reduced by WS ping/watchdog + reconnect + subscription chunking; retain operational monitoring via doctor details fields for reconnect/error visibility.

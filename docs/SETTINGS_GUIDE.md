@@ -167,12 +167,14 @@ Spread (`spreadBpsAtEntry`, `spreadBpsAtExit`) and slippage (`slippageUSDT`, `sl
 - `priceUpThrPct` and `oiUpThrPct` are interpreted vs the **previous TF candle** (UTC buckets for `tf=1/3/5`).
 - First-candle fallback: if previous candle values are missing/invalid, deltas are treated as `0` and no signal is triggered.
 
-### Example presets
+### Factory presets (10 shipped)
 
-- **fast_test_1m**
-  - `trendTfMinutes=5`, `trendMinMovePct=0.1`, `confirmWindowBars=1`, `confirmMinContinuationPct=0.05`, `impulseMaxAgeBars=2`, `requireOiTwoCandles=false`
-- **overnight_1m_safe**
-  - `trendTfMinutes=15`, `trendMinMovePct=0.3`, `confirmWindowBars=2`, `confirmMinContinuationPct=0.1`, `impulseMaxAgeBars=2`, `requireOiTwoCandles=true`
+- aggressive: `aggressive_1m`, `aggressive_3m`, `aggressive_5m`
+- balanced: `balanced_1m`, `balanced_3m`, `balanced_5m`
+- conservative: `conservative_1m`, `conservative_3m`, `conservative_5m`
+- minimal-trading safety preset: `skip_most_trades`
+
+All shipped presets have `autoTuneEnabled=true` by default.
 
 ## Guardrails defaults (default profile)
 
@@ -182,9 +184,10 @@ Spread (`spreadBpsAtEntry`, `spreadBpsAtExit`) and slippage (`slippageUSDT`, `sl
 
 Starter profiles are auto-seeded when missing (without overwriting existing profile names):
 - `default`
-- `fast_test_1m`
-- `overnight_1m_safe`
-- `smoke_min_1m`
+- `aggressive_1m`, `aggressive_3m`, `aggressive_5m`
+- `balanced_1m`, `balanced_3m`, `balanced_5m`
+- `conservative_1m`, `conservative_3m`, `conservative_5m`
+- `skip_most_trades`
 
 
 ## Signal gating semantics (canonical)
@@ -406,6 +409,11 @@ Notes:
 - `/api/runs/summary?limit=N` returns best-effort run summaries for operators and Auto-Tune input (`meta` + optional `stats` + inferred `tradedSymbols`).
 
 ### Auto-Tune v1 (history-aware, bounded, single-change)
+- Recent-window policy: planner uses last 24h runs (testable via `nowMs`) and enforces trade-frequency safeguards.
+- If recent trades are below target, planner prefers loosening (not tightening). Tightening is allowed only after minimum recent trades are reached.
+- Tunable params: `priceUpThrPct`, `oiUpThrPct`, `oiCandleThrPct`, `signalCounterThreshold`, `minNotionalUSDT`.
+- Bounds/step: `priceUpThrPct` [0.1..5, 0.05], `oiUpThrPct` [10..300, 5], `oiCandleThrPct` [0..25, 0.2], `signalCounterThreshold` [1..8, 1], `minNotionalUSDT` [1..100, 1].
+- Optional planner mode: `autoTunePlannerMode` = `DETERMINISTIC` (default) or `RANDOM_EXPLORE`.
 - Auto-Tune evaluates on position close and applies **at most one change** per evaluation.
 - GLOBAL scope: only config patch changes (bounded fields: `priceUpThrPct`, `oiUpThrPct`, `minNotionalUSDT`).
 - UNIVERSE_ONLY scope: only one exclusion candidate per evaluation (worst negative symbol from recent run summaries; no live-universe hot mutation during current run).
