@@ -311,7 +311,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     getTrackedSymbols: () => botEngine.getRuntimeSymbols(),
     getTickerStreamStatus: () => marketHub.getTickerStreamStatus(),
     getUniverseState: () => universeService.get(),
-    getDataDir: () => dataDirPath,
     getVersion: async () => ({
       commit: getCommitHash() ?? undefined,
       node: process.version
@@ -871,146 +870,21 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
   });
 
-  app.post('/api/replay/record/start', async (request, reply) => {
-    const body = request.body as { topN?: unknown; fileName?: unknown };
-    const topN = body?.topN === undefined ? 20 : body.topN;
-    if (typeof topN !== 'number' || !Number.isFinite(topN) || topN < 1) {
-      return reply.code(400).send({ ok: false, error: 'INVALID_TOP_N' });
-    }
+  app.post('/api/replay/record/start', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
-    const fileName = typeof body?.fileName === 'string' && body.fileName.length > 0 ? body.fileName : '';
-    if (!fileName.endsWith('.ndjson')) {
-      return reply.code(400).send({ ok: false, error: 'INVALID_FILE_NAME' });
-    }
+  app.post('/api/replay/record/stop', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
-    try {
-      const result = await replayService.startRecording(fileName, topN);
-      return { ok: true, path: `backend/data/replay/${path.basename(result.path)}`, startedAt: result.startedAt };
-    } catch (error) {
-      const code = (error as Error).message;
-      if (code === 'UNIVERSE_NOT_READY') {
-        return reply.code(400).send({ ok: false, error: code });
-      }
+  app.get('/api/runs', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
-      return reply.code(400).send({ ok: false, error: 'REPLAY_BUSY' });
-    }
-  });
+  app.get('/api/runs/summary', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
-  app.post('/api/replay/record/stop', async () => {
-    const result = await replayService.stopRecording();
-    return { ok: true, stoppedAt: result.stoppedAt, recordsWritten: result.recordsWritten };
-  });
+  app.get('/api/runs/:id/download', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
-  app.post('/api/replay/start', async (request, reply) => {
-    const body = request.body as { fileName?: unknown; speed?: unknown };
-    if (typeof body?.fileName !== 'string' || body.fileName.length === 0) {
-      return reply.code(400).send({ ok: false, error: 'INVALID_FILE_NAME' });
-    }
+  app.get('/api/runs/:id/events', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
-    if (body.speed !== '1x' && body.speed !== '5x' && body.speed !== '20x' && body.speed !== 'fast') {
-      return reply.code(400).send({ ok: false, error: 'INVALID_SPEED' });
-    }
+  app.get('/api/autotune/state', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
-    try {
-      const result = await replayService.startReplay(body.fileName, body.speed as ReplaySpeed);
-      return { ok: true, startedAt: result.startedAt };
-    } catch (error) {
-      const code = (error as Error).message;
-      if (code === 'REPLAY_REQUIRES_PAPER_MODE') {
-        return reply.code(400).send({ ok: false, error: code });
-      }
-
-      return reply.code(400).send({ ok: false, error: 'REPLAY_BUSY' });
-    }
-  });
-
-  app.post('/api/replay/stop', async () => {
-    const result = await replayService.stopReplay();
-    return { ok: true, stoppedAt: result.stoppedAt };
-  });
-
-  app.get('/api/replay/state', async () => {
-    return replayService.getState();
-  });
-
-  app.get('/api/replay/files', async () => {
-    return { ok: true, files: await replayService.listFiles() };
-  });
-
-
-  app.get('/api/runs', async (request) => {
-    const query = request.query as { limit?: string | number };
-    const parsedLimit = Number(query.limit ?? 20);
-    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(200, Math.floor(parsedLimit))) : 20;
-    const runs = await runRecorder.listRecent(limit);
-    return { ok: true, runs };
-  });
-
-  app.get('/api/runs/summary', async (request) => {
-    const query = request.query as { limit?: string | number };
-    const parsedLimit = Number(query.limit ?? 20);
-    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(200, Math.floor(parsedLimit))) : 20;
-    const runs = await runHistoryService.summarizeRecent(limit);
-    return { ok: true, runs };
-  });
-
-  app.get('/api/runs/:id/download', async (request, reply) => {
-    const id = (request.params as { id: string }).id;
-    const payloadByFile = await runRecorder.getRunPayload(id);
-    if (!payloadByFile) {
-      return reply.code(404).send({ ok: false, error: 'RUN_NOT_FOUND' });
-    }
-
-    const zip = new JSZip();
-    for (const [name, content] of Object.entries(payloadByFile)) {
-      zip.file(name, content);
-    }
-    const payload = await zip.generateAsync({ type: 'nodebuffer' });
-    reply.header('Content-Type', 'application/zip');
-    reply.header('Content-Disposition', `attachment; filename="run_${id}.zip"`);
-    return reply.send(payload);
-  });
-
-  app.get('/api/runs/:id/events', async (request) => {
-    const id = (request.params as { id: string }).id;
-    const query = request.query as { limit?: string | number; types?: string };
-    const parsedLimit = Number(query.limit ?? 200);
-    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(2000, Math.floor(parsedLimit))) : 200;
-    const types = typeof query.types === 'string'
-      ? query.types
-        .split(',')
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0)
-      : [];
-
-    const result = await runEventsService.tailEvents(id, { limit, types });
-    return { ok: true, ...result };
-  });
-
-  app.get('/api/autotune/state', async () => {
-    await autoTuneService.init();
-    const state = autoTuneService.getState();
-    const currentConfig = botEngine.getState().config;
-    return {
-      ok: true,
-      state: {
-        ...state,
-        plannerMode: currentConfig?.autoTunePlannerMode ?? 'DETERMINISTIC',
-        autoTuneWindowHours: currentConfig?.autoTuneWindowHours ?? 24,
-        autoTuneTargetTradesInWindow: currentConfig?.autoTuneTargetTradesInWindow ?? 6,
-        autoTuneMinTradesBeforeTighten: currentConfig?.autoTuneMinTradesBeforeTighten ?? 4
-      }
-    };
-  });
-
-  app.get('/api/autotune/history', async (request) => {
-    await autoTuneService.init();
-    const query = request.query as { limit?: string | number };
-    const parsedLimit = Number(query.limit ?? 100);
-    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(200, Math.floor(parsedLimit))) : 100;
-    const state = autoTuneService.getState();
-    return { ok: true, items: state.history.slice(-limit).reverse() };
-  });
+  app.get('/api/autotune/history', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
   app.get('/api/journal/tail', async (request, reply) => {
     const query = request.query as { limit?: string | number };
@@ -1066,125 +940,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return reply.type('text/csv').send([header, ...rows].join('\n'));
   });
 
-  app.get('/api/export/pack', async (request, reply) => {
-    let journalExistedBeforeRequest = true;
-    try {
-      await stat(storagePaths.journalPath);
-    } catch {
-      journalExistedBeforeRequest = false;
-    }
+  app.get('/api/export/pack', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
-    await appendOpsJournalEvent('EXPORT_PACK_REQUESTED');
-
-    const zip = new JSZip();
-    const includedFiles: string[] = [];
-    const notes: string[] = [];
-    const counts: { journalLines?: number; universeSymbols?: number; profilesCount?: number } = {};
-
-    const readIfPresent = async (filePath: string, missingNote: string): Promise<string | null> => {
-      try {
-        return await readFile(filePath, 'utf-8');
-      } catch {
-        notes.push(missingNote);
-        return null;
-      }
-    };
-
-    const universeRaw = await readIfPresent(storagePaths.universePath, 'universe.json missing (no persisted universe found)');
-    if (universeRaw !== null) {
-      zip.file('universe.json', universeRaw);
-      includedFiles.push('universe.json');
-      try {
-        const parsed = JSON.parse(universeRaw) as { symbols?: unknown };
-        if (Array.isArray(parsed.symbols)) {
-          counts.universeSymbols = parsed.symbols.length;
-        }
-      } catch {
-        // ignore malformed file for export counts
-      }
-    }
-
-    const profilesRaw = await readIfPresent(storagePaths.profilesPath, 'profiles.json missing (no persisted profiles found)');
-    if (profilesRaw !== null) {
-      zip.file('profiles.json', profilesRaw);
-      includedFiles.push('profiles.json');
-      try {
-        const parsed = JSON.parse(profilesRaw) as { names?: unknown };
-        if (Array.isArray(parsed.names)) {
-          counts.profilesCount = parsed.names.length;
-        }
-      } catch {
-        // ignore malformed file for export counts
-      }
-    }
-
-    const runtimeRaw = await readIfPresent(storagePaths.runtimePath, 'runtime.json missing (no persisted runtime snapshot found)');
-    if (runtimeRaw !== null) {
-      zip.file('runtime.json', runtimeRaw);
-      includedFiles.push('runtime.json');
-    }
-
-    const journalRaw = journalExistedBeforeRequest
-      ? await readIfPresent(storagePaths.journalPath, 'journal.ndjson missing (no journal file found)')
-      : null;
-    if (!journalExistedBeforeRequest) {
-      notes.push('journal.ndjson missing (no journal file found)');
-    } else if (journalRaw !== null) {
-      zip.file('journal.ndjson', journalRaw);
-      includedFiles.push('journal.ndjson');
-      counts.journalLines = journalRaw.split('\n').filter((line) => line.trim().length > 0).length;
-    }
-
-    try {
-      const doctorReport = await doctorService.buildReport();
-      zip.file('doctor.json', JSON.stringify(doctorReport, null, 2));
-      includedFiles.push('doctor.json');
-    } catch {
-      notes.push('doctor.json omitted (doctor snapshot unavailable)');
-    }
-
-    const appVersion = await getVersion();
-
-    zip.file(
-      'meta.json',
-      JSON.stringify(
-        {
-          createdAt: Date.now(),
-          appVersion,
-          notes,
-          paths: {
-            universe: storagePaths.universePath,
-            profiles: storagePaths.profilesPath,
-            runtime: storagePaths.runtimePath,
-            journal: storagePaths.journalPath
-          },
-          counts
-        },
-        null,
-        2
-      )
-    );
-    includedFiles.push('meta.json');
-
-
-    const recentRuns = await runRecorder.listRecent(1);
-    if (recentRuns.length > 0) {
-      const latestRun = await runRecorder.getRunPayload(recentRuns[0].id);
-      if (latestRun) {
-        for (const [name, content] of Object.entries(latestRun)) {
-          zip.file(`latest-run/${name}`, content);
-          includedFiles.push(`latest-run/${name}`);
-        }
-      }
-    }
-
-    const payload = await zip.generateAsync({ type: 'nodebuffer' });
-    const safeTs = new Date().toISOString().replaceAll(':', '-');
-    reply.header('Content-Type', 'application/zip');
-    reply.header('Content-Disposition', `attachment; filename="export-pack_${safeTs}.zip"`);
-    reply.header('X-Export-Included', includedFiles.join(','));
-    return reply.send(payload);
-  });
 
   app.post('/api/orders/cancel', async (request, reply) => {
     const body = request.body as { symbol?: unknown };

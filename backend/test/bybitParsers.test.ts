@@ -18,7 +18,8 @@ describe('Bybit parsers', () => {
       symbol: 'BTCUSDT',
       markPrice: 65000.5,
       openInterestValue: 123456789.01,
-      openInterest: null,
+      fundingRate: null,
+      nextFundingTimeMs: null,
       ts: 1739942400123,
       lastPrice: null,
       bid: null,
@@ -29,20 +30,7 @@ describe('Bybit parsers', () => {
   });
 
 
-  it('parses ws ticker contracts openInterest when present', () => {
-    const parsed = parseWsTickerEvent({
-      topic: 'tickers.BTCUSDT',
-      ts: 1739942400123,
-      data: {
-        symbol: 'BTCUSDT',
-        markPrice: '65000.5',
-        openInterestValue: '123456789.01',
-        openInterest: '1890.25'
-      }
-    });
 
-    expect(parsed?.openInterest).toBe(1890.25);
-  });
 
   it('returns null for ws ticker event when markPrice is not numeric', () => {
     const fixture = readFixture('ws-ticker-btcusdt.json') as {

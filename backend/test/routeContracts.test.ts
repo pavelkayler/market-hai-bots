@@ -67,19 +67,6 @@ describe('route contract stability', () => {
     app = buildIsolatedServer();
   });
 
-
-  it('/api/autotune/state includes additive planner and policy fields', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/autotune/state' });
-    expect(response.statusCode).toBe(200);
-
-    const body = response.json() as { ok?: unknown; state?: Record<string, unknown> };
-    expect(body.ok).toBe(true);
-    expect(body.state).toBeTruthy();
-    expect(typeof body.state?.enabled).toBe('boolean');
-    expect(typeof body.state?.scope).toBe('string');
-    expect(typeof body.state?.closesSeen).toBe('number');
-  });
-
   it('/api/bot/state includes numeric 0-safe fields', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(response.statusCode).toBe(200);
@@ -96,25 +83,14 @@ describe('route contract stability', () => {
     expect(body.openPositions).toBe(0);
   });
 
-  it('/api/runs/summary remains best-effort with required fields', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/runs/summary?limit=5' });
-    expect(response.statusCode).toBe(200);
 
-    const body = response.json() as { ok?: unknown; runs?: unknown };
-    expect(body.ok).toBe(true);
-    expect(Array.isArray(body.runs)).toBe(true);
-
-    for (const run of body.runs as Array<Record<string, unknown>>) {
-      expect(typeof run.id).toBe('string');
-      expect(typeof run.startedAt).toBe('number');
-      expect(typeof run.mode).toBe('string');
-      expect(typeof run.tf).toBe('number');
-      expect(typeof run.direction).toBe('string');
-      expect(typeof run.hasStats).toBe('boolean');
-      expect(run.warnings === undefined || Array.isArray(run.warnings)).toBe(true);
+  it('removed endpoints return 404', async () => {
+    for (const url of ['/api/autotune/state', '/api/runs/summary', '/api/export/pack']) {
+      const response = await app.inject({ method: 'GET', url });
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ ok: false, error: 'REMOVED_IN_V2' });
     }
   });
-
   it('/api/doctor returns checks[] with stable ids', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/doctor' });
     expect(response.statusCode).toBe(200);
@@ -125,8 +101,6 @@ describe('route contract stability', () => {
     for (const id of [
       'ws_freshness',
       'market_age_per_symbol',
-      'run_recording_status',
-      'filesystem_writable',
       'lifecycle_invariants',
       'universe_contract_filter'
     ]) {
