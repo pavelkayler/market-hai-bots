@@ -113,3 +113,10 @@ Kill response includes deterministic close/cancel outcome fields:
 }
 ```
 - `warning` is populated when bounded best-effort cleanup cannot fully confirm closure/cancellation.
+
+## Task 51 additive API
+- `GET /api/runs?limit=N` lists latest run folders.
+- `GET /api/runs/:id/download` downloads a single run as zip.
+- `GET /api/autotune/state` returns persistent Auto-Tune state (`enabled`, `scope`, `lastApplied`, history tail).
+- `symbol:update` WS payload now additively includes:
+  - `signalCounterMin`, `signalCounterMax`, `signalCounterEligible`.

@@ -2,6 +2,8 @@ export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
 export type BothTieBreak = 'shortPriority' | 'longPriority' | 'strongerSignal';
 export type BotTf = 1 | 3 | 5;
+export type StrategyMode = 'IMPULSE' | 'PUMP_DUMP_2ND_TRIGGER';
+export type AutoTuneScope = 'GLOBAL' | 'UNIVERSE_ONLY';
 export type EntryReason = 'LONG_CONTINUATION' | 'SHORT_CONTINUATION' | 'SHORT_DIVERGENCE';
 
 export type BotSettings = {
@@ -9,9 +11,12 @@ export type BotSettings = {
   direction: BotDirection;
   bothTieBreak: BothTieBreak;
   tf: BotTf;
+  strategyMode: StrategyMode;
   /** @deprecated confirmation now uses signalCounterThreshold */
   holdSeconds: number;
   signalCounterThreshold: number;
+  signalCounterMin: number;
+  signalCounterMax: number;
   priceUpThrPct: number;
   oiUpThrPct: number;
   oiCandleThrPct: number;
@@ -35,6 +40,8 @@ export type BotSettings = {
   maxSpreadBps: number;
   maxTickStalenessMs: number;
   minNotionalUSDT: number;
+  autoTuneEnabled: boolean;
+  autoTuneScope: AutoTuneScope;
   paperEntrySlippageBps?: number;
   paperExitSlippageBps?: number;
   paperPartialFillPct?: number;
@@ -315,6 +322,9 @@ export type SymbolUpdatePayload = {
   oiDeltaPct?: number | null;
   signalCount24h?: number;
   signalCounterThreshold?: number;
+  signalCounterMin?: number;
+  signalCounterMax?: number;
+  signalCounterEligible?: boolean;
   gates?: GateSnapshot | null;
   bothCandidate?: BothCandidateDiagnostics | null;
 };
@@ -393,4 +403,10 @@ export type DoctorResponse = {
   replay: { recording: boolean; replaying: boolean; fileName: string | null };
   journal: { enabled: true; path: string; sizeBytes: number };
   demo: { configured: boolean };
+};
+
+export type AutoTuneRuntimeState = {
+  enabled: boolean;
+  scope: AutoTuneScope;
+  lastApplied: { ts: number; parameter: string; before: number; after: number; reason: string } | null;
 };

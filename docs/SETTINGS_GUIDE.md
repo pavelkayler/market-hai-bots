@@ -385,3 +385,11 @@ Notes:
 - Last selected tab is persisted in localStorage (`bot:tab`); first load defaults to Dashboard.
 - Settings form controls are only shown in the Settings tab and remain locked while the bot is running.
 - Dashboard is for runtime monitoring/controls only (no settings form fields).
+
+## Task 51 additions
+- `strategyMode`: `IMPULSE` (default) or `PUMP_DUMP_2ND_TRIGGER`.
+- Signal counter now supports inclusive range via `signalCounterMin` / `signalCounterMax`.
+  - Legacy `signalCounterThreshold` is still accepted and maps to `min=threshold`, `max=Infinity`.
+  - `PUMP_DUMP_2ND_TRIGGER` defaults to `min=2`, `max=3`.
+- `autoTuneEnabled` (default OFF) and `autoTuneScope` (`GLOBAL` default, `UNIVERSE_ONLY`).
+- Always-on run recording: each `/api/bot/start` creates `data/runs/<ISO_TIMESTAMP>/` with `meta.json`, `events.ndjson`, and optional `stats.json`.

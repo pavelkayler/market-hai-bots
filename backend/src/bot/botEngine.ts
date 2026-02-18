@@ -12,15 +12,21 @@ export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
 export type BothTieBreak = 'shortPriority' | 'longPriority' | 'strongerSignal';
 export type BotTf = 1 | 3 | 5;
+export type StrategyMode = 'IMPULSE' | 'PUMP_DUMP_2ND_TRIGGER';
+export type AutoTuneScope = 'GLOBAL' | 'UNIVERSE_ONLY';
 
 export type BotConfig = {
   mode: BotMode;
   direction: BotDirection;
   bothTieBreak: BothTieBreak;
   tf: BotTf;
+  strategyMode: StrategyMode;
   /** @deprecated confirmation now uses signalCounterThreshold */
   holdSeconds: number;
+  /** @deprecated maps to signalCounterMin=threshold, signalCounterMax=Infinity */
   signalCounterThreshold: number;
+  signalCounterMin: number;
+  signalCounterMax: number;
   priceUpThrPct: number;
   oiUpThrPct: number;
   oiCandleThrPct: number;
@@ -44,6 +50,8 @@ export type BotConfig = {
   maxSpreadBps: number;
   maxTickStalenessMs: number;
   minNotionalUSDT: number;
+  autoTuneEnabled: boolean;
+  autoTuneScope: AutoTuneScope;
   paperEntrySlippageBps?: number;
   paperExitSlippageBps?: number;
   paperPartialFillPct?: number;
@@ -121,6 +129,7 @@ export type NoEntryReason = {
     | 'OI_CANDLE_GATE_FAIL'
     | 'OI_2CANDLES_FAIL'
     | 'SIGNAL_COUNTER_NOT_MET'
+    | 'SIGNAL_COUNTER_OUT_OF_RANGE'
     | 'NO_CONTINUATION'
     | 'IMPULSE_STALE'
     | 'IMPULSE_TOO_LATE'
@@ -354,6 +363,11 @@ type BotEngineDeps = {
 
 const DEFAULT_HOLD_SECONDS = 3;
 const DEFAULT_SIGNAL_COUNTER_THRESHOLD = 2;
+const DEFAULT_STRATEGY_MODE: StrategyMode = 'IMPULSE';
+const DEFAULT_SIGNAL_COUNTER_MIN = DEFAULT_SIGNAL_COUNTER_THRESHOLD;
+const DEFAULT_SIGNAL_COUNTER_MAX = Number.MAX_SAFE_INTEGER;
+const DEFAULT_AUTO_TUNE_ENABLED = false;
+const DEFAULT_AUTO_TUNE_SCOPE: AutoTuneScope = 'GLOBAL';
 const DEFAULT_OI_UP_THR_PCT = 50;
 const DEFAULT_OI_CANDLE_THR_PCT = 0;
 const DEFAULT_MAX_ACTIVE_SYMBOLS = 3;
@@ -383,6 +397,7 @@ const NO_ENTRY_REASON_CODES: NoEntryReason['code'][] = [
   'OI_CANDLE_GATE_FAIL',
   'OI_2CANDLES_FAIL',
   'SIGNAL_COUNTER_NOT_MET',
+  'SIGNAL_COUNTER_OUT_OF_RANGE',
   'NO_CONTINUATION',
   'IMPULSE_STALE',
   'IMPULSE_TOO_LATE',
@@ -433,10 +448,16 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
   }
 
   const holdSeconds = typeof raw.holdSeconds === 'number' && Number.isFinite(raw.holdSeconds) ? raw.holdSeconds : DEFAULT_HOLD_SECONDS;
+  const strategyMode = raw.strategyMode === 'PUMP_DUMP_2ND_TRIGGER' || raw.strategyMode === 'IMPULSE' ? raw.strategyMode : DEFAULT_STRATEGY_MODE;
   const signalCounterThreshold =
     typeof raw.signalCounterThreshold === 'number' && Number.isFinite(raw.signalCounterThreshold)
       ? Math.max(1, Math.floor(raw.signalCounterThreshold))
       : DEFAULT_SIGNAL_COUNTER_THRESHOLD;
+  const signalCounterMinRaw = typeof raw.signalCounterMin === 'number' && Number.isFinite(raw.signalCounterMin) ? raw.signalCounterMin : signalCounterThreshold;
+  const signalCounterMaxRaw =
+    typeof raw.signalCounterMax === 'number' && Number.isFinite(raw.signalCounterMax) ? raw.signalCounterMax : Number.MAX_SAFE_INTEGER;
+  const signalCounterMin = Math.max(1, Math.floor(signalCounterMinRaw));
+  const signalCounterMax = Math.max(signalCounterMin, Math.floor(signalCounterMaxRaw));
   const oiUpThrPct = typeof raw.oiUpThrPct === 'number' && Number.isFinite(raw.oiUpThrPct) ? raw.oiUpThrPct : DEFAULT_OI_UP_THR_PCT;
   const oiCandleThrPct =
     typeof raw.oiCandleThrPct === 'number' && Number.isFinite(raw.oiCandleThrPct) ? Math.max(0, raw.oiCandleThrPct) : DEFAULT_OI_CANDLE_THR_PCT;
@@ -482,6 +503,8 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
       : DEFAULT_MAX_TICK_STALENESS_MS;
   const minNotionalUSDT =
     typeof raw.minNotionalUSDT === 'number' && Number.isFinite(raw.minNotionalUSDT) ? Math.max(0, raw.minNotionalUSDT) : DEFAULT_MIN_NOTIONAL_USDT;
+  const autoTuneEnabled = typeof raw.autoTuneEnabled === 'boolean' ? raw.autoTuneEnabled : DEFAULT_AUTO_TUNE_ENABLED;
+  const autoTuneScope = raw.autoTuneScope === 'UNIVERSE_ONLY' || raw.autoTuneScope === 'GLOBAL' ? raw.autoTuneScope : DEFAULT_AUTO_TUNE_SCOPE;
   const paperEntrySlippageBps =
     typeof raw.paperEntrySlippageBps === 'number' && Number.isFinite(raw.paperEntrySlippageBps)
       ? Math.max(0, raw.paperEntrySlippageBps)
@@ -511,8 +534,11 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     direction,
     bothTieBreak,
     tf,
+    strategyMode,
     holdSeconds,
     signalCounterThreshold,
+    signalCounterMin,
+    signalCounterMax,
     priceUpThrPct: raw.priceUpThrPct as number,
     oiUpThrPct,
     oiCandleThrPct,
@@ -536,6 +562,8 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     maxSpreadBps,
     maxTickStalenessMs,
     minNotionalUSDT,
+    autoTuneEnabled,
+    autoTuneScope,
     paperEntrySlippageBps,
     paperExitSlippageBps,
     paperPartialFillPct
@@ -638,6 +666,24 @@ export class BotEngine {
     }
 
     return { queueDepth, activeOrders, openPositions };
+  }
+
+
+
+  applyConfigPatch(patch: Partial<Pick<BotConfig, 'priceUpThrPct' | 'oiUpThrPct' | 'impulseMaxAgeBars' | 'minNotionalUSDT' | 'maxSpreadBps' | 'maxTickStalenessMs'>>): BotConfig | null {
+    if (!this.state.config) {
+      return null;
+    }
+
+    this.state = {
+      ...this.state,
+      config: {
+        ...this.state.config,
+        ...patch
+      }
+    };
+    this.persistSnapshot();
+    return this.state.config;
   }
 
   getRuntimeSymbols(): string[] {
@@ -778,15 +824,23 @@ export class BotEngine {
 
   start(config: BotConfig): void {
     const now = this.now();
+    const safeConfig: BotConfig = {
+      ...config,
+      strategyMode: config.strategyMode ?? DEFAULT_STRATEGY_MODE,
+      signalCounterMin: config.signalCounterMin ?? config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN,
+      signalCounterMax: config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX,
+      autoTuneEnabled: config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED,
+      autoTuneScope: config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE
+    };
     this.state = {
       ...this.state,
       running: true,
       paused: false,
       startedAt: now,
       runningSinceTs: now,
-      config
+      config: safeConfig
     };
-    this.stats.bothTieBreakMode = config.bothTieBreak;
+    this.stats.bothTieBreakMode = safeConfig.bothTieBreak;
     this.persistSnapshot();
   }
 
@@ -876,7 +930,7 @@ export class BotEngine {
       runningSinceTs: null,
       activeUptimeMs: snapshot.activeUptimeMs ?? 0,
       uptimeMs: 0,
-      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK } : null
+      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK, strategyMode: snapshot.config.strategyMode ?? DEFAULT_STRATEGY_MODE, signalCounterMin: snapshot.config.signalCounterMin ?? snapshot.config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN, signalCounterMax: snapshot.config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX, autoTuneEnabled: snapshot.config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED, autoTuneScope: snapshot.config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE } : null
     };
 
     this.perSymbolStats.clear();
@@ -1262,7 +1316,7 @@ export class BotEngine {
         code: 'SIGNAL_COUNTER_NOT_MET',
         message: 'Signal conditions not met.',
         value: 0,
-        threshold: this.state.config.signalCounterThreshold
+        threshold: this.state.config.signalCounterMin
       });
       this.resetToIdle(symbolState);
       this.persistSnapshot();
@@ -1309,17 +1363,19 @@ export class BotEngine {
 
     const signalCount24h = this.recordSignalEventAndGetCount(symbolState, now);
     symbolState.lastSignalCount24h = signalCount24h;
-    const confirmed = signalCount24h >= this.state.config.signalCounterThreshold;
+    const minCount = this.state.config.signalCounterMin;
+    const maxCount = this.state.config.signalCounterMax;
+    const confirmed = signalCount24h >= minCount && signalCount24h <= maxCount;
     symbolState.fsmState = candidate.side === 'LONG' ? 'HOLDING_LONG' : 'HOLDING_SHORT';
     symbolState.entryReason = candidate.entryReason;
     symbolState.holdStartTs = now;
 
     if (!confirmed) {
       this.recordNoEntryReason(symbolState, {
-        code: 'SIGNAL_COUNTER_NOT_MET',
-        message: 'Signal counter threshold not met.',
+        code: 'SIGNAL_COUNTER_OUT_OF_RANGE',
+        message: `Signal counter out of range (${minCount}-${maxCount}).`,
         value: signalCount24h,
-        threshold: this.state.config.signalCounterThreshold
+        threshold: minCount
       });
       this.persistSnapshot();
       return;
@@ -1652,6 +1708,9 @@ export class BotEngine {
     }
     if (entry.code === 'NO_CONTINUATION') {
       return `${entry.code} (confirmZ=${(gates?.confirmZ ?? 0).toFixed(3)}%; need >=${(this.state.config?.confirmMinContinuationPct ?? 0).toFixed(3)}%)`;
+    }
+    if (entry.code === 'SIGNAL_COUNTER_OUT_OF_RANGE') {
+      return `${entry.code} (current=${Math.floor(entry.value ?? 0)}, min=${this.state.config?.signalCounterMin ?? 1}, max=${this.state.config?.signalCounterMax ?? Number.MAX_SAFE_INTEGER})`;
     }
     const valuePart = typeof entry.value === 'number' ? ` value=${entry.value.toFixed(4)}` : '';
     const thresholdPart = typeof entry.threshold === 'number' ? ` thr=${entry.threshold}` : '';
