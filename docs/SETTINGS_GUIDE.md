@@ -180,8 +180,8 @@ All shipped presets have `autoTuneEnabled=true` by default.
 ## Guardrails defaults (default profile)
 
 - `maxActiveSymbols = 3`
-- `maxConsecutiveLosses = 3`
-- `dailyLossLimitUSDT = 10`
+- `maxConsecutiveLosses = 0`
+- `dailyLossLimitUSDT = 0`
 
 Starter profiles are auto-seeded when missing (without overwriting existing profile names):
 - `default`
@@ -215,11 +215,11 @@ Use shipped factory presets only:
 
 - `aggressive_1m` (speed-biased smoke run; use for 1–2h supervised checks):
   - More permissive gating to produce trade cycles quickly.
-  - Guardrails remain ON (`maxConsecutiveLosses`, `dailyLossLimitUSDT`, spread + staleness caps).
+  - Guardrails are OFF by default (`maxConsecutiveLosses=0`, `dailyLossLimitUSDT=0`); enable manually when needed. Spread + staleness caps remain active.
   - `signalCounterThreshold=2`, `entryOffsetPct=0.01`, `oiCandleThrPct>=0`.
 - `conservative_3m` (safety-biased unattended run):
   - Stricter confirmation and slower trend context (`trendTfMinutes=15`, smaller `maxActiveSymbols`).
-  - Conservative liquidity gates (`maxSpreadBps`, `maxTickStalenessMs`) and non-zero loss guardrails.
+  - Conservative liquidity gates (`maxSpreadBps`, `maxTickStalenessMs`) with loss guardrails left disabled by default.
   - `signalCounterThreshold>=2`, `entryOffsetPct=0.01`, `oiCandleThrPct>=0`.
 
 All operator presets are seeded only when missing profile names, so edited values are preserved across restarts/upgrades.

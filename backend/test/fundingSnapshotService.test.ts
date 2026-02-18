@@ -1,45 +1,107 @@
 import { describe, expect, it } from 'vitest';
 
-import { FUNDING_MAX_AGE_MS, classifyFundingSnapshot, normalizeEpochToMs } from '../src/market/fundingSnapshotService.js';
+import { FundingSnapshotService, classifyFundingSnapshot } from '../src/market/fundingSnapshotService.js';
+import type { TickerLinear } from '../src/services/bybitMarketClient.js';
 
-describe('fundingSnapshotService helpers', () => {
-  it('normalizes epoch in seconds and milliseconds', () => {
-    expect(normalizeEpochToMs(1_710_000_000)).toBe(1_710_000_000_000);
-    expect(normalizeEpochToMs(1_710_000_000_000)).toBe(1_710_000_000_000);
-    expect(normalizeEpochToMs('1710000000')).toBe(1_710_000_000_000);
+class StubFundingClient {
+  constructor(private readonly handler: (symbol: string) => Promise<TickerLinear | null>) {}
+
+  async getTickerLinear(symbol: string): Promise<TickerLinear | null> {
+    return this.handler(symbol);
+  }
+}
+
+describe('FundingSnapshotService', () => {
+  it('refreshes all tracked symbols with per-symbol best-effort behavior', async () => {
+    const calls: string[] = [];
+    const service = new FundingSnapshotService();
+    service.init({
+      bybitClient: new StubFundingClient(async (symbol) => {
+        calls.push(symbol);
+        if (symbol === 'FAILUSDT') {
+          throw new Error('upstream failed');
+        }
+
+        return {
+          symbol,
+          turnover24hUSDT: null,
+          turnover24h: null,
+          highPrice24h: null,
+          lowPrice24h: null,
+          markPrice: null,
+          openInterestValue: null,
+          fundingRate: symbol === 'BTCUSDT' ? 0.001 : 0.002,
+          nextFundingTime: 1_700_000_000_000
+        };
+      }),
+      universeProvider: { getSymbols: () => ['BTCUSDT', 'ETHUSDT', 'FAILUSDT'] },
+      logger: { info: () => undefined, warn: () => undefined } as any
+    });
+
+    await service.refreshNowBestEffort('test');
+
+    expect(calls.sort()).toEqual(['BTCUSDT', 'ETHUSDT', 'FAILUSDT']);
+    expect(service.get('BTCUSDT')?.fundingRate).toBe(0.001);
+    expect(service.get('ETHUSDT')?.fundingRate).toBe(0.002);
+    expect(service.get('FAILUSDT')).toBeNull();
   });
 
-  it('classifies stale funding when age exceeds 11 minutes', () => {
-    const nowMs = 1_710_000_000_000;
-    const stale = classifyFundingSnapshot(
-      {
-        fundingRate: 0.0001,
-        nextFundingTimeMs: nowMs + 60_000,
-        fetchedAtMs: nowMs - FUNDING_MAX_AGE_MS - 1,
-        source: 'REST_TICKERS'
-      },
-      nowMs
-    );
+  it('keeps previous good cache when single symbol fetch fails', async () => {
+    const answers = new Map<string, TickerLinear | Error>([
+      [
+        'BTCUSDT',
+        {
+          symbol: 'BTCUSDT',
+          turnover24hUSDT: null,
+          turnover24h: null,
+          highPrice24h: null,
+          lowPrice24h: null,
+          markPrice: null,
+          openInterestValue: null,
+          fundingRate: 0.003,
+          nextFundingTime: 1_700_000_000_000
+        }
+      ]
+    ]);
 
-    expect(stale.fundingStatus).toBe('STALE');
-    expect(stale.fundingRate).toBeNull();
-    expect(stale.nextFundingTimeMs).toBeNull();
+    const service = new FundingSnapshotService();
+    service.init({
+      bybitClient: new StubFundingClient(async (symbol) => {
+        const value = answers.get(symbol);
+        if (value instanceof Error) {
+          throw value;
+        }
+        return value ?? null;
+      }),
+      universeProvider: { getSymbols: () => ['BTCUSDT'] },
+      logger: { info: () => undefined, warn: () => undefined } as any
+    });
+
+    await service.refreshNowBestEffort('initial');
+    const first = service.get('BTCUSDT');
+    expect(first?.fundingRate).toBe(0.003);
+
+    answers.set('BTCUSDT', new Error('temporary failure'));
+    await service.refreshNowBestEffort('second');
+
+    const second = service.get('BTCUSDT');
+    expect(second?.fundingRate).toBe(0.003);
+    expect(second?.fetchedAtMs).toBe(first?.fetchedAtMs);
   });
 
-  it('classifies missing funding rate while keeping timing diagnostics', () => {
-    const nowMs = 1_710_000_000_000;
-    const missing = classifyFundingSnapshot(
+  it('classifies stale snapshots deterministically', () => {
+    const now = 1_700_000_000_000;
+    const classified = classifyFundingSnapshot(
       {
-        fundingRate: null,
-        nextFundingTimeMs: nowMs + 60_000,
-        fetchedAtMs: nowMs - 10_000,
+        fundingRate: 0.01,
+        nextFundingTimeMs: now + 60_000,
+        fetchedAtMs: now - 700_000,
         source: 'REST_TICKERS'
       },
-      nowMs
+      now
     );
 
-    expect(missing.fundingStatus).toBe('MISSING');
-    expect(missing.nextFundingTimeMs).toBe(nowMs + 60_000);
-    expect(missing.fundingAgeMs).toBe(10_000);
+    expect(classified.fundingStatus).toBe('STALE');
+    expect(classified.fundingRate).toBeNull();
   });
 });

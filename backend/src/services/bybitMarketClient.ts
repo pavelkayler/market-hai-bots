@@ -31,6 +31,7 @@ export type TickerLinear = {
 export interface IBybitMarketClient {
   getInstrumentsLinearAll(): Promise<InstrumentLinear[]>;
   getTickersLinear(): Promise<Map<string, TickerLinear>>;
+  getTickerLinear(symbol: string): Promise<TickerLinear | null>;
 }
 
 export type BybitApiErrorCode = 'TIMEOUT' | 'UNREACHABLE' | 'AUTH_ERROR' | 'RATE_LIMIT' | 'BAD_RESPONSE' | 'PARSE_ERROR';
@@ -114,33 +115,53 @@ export class BybitMarketClient implements IBybitMarketClient {
     const map = new Map<string, TickerLinear>();
 
     for (const row of json.result?.list ?? []) {
-      if (!row || typeof row !== 'object') {
+      const ticker = this.parseTickerLinear(row);
+      if (!ticker) {
         continue;
       }
-
-      const symbol = typeof (row as { symbol?: unknown }).symbol === 'string' ? (row as { symbol: string }).symbol : null;
-      if (!symbol) {
-        continue;
-      }
-
-      map.set(symbol, {
-        symbol,
-        turnover24hUSDT:
-          parseNumber((row as { turnover24h?: unknown }).turnover24h) ??
-          parseNumber((row as { turnover24hValue?: unknown }).turnover24hValue),
-        turnover24h:
-          parseNumber((row as { turnover24h?: unknown }).turnover24h) ??
-          parseNumber((row as { turnover24hValue?: unknown }).turnover24hValue),
-        highPrice24h: parseNumber((row as { highPrice24h?: unknown }).highPrice24h),
-        lowPrice24h: parseNumber((row as { lowPrice24h?: unknown }).lowPrice24h),
-        markPrice: parseNumber((row as { markPrice?: unknown }).markPrice),
-        openInterestValue: parseNumber((row as { openInterestValue?: unknown }).openInterestValue),
-        fundingRate: parseNumber((row as { fundingRate?: unknown }).fundingRate),
-        nextFundingTime: parseNumber((row as { nextFundingTime?: unknown }).nextFundingTime)
-      });
+      map.set(ticker.symbol, ticker);
     }
 
     return map;
+  }
+
+  async getTickerLinear(symbol: string): Promise<TickerLinear | null> {
+    const query = new URLSearchParams({ category: 'linear', symbol });
+    const json = await this.get<BybitListResponse>(`/v5/market/tickers?${query.toString()}`);
+
+    if (json.retCode !== 0) {
+      throw this.errorFromRetCode('Bybit ticker failed', json.retCode, json.retMsg);
+    }
+
+    const row = json.result?.list?.[0];
+    return this.parseTickerLinear(row);
+  }
+
+  private parseTickerLinear(row: unknown): TickerLinear | null {
+    if (!row || typeof row !== 'object') {
+      return null;
+    }
+
+    const symbol = typeof (row as { symbol?: unknown }).symbol === 'string' ? (row as { symbol: string }).symbol : null;
+    if (!symbol) {
+      return null;
+    }
+
+    return {
+      symbol,
+      turnover24hUSDT:
+        parseNumber((row as { turnover24h?: unknown }).turnover24h) ??
+        parseNumber((row as { turnover24hValue?: unknown }).turnover24hValue),
+      turnover24h:
+        parseNumber((row as { turnover24h?: unknown }).turnover24h) ??
+        parseNumber((row as { turnover24hValue?: unknown }).turnover24hValue),
+      highPrice24h: parseNumber((row as { highPrice24h?: unknown }).highPrice24h),
+      lowPrice24h: parseNumber((row as { lowPrice24h?: unknown }).lowPrice24h),
+      markPrice: parseNumber((row as { markPrice?: unknown }).markPrice),
+      openInterestValue: parseNumber((row as { openInterestValue?: unknown }).openInterestValue),
+      fundingRate: parseNumber((row as { fundingRate?: unknown }).fundingRate),
+      nextFundingTime: parseNumber((row as { nextFundingTime?: unknown }).nextFundingTime)
+    };
   }
 
   private async get<T>(path: string): Promise<T> {
