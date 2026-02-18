@@ -1,4 +1,5 @@
-import { buildServer } from './server.js';
+import { buildServer, getRuntimeHandles } from './server.js';
+import { registerHandlers } from './services/shutdownManager.js';
 
 const app = buildServer();
 
@@ -10,6 +11,16 @@ const isDemoConfigured = (): boolean => {
 
 const start = async (): Promise<void> => {
   try {
+    const runtime = getRuntimeHandles(app);
+    const unregisterShutdownHandlers = registerHandlers({
+      ...runtime,
+      logger: app.log
+    });
+
+    app.addHook('onClose', async () => {
+      unregisterShutdownHandlers();
+    });
+
     await app.ready();
     app.log.info(
       {

@@ -51,6 +51,38 @@ Percent convention: **`3` means `3%`** (not `0.03`).
 - `POST /api/bot/stats/reset`
 - `POST /api/reset/all`
 - `POST /api/bot/clearAllTables` (alias of reset-all)
+- `GET /api/doctor`
+
+### `GET /api/doctor`
+Deterministic operational checks report (best-effort, never 500 by design).
+
+Response shape:
+```json
+{
+  "ok": true,
+  "ts": 0,
+  "version": { "commit": "<optional>", "node": "v22.x" },
+  "checks": [
+    {
+      "id": "ws_freshness",
+      "status": "PASS",
+      "message": "market feed fresh (1200ms)",
+      "details": {}
+    }
+  ],
+  "warnings": []
+}
+```
+
+Stable check ids:
+- `ws_freshness`
+- `market_age_per_symbol`
+- `run_recording_status`
+- `filesystem_writable`
+- `lifecycle_invariants`
+- `universe_contract_filter`
+
+`status` values are `PASS | WARN | FAIL`. Payloads are additive; `details` fields may expand over time.
 
 ### Lifecycle + invariants
 - Active symbols are only `ENTRY_PENDING` or `POSITION_OPEN`.
@@ -85,6 +117,7 @@ Journal entry shape:
 - Additive response header: `X-Export-Included` (comma-separated file members actually included in this export)
 - Always includes: `meta.json`
 - Optional files included only when present: `universe.json`, `profiles.json`, `runtime.json`, `journal.ndjson`
+- Optional files may include `doctor.json` (snapshot of `/api/doctor` at export time).
 - Missing optional files do not fail export; they are listed in `meta.json.notes`
 - `meta.json` includes `createdAt`, `appVersion`, `notes[]`, `paths`, optional `counts`
 

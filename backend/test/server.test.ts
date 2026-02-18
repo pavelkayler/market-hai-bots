@@ -300,11 +300,28 @@ describe('server routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('application/zip');
     expect(response.headers['content-disposition']).toContain('attachment; filename="export-pack_');
-    expect(response.headers['x-export-included']).toContain('universe.json,profiles.json,runtime.json,journal.ndjson,meta.json');
+    const includedHeader = String(response.headers['x-export-included'] ?? '');
+    expect(includedHeader).toContain('universe.json');
+    expect(includedHeader).toContain('profiles.json');
+    expect(includedHeader).toContain('runtime.json');
+    expect(includedHeader).toContain('journal.ndjson');
+    expect(includedHeader).toContain('doctor.json');
+    expect(includedHeader).toContain('meta.json');
 
     const zip = await JSZip.loadAsync(response.rawPayload);
     const names = Object.keys(zip.files).sort();
-    expect(names).toEqual(['journal.ndjson', 'latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'latest-run/stats.json', 'meta.json', 'profiles.json', 'runtime.json', 'universe.json']);
+    expect(names).toEqual([
+      'doctor.json',
+      'journal.ndjson',
+      'latest-run/',
+      'latest-run/events.ndjson',
+      'latest-run/meta.json',
+      'latest-run/stats.json',
+      'meta.json',
+      'profiles.json',
+      'runtime.json',
+      'universe.json'
+    ]);
 
     const metaRaw = await zip.file('meta.json')?.async('string');
     const meta = JSON.parse(metaRaw ?? '{}') as {
@@ -344,7 +361,7 @@ describe('server routes', () => {
 
     const zip = await JSZip.loadAsync(response.rawPayload);
     const names = Object.keys(zip.files).sort();
-    expect(names).toEqual(['latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'latest-run/stats.json', 'meta.json', 'profiles.json', 'universe.json']);
+    expect(names).toEqual(['doctor.json', 'latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'latest-run/stats.json', 'meta.json', 'profiles.json', 'universe.json']);
 
     const metaRaw = await zip.file('meta.json')?.async('string');
     const meta = JSON.parse(metaRaw ?? '{}') as { notes: string[] };
@@ -636,28 +653,19 @@ describe('server routes', () => {
 
 
 
-  it('GET /api/doctor returns diagnostics shape without secrets', async () => {
+  it('GET /api/doctor returns doctor report checks', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/doctor' });
 
     expect(response.statusCode).toBe(200);
-    const body = response.json() as Record<string, unknown> & {
-      market: { tickHandlersMsAvg: number; wsClients: number; wsFramesPerSec: number };
-      bot: { evalsPerSec: number };
-    };
-    expect(body.ok).toBe(true);
-    expect(body).toHaveProperty('serverTime');
-    expect(body).toHaveProperty('uptimeSec');
-    expect(body).toHaveProperty('version');
-    expect(body).toHaveProperty('universe');
-    expect(body).toHaveProperty('market');
-    expect(body).toHaveProperty('bot');
-    expect(body).toHaveProperty('replay');
-    expect(body).toHaveProperty('journal');
-    expect(body).toHaveProperty('demo');
-    expect(body.market.tickHandlersMsAvg).toBeGreaterThanOrEqual(0);
-    expect(body.market.wsClients).toBeGreaterThanOrEqual(0);
-    expect(body.market.wsFramesPerSec).toBeGreaterThanOrEqual(0);
-    expect(body.bot.evalsPerSec).toBeGreaterThanOrEqual(0);
+    const body = response.json() as Record<string, unknown> & { checks: Array<{ id: string; status: string }> };
+    expect(body).toHaveProperty('ok');
+    expect(body).toHaveProperty('ts');
+    expect(body).toHaveProperty('checks');
+    expect(Array.isArray(body.checks)).toBe(true);
+    expect(body.checks.length).toBeGreaterThan(0);
+    const checkIds = body.checks.map((check) => check.id);
+    expect(checkIds).toContain('ws_freshness');
+    expect(checkIds).toContain('lifecycle_invariants');
     expect(JSON.stringify(body)).not.toContain('DEMO_API_SECRET');
   });
 

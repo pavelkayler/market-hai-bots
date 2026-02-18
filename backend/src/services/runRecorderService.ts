@@ -5,6 +5,7 @@ export type RunSummary = { id: string; startedAt: string; hasMeta: boolean; hasE
 
 export class RunRecorderService {
   private currentRunDir: string | null = null;
+  private lastWriteError: string | null = null;
 
   constructor(private readonly baseDir = path.resolve(process.cwd(), 'data/runs')) {}
 
@@ -16,8 +17,10 @@ export class RunRecorderService {
       await writeFile(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
       await writeFile(path.join(runDir, 'events.ndjson'), '', 'utf-8');
       this.currentRunDir = runDir;
+      this.lastWriteError = null;
       return { runId, runDir };
-    } catch {
+    } catch (error) {
+      this.lastWriteError = (error as Error).message;
       return null;
     }
   }
@@ -26,7 +29,9 @@ export class RunRecorderService {
     if (!this.currentRunDir) return;
     try {
       await writeFile(path.join(this.currentRunDir, 'events.ndjson'), `${JSON.stringify(event)}\n`, { encoding: 'utf-8', flag: 'a' });
-    } catch {
+      this.lastWriteError = null;
+    } catch (error) {
+      this.lastWriteError = (error as Error).message;
       // swallow write failures
     }
   }
@@ -35,7 +40,9 @@ export class RunRecorderService {
     if (!this.currentRunDir) return;
     try {
       await writeFile(path.join(this.currentRunDir, 'stats.json'), JSON.stringify(stats, null, 2), 'utf-8');
-    } catch {
+      this.lastWriteError = null;
+    } catch (error) {
+      this.lastWriteError = (error as Error).message;
       // swallow write failures
     }
   }
@@ -97,5 +104,13 @@ export class RunRecorderService {
 
   getCurrentRunDir(): string | null {
     return this.currentRunDir;
+  }
+
+  getBaseDir(): string {
+    return this.baseDir;
+  }
+
+  getLastWriteError(): string | null {
+    return this.lastWriteError;
   }
 }

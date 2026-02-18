@@ -1,6 +1,19 @@
 # RC Doctor Checklist
 
+## Single command report
+- Run `npm run rc:doctor`.
+- Default endpoint: `http://localhost:8080/api/doctor`.
+- Override endpoint with `RC_BASE_URL` (or `API_BASE_URL`).
+- Exit code semantics:
+  - `0`: no `FAIL` checks.
+  - `1`: any `FAIL` check or endpoint unreachable.
+
+Output includes:
+- overall `ok`
+- one line per check: `PASS|WARN|FAIL <id> - <message>`
+
 ## API quick checks
+- `GET /api/doctor`: deterministic PASS/WARN/FAIL checks for market freshness, lifecycle invariants, run recording, filesystem writeability, and universe contract filter health.
 - `GET /api/universe`: confirms contract filter remains `USDT_LINEAR_PERPETUAL_ONLY` and surface `excluded` list.
 - `GET /api/bot/state`: verify lifecycle and `pauseReason` consistency.
 - `GET /api/bot/stats`: verify guardrail counters/reason, accounting fields, and per-symbol stats.

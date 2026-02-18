@@ -9,6 +9,7 @@
     "backend:typecheck": "npm --prefix backend run typecheck",
     "test": "npm --prefix backend test",
     "build:frontend": "npm --prefix frontend run build",
+    "rc:doctor": "node scripts/rc-doctor.mjs",
     "rc:check": "npm run backend:typecheck && npm test && npm run build:frontend",
     "rc:smoke": "npm run rc:check && node scripts/rc-smoke.mjs"
   },
