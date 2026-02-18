@@ -55,6 +55,7 @@ export class DemoTradeClient implements IDemoTradeClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly apiSecret: string;
+  private positionModeHint: 'hedge' | 'oneway' = 'hedge';
 
   constructor(options?: { baseUrl?: string; apiKey?: string; apiSecret?: string }) {
     this.baseUrl = options?.baseUrl ?? process.env.BYBIT_DEMO_REST ?? 'https://api-demo.bybit.com';
@@ -80,9 +81,14 @@ export class DemoTradeClient implements IDemoTradeClient {
         positionIdx
       });
 
-    let json = await this.post('/v5/order/create', buildBody(params.positionIdx ?? 0));
-    if (json.retCode === 10001) {
-      json = await this.post('/v5/order/create', buildBody(params.side === 'Buy' ? 1 : 2));
+    const preferredPositionIdx = params.positionIdx ?? this.getPreferredPositionIdx(params.side);
+    let json = await this.post('/v5/order/create', buildBody(preferredPositionIdx));
+
+    if (json.retCode === 10001 && preferredPositionIdx !== 0) {
+      json = await this.post('/v5/order/create', buildBody(0));
+      if (json.retCode === 0) {
+        this.positionModeHint = 'oneway';
+      }
     }
 
     if (json.retCode !== 0 || !json.result?.orderId || !json.result.orderLinkId) {
@@ -165,10 +171,14 @@ export class DemoTradeClient implements IDemoTradeClient {
         positionIdx
       });
 
-    let json = await this.post('/v5/order/create', buildBody(params.positionIdx ?? 0));
-    if (json.retCode === 10001) {
-      const retryPositionIdx = params.positionIdx ?? (params.side === 'Sell' ? 1 : 2);
-      json = await this.post('/v5/order/create', buildBody(retryPositionIdx));
+    const preferredPositionIdx = params.positionIdx ?? this.getPreferredClosePositionIdx(params.side);
+    let json = await this.post('/v5/order/create', buildBody(preferredPositionIdx));
+
+    if (json.retCode === 10001 && preferredPositionIdx !== 0) {
+      json = await this.post('/v5/order/create', buildBody(0));
+      if (json.retCode === 0) {
+        this.positionModeHint = 'oneway';
+      }
     }
 
     if (json.retCode !== 0) {
@@ -205,7 +215,23 @@ export class DemoTradeClient implements IDemoTradeClient {
     }
   }
 
-  private async post(path: string, body: string): Promise<BybitV5Response> {
+  private getPreferredPositionIdx(side: 'Buy' | 'Sell'): number {
+    if (this.positionModeHint === 'oneway') {
+      return 0;
+    }
+
+    return side === 'Buy' ? 1 : 2;
+  }
+
+  private getPreferredClosePositionIdx(side: 'Buy' | 'Sell'): number {
+    if (this.positionModeHint === 'oneway') {
+      return 0;
+    }
+
+    return side === 'Sell' ? 1 : 2;
+  }
+
+  protected async post(path: string, body: string): Promise<BybitV5Response> {
     const response = await request(`${this.baseUrl}${path}`, {
       method: 'POST',
       body,

@@ -10,9 +10,21 @@ export type TickerUpdate = {
   lastTickTs?: number;
 };
 
+export type TickerStreamStatus = {
+  running: boolean;
+  connected: boolean;
+  desiredSymbolsCount: number;
+  subscribedCount: number;
+  lastMessageAt: number | null;
+  lastTickerAt: number | null;
+  reconnectCount: number;
+  lastError: string | null;
+};
+
 export interface TickerStream {
   start(): Promise<void>;
   stop(): Promise<void>;
   setSymbols(symbols: string[]): Promise<void>;
   onTicker(handler: (update: TickerUpdate) => void): () => void;
+  getStatus?(): TickerStreamStatus;
 }

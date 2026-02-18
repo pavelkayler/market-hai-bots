@@ -13,7 +13,7 @@
 
 ## Demo trading (REST)
 - Base: `https://api-demo.bybit.com`
-- Place: `POST /v5/order/create` (LIMIT + attached TP/SL, tries `positionIdx=0` first; retries on `retCode=10001` with hedge index)
+- Place: `POST /v5/order/create` (LIMIT + attached TP/SL, demo defaults to hedge mode mapping first: `Buy->1`, `Sell->2`; falls back to `positionIdx=0` on `retCode=10001`)
 - Cancel: `POST /v5/order/cancel`
 - Open orders polling: `GET /v5/order/realtime?category=linear&symbol=...`
 - Closed PnL lookup (best-effort accounting): `GET /v5/position/closed-pnl?category=linear&symbol=...&limit=3`
@@ -33,6 +33,7 @@ Parsing is locked by fixtures in `backend/test/fixtures/bybit` to prevent regres
 
 
 ### Hedge mode compatibility
-- Demo create and demo market-close submit `positionIdx=0` first (one-way safe).
-- On `retCode=10001` (position mode mismatch), requests retry once with hedge index: create uses side mapping (`Buy->1`, `Sell->2`); close uses reduce-only mapping (`Sell->1` to close long, `Buy->2` to close short).
+- DEMO accounts are treated as **hedge-mode by default** to avoid avoidable first-attempt mismatch errors.
+- Create orders: first attempt uses hedge mapping (`Buy->1`, `Sell->2`); on `retCode=10001` fallback retries once with `positionIdx=0` and caches one-way hint.
+- Close orders: first attempt uses reduce-only hedge mapping (`Sell->1` closes long, `Buy->2` closes short); same safe one-way fallback is applied.
 - Close accounting is best-effort: closed-pnl endpoint is used when available; fallback is mark-price math when unavailable.

@@ -19,7 +19,7 @@ import { JournalService, type JournalEntry } from './services/journalService.js'
 import { ProfileService } from './services/profileService.js';
 import { RunRecorderService } from './services/runRecorderService.js';
 import { AutoTuneService } from './services/autoTuneService.js';
-import { planAutoTuneChange } from './services/autoTunePlanner.js';
+import { AUTO_TUNE_BOUNDS, planAutoTuneChange } from './services/autoTunePlanner.js';
 import { DoctorService } from './services/doctorService.js';
 import { RunHistoryService } from './services/runHistoryService.js';
 import { RunEventsService } from './services/runEventsService.js';
@@ -299,6 +299,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     },
     getMarketStates: () => marketHub.getAllStates(),
     getTrackedSymbols: () => botEngine.getRuntimeSymbols(),
+    getTickerStreamStatus: () => marketHub.getTickerStreamStatus(),
     getUniverseState: () => universeService.get(),
     getCurrentRunDir: () => runRecorder.getCurrentRunDir(),
     getRunRecorderLastWriteError: () => runRecorder.getLastWriteError(),
@@ -420,7 +421,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
               currentConfig,
               autoTuneScope: tuneState.scope,
               recentRuns,
-              currentBotStats: botEngine.getStats()
+              currentBotStats: botEngine.getStats(),
+              nowMs: Date.now(),
+              plannerMode: currentConfig.autoTunePlannerMode ?? 'DETERMINISTIC'
             });
 
             if (!plan) {
@@ -436,7 +439,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
                 before: plan.before,
                 after: plan.after,
                 reason: plan.reason,
-                bounds: { min: 0, max: Number.MAX_SAFE_INTEGER }
+                bounds: { min: AUTO_TUNE_BOUNDS[plan.parameter].min, max: AUTO_TUNE_BOUNDS[plan.parameter].max }
               });
 
               await appendOpsJournalEvent('AUTO_TUNE_APPLIED', {

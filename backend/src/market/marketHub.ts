@@ -1,5 +1,5 @@
 import { RealBybitWsTickerStream } from './realBybitWsTickerStream.js';
-import type { TickerStream, TickerUpdate } from './tickerStream.js';
+import type { TickerStream, TickerUpdate, TickerStreamStatus } from './tickerStream.js';
 
 export type MarketState = {
   markPrice: number;
@@ -82,6 +82,19 @@ export class MarketHub {
 
   getSubscribedCount(): number {
     return this.subscribedSymbols.size;
+  }
+
+  getTickerStreamStatus(): TickerStreamStatus {
+    return this.tickerStream.getStatus?.() ?? {
+      running: this.running,
+      connected: this.running,
+      desiredSymbolsCount: this.subscribedSymbols.size,
+      subscribedCount: this.states.size,
+      lastMessageAt: null,
+      lastTickerAt: null,
+      reconnectCount: 0,
+      lastError: null
+    };
   }
 
   getUpdatesPerSecond(windowMs = 5000): number {

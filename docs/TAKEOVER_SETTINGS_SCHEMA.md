@@ -78,9 +78,10 @@
 
 ## Operator presets (from profiles)
 - `default` — базовый paper профиль.
-- `fast_test_1m` — ускоренный 1m smoke-style.
-- `overnight_1m_safe` — более консервативный overnight.
-- `smoke_min_1m` / `smoke_min_thresholds_1m` — минимальные smoke thresholds.
+- `aggressive_1m/3m/5m` — более частые входы.
+- `balanced_1m/3m/5m` — компромисс trade frequency/quality.
+- `conservative_1m/3m/5m` — более строгие пороги.
+- `skip_most_trades` — intentionally strict preset for near-zero entry cadence.
 
 ## How to verify
 1. Проверить normalization bounds через unit tests:

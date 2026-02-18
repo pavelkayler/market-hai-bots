@@ -53,6 +53,7 @@ export type BotConfig = {
   minNotionalUSDT: number;
   autoTuneEnabled: boolean;
   autoTuneScope: AutoTuneScope;
+  autoTunePlannerMode?: 'DETERMINISTIC' | 'RANDOM_EXPLORE';
   paperEntrySlippageBps?: number;
   paperExitSlippageBps?: number;
   paperPartialFillPct?: number;
@@ -377,6 +378,7 @@ const DEFAULT_SIGNAL_COUNTER_MIN = DEFAULT_SIGNAL_COUNTER_THRESHOLD;
 const DEFAULT_SIGNAL_COUNTER_MAX = Number.MAX_SAFE_INTEGER;
 const DEFAULT_AUTO_TUNE_ENABLED = false;
 const DEFAULT_AUTO_TUNE_SCOPE: AutoTuneScope = 'GLOBAL';
+const DEFAULT_AUTO_TUNE_PLANNER_MODE: 'DETERMINISTIC' | 'RANDOM_EXPLORE' = 'DETERMINISTIC';
 const DEFAULT_OI_UP_THR_PCT = 50;
 const DEFAULT_OI_CANDLE_THR_PCT = 0;
 const DEFAULT_MAX_ACTIVE_SYMBOLS = 3;
@@ -514,6 +516,7 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     typeof raw.minNotionalUSDT === 'number' && Number.isFinite(raw.minNotionalUSDT) ? Math.max(0, raw.minNotionalUSDT) : DEFAULT_MIN_NOTIONAL_USDT;
   const autoTuneEnabled = typeof raw.autoTuneEnabled === 'boolean' ? raw.autoTuneEnabled : DEFAULT_AUTO_TUNE_ENABLED;
   const autoTuneScope = raw.autoTuneScope === 'UNIVERSE_ONLY' || raw.autoTuneScope === 'GLOBAL' ? raw.autoTuneScope : DEFAULT_AUTO_TUNE_SCOPE;
+  const autoTunePlannerMode = raw.autoTunePlannerMode === 'RANDOM_EXPLORE' ? 'RANDOM_EXPLORE' : DEFAULT_AUTO_TUNE_PLANNER_MODE;
   const paperEntrySlippageBps =
     typeof raw.paperEntrySlippageBps === 'number' && Number.isFinite(raw.paperEntrySlippageBps)
       ? Math.max(0, raw.paperEntrySlippageBps)
@@ -573,6 +576,7 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     minNotionalUSDT,
     autoTuneEnabled,
     autoTuneScope,
+    autoTunePlannerMode,
     paperEntrySlippageBps,
     paperExitSlippageBps,
     paperPartialFillPct
@@ -679,17 +683,33 @@ export class BotEngine {
 
 
 
-  applyConfigPatch(patch: Partial<Pick<BotConfig, 'priceUpThrPct' | 'oiUpThrPct' | 'impulseMaxAgeBars' | 'minNotionalUSDT' | 'maxSpreadBps' | 'maxTickStalenessMs'>>): BotConfig | null {
+  applyConfigPatch(patch: Partial<Pick<BotConfig, 'priceUpThrPct' | 'oiUpThrPct' | 'oiCandleThrPct' | 'signalCounterThreshold' | 'impulseMaxAgeBars' | 'minNotionalUSDT' | 'maxSpreadBps' | 'maxTickStalenessMs'>>): BotConfig | null {
     if (!this.state.config) {
+      return null;
+    }
+
+    for (const [key, value] of Object.entries(patch)) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return null;
+      }
+
+      if ((key === 'priceUpThrPct' || key === 'oiUpThrPct' || key === 'oiCandleThrPct' || key === 'signalCounterThreshold' || key === 'impulseMaxAgeBars' || key === 'minNotionalUSDT' || key === 'maxSpreadBps' || key === 'maxTickStalenessMs') && value < 0) {
+        return null;
+      }
+    }
+
+    const merged = normalizeBotConfig({
+      ...this.state.config,
+      ...patch
+    } as unknown as Record<string, unknown>);
+
+    if (!merged) {
       return null;
     }
 
     this.state = {
       ...this.state,
-      config: {
-        ...this.state.config,
-        ...patch
-      }
+      config: merged
     };
     this.persistSnapshot();
     return this.state.config;
@@ -839,7 +859,8 @@ export class BotEngine {
       signalCounterMin: config.signalCounterMin ?? config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN,
       signalCounterMax: config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX,
       autoTuneEnabled: config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED,
-      autoTuneScope: config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE
+      autoTuneScope: config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE,
+      autoTunePlannerMode: config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE
     };
     this.state = {
       ...this.state,
@@ -943,7 +964,7 @@ export class BotEngine {
       runningSinceTs: null,
       activeUptimeMs: snapshot.activeUptimeMs ?? 0,
       uptimeMs: 0,
-      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK, strategyMode: snapshot.config.strategyMode ?? DEFAULT_STRATEGY_MODE, signalCounterMin: snapshot.config.signalCounterMin ?? snapshot.config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN, signalCounterMax: snapshot.config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX, autoTuneEnabled: snapshot.config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED, autoTuneScope: snapshot.config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE } : null
+      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK, strategyMode: snapshot.config.strategyMode ?? DEFAULT_STRATEGY_MODE, signalCounterMin: snapshot.config.signalCounterMin ?? snapshot.config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN, signalCounterMax: snapshot.config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX, autoTuneEnabled: snapshot.config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED, autoTuneScope: snapshot.config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE, autoTunePlannerMode: snapshot.config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE } : null
     };
 
     this.perSymbolStats.clear();

@@ -43,6 +43,16 @@ type DoctorServiceDeps = {
   getBotState: () => BotLifecycleState;
   getMarketStates: () => Record<string, MarketStateLike>;
   getTrackedSymbols: () => string[];
+  getTickerStreamStatus?: () => {
+    running: boolean;
+    connected: boolean;
+    desiredSymbolsCount: number;
+    subscribedCount: number;
+    lastMessageAt: number | null;
+    lastTickerAt: number | null;
+    reconnectCount: number;
+    lastError: string | null;
+  };
   getUniverseState: () => Promise<UniverseStateLike | null>;
   getCurrentRunDir: () => string | null;
   getRunRecorderLastWriteError: () => string | null;
@@ -153,11 +163,26 @@ export class DoctorService {
       .filter((entry): entry is { symbol: string; state: MarketStateLike } => !!entry.state)
       .slice(0, 50);
 
+    const streamStatus = this.deps.getTickerStreamStatus?.();
+    const streamDetails = streamStatus
+      ? {
+          streamRunning: streamStatus.running,
+          streamConnected: streamStatus.connected,
+          desiredSymbolsCount: streamStatus.desiredSymbolsCount,
+          subscribedCount: streamStatus.subscribedCount,
+          lastMessageAt: streamStatus.lastMessageAt,
+          lastTickerAt: streamStatus.lastTickerAt,
+          reconnectCount: streamStatus.reconnectCount,
+          lastError: streamStatus.lastError
+        }
+      : {};
+
     if (measured.length === 0) {
       return {
         id: 'ws_freshness',
-        status: 'WARN',
-        message: 'no market feed active'
+        status: streamStatus?.running ? 'FAIL' : 'WARN',
+        message: streamStatus?.running ? 'market feed stream running but no ticker data' : 'no market feed active',
+        details: streamDetails
       };
     }
 
@@ -170,7 +195,7 @@ export class DoctorService {
         id: 'ws_freshness',
         status: 'FAIL',
         message: `market feed stale (${worstAgeMs}ms)`,
-        details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol) }
+        details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol), ...streamDetails }
       };
     }
 
@@ -179,7 +204,7 @@ export class DoctorService {
         id: 'ws_freshness',
         status: 'WARN',
         message: `market feed aging (${worstAgeMs}ms)`,
-        details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol) }
+        details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol), ...streamDetails }
       };
     }
 
@@ -187,7 +212,7 @@ export class DoctorService {
       id: 'ws_freshness',
       status: 'PASS',
       message: `market feed fresh (${worstAgeMs}ms)`,
-      details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol) }
+      details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol), ...streamDetails }
     };
   }
 

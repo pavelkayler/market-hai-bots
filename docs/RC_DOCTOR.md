@@ -47,3 +47,8 @@ Output includes:
 11. **Universe exclusions persistence**
    - STOP bot, add exclusion; verify `backend/data/universe-exclusions.json` updated and timestamp snapshot `backend/data/universe-exclusions-YYYYMMDD-HHMMSS.json` created.
    - Recreate/refresh universe and confirm excluded symbol remains out of effective tracked set.
+
+
+## ws_freshness details
+Doctor `ws_freshness` details now include stream diagnostics: `streamRunning`, `streamConnected`, `desiredSymbolsCount`, `subscribedCount`, `lastMessageAt`, `lastTickerAt`, `reconnectCount`, `lastError`.
+PASS expectation in normal conditions: worst symbol age within threshold and no long stale gap (>30s) in stream message/ticker timestamps.

@@ -74,12 +74,12 @@ type PerSymbolRow = BotPerSymbolStats & {
 
 const USE_ACTIVE_PROFILE_ON_START_KEY = 'bot.settings.useActiveProfileOnStart.v1';
 
-type BotPageTab = 'dashboard' | 'settings' | 'runs' | 'journal' | 'log' | 'perSymbolPerformance' | 'entryReasons';
+type BotPageTab = 'dashboard' | 'settings' | 'runs' | 'journal' | 'log' | 'perSymbolPerformance';
 
 function loadBotPageTab(): BotPageTab {
   try {
     const stored = localStorage.getItem(BOT_TAB_KEY);
-    if (stored === 'settings' || stored === 'runs' || stored === 'journal' || stored === 'log' || stored === 'perSymbolPerformance' || stored === 'entryReasons') {
+    if (stored === 'settings' || stored === 'runs' || stored === 'journal' || stored === 'log' || stored === 'perSymbolPerformance') {
       return stored;
     }
     return 'dashboard';
@@ -225,7 +225,7 @@ export function BotPage({
   const [autoTuneState, setAutoTuneState] = useState<AutoTuneRuntimeState>({ enabled: false, scope: 'GLOBAL', lastApplied: null });
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>('default');
-  const [activeProfile, setActiveProfile] = useState<string>('default');
+  const [activeProfile, setActiveProfileState] = useState<string>('default');
   const [useActiveProfileOnStart, setUseActiveProfileOnStart] = useState<boolean>(loadUseActiveProfileOnStart());
   const [status, setStatus] = useState<string>('');
   const [isExportingPack, setIsExportingPack] = useState(false);
@@ -361,7 +361,7 @@ export function BotPage({
     const state = await getProfiles();
     setProfileNames(state.names);
     setSelectedProfile((current) => (state.names.includes(current) ? current : state.activeProfile));
-    setActiveProfile(state.activeProfile);
+    setActiveProfileState(state.activeProfile);
   }, []);
 
   useEffect(() => {
@@ -473,23 +473,6 @@ export function BotPage({
     }
   };
 
-  const handleQuickApplyProfile = async (name: string) => {
-    setError('');
-    try {
-      const response = await getProfile(name);
-      persistSettings(response.config);
-      await saveProfile(name, response.config);
-      await refreshProfiles();
-      setSelectedProfile(name);
-      if (name === 'smoke_min_1m') {
-        setMinTurnover(1_000_000);
-        setMinVolPct(1);
-      }
-      setStatus(`Quick-applied profile: ${name}`);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
 
   const handleSaveProfile = async (name: string, withConfirm = false) => {
     setError('');
@@ -1053,7 +1036,6 @@ export function BotPage({
 
 
   const showPerSymbolTab = activeTab === 'perSymbolPerformance';
-  const showEntryReasonsTab = activeTab === 'entryReasons';
   const showRunsTab = activeTab === 'runs';
   const showJournalTab = activeTab === 'journal';
   const showLogTab = activeTab === 'log';
@@ -1084,7 +1066,6 @@ export function BotPage({
           <Tab eventKey="journal" title="Journal" />
           <Tab eventKey="log" title="Log" />
           <Tab eventKey="perSymbolPerformance" title="Per-symbol performance" />
-          <Tab eventKey="entryReasons" title="Entry reasons" />
         </Tabs>
       </Col>
       {activeTab === 'dashboard' ? (
@@ -1496,23 +1477,6 @@ export function BotPage({
                       <Button size="sm" variant="outline-secondary" onClick={() => profileUploadInputRef.current?.click()}>
                         Import
                       </Button>
-                      <Button size="sm" variant="outline-info" onClick={() => void handleQuickApplyProfile('fast_test_1m')} disabled={!profileNames.includes('fast_test_1m') || disableSettings}>
-                        Apply fast_test_1m
-                      </Button>
-                      <Button size="sm" variant="outline-info" onClick={() => void handleQuickApplyProfile('overnight_1m_safe')} disabled={!profileNames.includes('overnight_1m_safe') || disableSettings}>
-                        Apply overnight_1m_safe
-                      </Button>
-                      <Button size="sm" variant="outline-info" onClick={() => void handleQuickApplyProfile('smoke_min_1m')} disabled={!profileNames.includes('smoke_min_1m') || disableSettings}>
-                        Apply smoke_min_1m
-                      </Button>
-                      <input
-                        ref={profileUploadInputRef}
-                        type="file"
-                        accept="application/json,.json"
-                        onChange={(event) => void handleImportProfilesFile(event)}
-                        style={{ display: 'none' }}
-                      />
-                    <div className="small text-muted mt-2">Smoke preset is for lifecycle validation; may be unprofitable due to fees/slippage.</div>
                     </div>
                   </Col>
                 </Row>
@@ -1918,34 +1882,9 @@ export function BotPage({
           </Card.Body>
         </Card>
 
-        {showEntryReasonsTab ? (
-        <>
-        <Card className="mb-3">
-          <Card.Header>No entry reasons (top)</Card.Header>
-          <Card.Body>
-            {noEntryRows.length === 0 ? <div className="text-muted">No no-entry reasons yet.</div> : null}
-            {noEntryRows.map((row) => (
-              <div key={`reasons-${row.symbol}`} className="mb-2">
-                <strong>{row.symbol}</strong>: <span title={(row.topReasons ?? []).slice(0, 3).map((reason) => `${reason.code}${typeof reason.value === 'number' ? ` value=${reason.value.toFixed(3)}` : ''}${typeof reason.threshold === 'number' ? ` threshold=${reason.threshold}` : ''}`).join(' | ')}>{(row.topReasons ?? []).slice(0, 3).map((reason) => `${reason.code}${typeof reason.value === 'number' ? `=${reason.value.toFixed(3)}` : ''}${typeof reason.threshold === 'number' ? ` (thr ${reason.threshold})` : ''}`).join(', ')}</span>
-              </div>
-            ))}
-          </Card.Body>
-        </Card>
 
-        <Card className="mb-3">
-          <Card.Header>Top entry reasons (confirmed)</Card.Header>
-          <Card.Body>
-            <div>Long continuation: {botStats.reasonCounts.LONG_CONTINUATION}</div>
-            <div>Short continuation: {botStats.reasonCounts.SHORT_CONTINUATION}</div>
-            <div>Short divergence: {botStats.reasonCounts.SHORT_DIVERGENCE}</div>
-            <hr />
-            <div>Confirmed signals: {botStats.signalsConfirmed} (Long {botStats.signalsBySide.long} / Short {botStats.signalsBySide.short})</div>
-            <div>By reason — LONG_CONTINUATION: {botStats.signalsByEntryReason.LONG_CONTINUATION}, SHORT_CONTINUATION: {botStats.signalsByEntryReason.SHORT_CONTINUATION}, SHORT_DIVERGENCE: {botStats.signalsByEntryReason.SHORT_DIVERGENCE}</div>
-            <div>BOTH ties ({botStats.bothTieBreakMode}): hadBoth {botStats.bothHadBothCount}, chosen long {botStats.bothChosenLongCount}, chosen short {botStats.bothChosenShortCount}</div>
-          </Card.Body>
-        </Card>
-        </>
-        ) : null}
+
+
 
         <Card>
           <Card.Header>Orders</Card.Header>
