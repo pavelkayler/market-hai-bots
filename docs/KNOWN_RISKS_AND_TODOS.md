@@ -3,10 +3,10 @@
 Ниже consolidated список ограничений/расхождений по code+docs с приоритетами.
 
 ## P0
-1. **KILL residuals могут остаться ненулевыми (warning-only), hard-fail нет.**
-   - Причина: сервер формирует warning, но всегда возвращает `ok:true` и завершает stop flow.
-   - Где видно: `backend/src/server.ts` (`/api/bot/kill` warning logic).
-   - Риск: оператор может считать flatten полностью завершенным при остаточных позициях/ордерах.
+1. **KILL всё ещё warning-only по HTTP, но demo close теперь подтверждается и не очищает локальную позицию без подтверждения.**
+   - Что исправлено: в demo добавлен poll-confirmation после `closePositionMarket`; при failure/timeout локальная позиция сохраняется, warning детерминированный.
+   - Где видно: `backend/src/bot/botEngine.ts` (`killSwitch` demo branch) + `backend/src/server.ts` (`killWarning`, residual counters).
+   - Остаточный риск: API по-прежнему возвращает `ok:true` (оператору нужно проверять warning + residual counters).
 
 ## P1
 2. **`docs/TASKS.md` не синхронизирован с фактической реализацией (много unchecked пунктов уже реализованы).**
@@ -21,9 +21,9 @@
    - Причина: терминологический drift (вероятно имелось “no adaptive optimization logic”, но persisted autotune subsystem есть).
    - Где видно: `docs/RELEASE_NOTES_v1.md` + `backend/src/services/autoTuneService.ts` + `GET /api/autotune/state`.
 
-5. **Run payload download не включает `stats.json` даже если он существует.**
-   - Причина: `RunRecorderService.getRunPayload` возвращает только `meta.json` + `events.ndjson`.
-   - Где видно: `backend/src/services/runRecorderService.ts`.
+5. **Run payload gap `stats.json` — RESOLVED.**
+   - Что исправлено: `getRunPayload` добавляет `stats.json` при наличии и валидном JSON; route download кладёт файл в zip.
+   - Где видно: `backend/src/services/runRecorderService.ts`, `backend/src/server.ts`, `backend/test/server.test.ts`.
 
 6. **Replay start не валидирует существование файла до чтения stream на уровне явной API ошибки.**
    - Причина: ошибки чтения уходят в generic `REPLAY_BUSY` на route уровне.
