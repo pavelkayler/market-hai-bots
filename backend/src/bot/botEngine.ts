@@ -12,7 +12,7 @@ import { computePnlBreakdown } from '../utils/pnlMath.js';
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
 export type BothTieBreak = 'shortPriority' | 'longPriority' | 'strongerSignal';
-export type BotTf = 1 | 3 | 5;
+export type BotTf = 1 | 3 | 5 | 10 | 15;
 export type StrategyMode = 'IMPULSE' | 'PUMP_DUMP_2ND_TRIGGER';
 export type AutoTuneScope = 'GLOBAL' | 'UNIVERSE_ONLY';
 
@@ -20,11 +20,14 @@ export type BotConfig = {
   mode: BotMode;
   direction: BotDirection;
   bothTieBreak: BothTieBreak;
+  tfMinutes?: BotTf;
   tf: BotTf;
   strategyMode: StrategyMode;
   /** @deprecated confirmation now uses signalCounterThreshold */
   holdSeconds: number;
   /** @deprecated maps to signalCounterMin=threshold, signalCounterMax=Infinity */
+  minTriggerCount?: number;
+  maxTriggerCount?: number;
   signalCounterThreshold: number;
   signalCounterMin: number;
   signalCounterMax: number;
@@ -218,6 +221,13 @@ export type SymbolRuntimeState = {
   lastPriceDeltaPct: number | null;
   lastOiDeltaPct: number | null;
   lastSignalCount24h: number;
+  fundingRate?: number | null;
+  nextFundingTimeMs?: number | null;
+  tradingAllowed?: "OK" | "BLACKOUT" | "COOLDOWN" | "MISSING";
+  fundingBlackoutUntilMs?: number | null;
+  fundingActionTs?: number | null;
+  lastSignalAtMs?: number | null;
+  lastSignalMskDayKey?: string;
   gates: GateSnapshot | null;
   lastBothCandidate: BothCandidateDiagnostics | null;
 };
@@ -457,7 +467,7 @@ const createEmptyReasonCounts = (): Record<EntryReason, number> => ({
 });
 
 export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | null => {
-  const tf = raw.tf;
+  const tf = raw.tfMinutes ?? raw.tf;
   const mode = raw.mode;
   const direction = raw.direction;
   const bothTieBreakRaw = raw.bothTieBreak;
@@ -475,7 +485,7 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
       ? bothTieBreakRaw
       : DEFAULT_BOTH_TIE_BREAK;
 
-  if (tf !== 1 && tf !== 3 && tf !== 5) {
+  if (tf !== 1 && tf !== 3 && tf !== 5 && tf !== 10 && tf !== 15) {
     return null;
   }
 
@@ -485,9 +495,9 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     typeof raw.signalCounterThreshold === 'number' && Number.isFinite(raw.signalCounterThreshold)
       ? Math.max(1, Math.floor(raw.signalCounterThreshold))
       : DEFAULT_SIGNAL_COUNTER_THRESHOLD;
-  const signalCounterMinRaw = typeof raw.signalCounterMin === 'number' && Number.isFinite(raw.signalCounterMin) ? raw.signalCounterMin : signalCounterThreshold;
+  const signalCounterMinRaw = typeof raw.minTriggerCount === 'number' && Number.isFinite(raw.minTriggerCount) ? raw.minTriggerCount : (typeof raw.signalCounterMin === 'number' && Number.isFinite(raw.signalCounterMin) ? raw.signalCounterMin : signalCounterThreshold);
   const signalCounterMaxRaw =
-    typeof raw.signalCounterMax === 'number' && Number.isFinite(raw.signalCounterMax) ? raw.signalCounterMax : Number.MAX_SAFE_INTEGER;
+    typeof raw.maxTriggerCount === 'number' && Number.isFinite(raw.maxTriggerCount) ? raw.maxTriggerCount : (typeof raw.signalCounterMax === 'number' && Number.isFinite(raw.signalCounterMax) ? raw.signalCounterMax : Number.MAX_SAFE_INTEGER);
   const signalCounterMin = Math.max(1, Math.floor(signalCounterMinRaw));
   const signalCounterMax = Math.max(signalCounterMin, Math.floor(signalCounterMaxRaw));
   const oiUpThrPct = typeof raw.oiUpThrPct === 'number' && Number.isFinite(raw.oiUpThrPct) ? raw.oiUpThrPct : DEFAULT_OI_UP_THR_PCT;
@@ -578,12 +588,15 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     mode,
     direction,
     bothTieBreak,
-    tf,
+    tfMinutes: tf as BotTf,
+    tf: tf as BotTf,
     strategyMode,
     holdSeconds,
     signalCounterThreshold,
     signalCounterMin,
     signalCounterMax,
+    minTriggerCount: signalCounterMin,
+    maxTriggerCount: signalCounterMax,
     priceUpThrPct: raw.priceUpThrPct as number,
     oiUpThrPct,
     oiCandleThrPct,
@@ -1380,6 +1393,8 @@ export class BotEngine {
     }
 
     const now = this.now();
+    this.syncFundingState(symbolState, marketState, now);
+    this.resetSignalCounterOnMskDayChange(symbolState, now);
     this.updateTrendState(symbolState, marketState.markPrice, now);
     this.updateTfCandleState(symbolState, marketState, now);
     this.updateGateSnapshot(symbolState, marketState);
@@ -1411,6 +1426,10 @@ export class BotEngine {
 
     if (!this.state.running || this.state.paused) {
       this.recordNoEntryReason(symbolState, { code: 'GUARDRAIL_PAUSED', message: 'Bot paused/running disabled.' });
+      return;
+    }
+
+    if (symbolState.tradingAllowed !== "OK") {
       return;
     }
 
@@ -1489,6 +1508,7 @@ export class BotEngine {
 
     const signalCount24h = this.recordSignalEventAndGetCount(symbolState, now);
     symbolState.lastSignalCount24h = signalCount24h;
+    symbolState.lastSignalAtMs = now;
     const minCount = this.state.config.signalCounterMin;
     const maxCount = this.state.config.signalCounterMax;
     const confirmed = signalCount24h >= minCount && signalCount24h <= maxCount;
@@ -1560,6 +1580,69 @@ export class BotEngine {
     };
     symbolState.fsmState = candidate.side === 'LONG' ? 'ARMED_LONG' : 'ARMED_SHORT';
     this.persistSnapshot();
+  }
+
+  private getMskDayKey(nowMs: number): string {
+    const msk = new Date(nowMs + 3 * 60 * 60 * 1000);
+    return msk.toISOString().slice(0, 10);
+  }
+
+  private resetSignalCounterOnMskDayChange(symbolState: SymbolRuntimeState, nowMs: number): void {
+    const nextKey = this.getMskDayKey(nowMs);
+    if (!symbolState.lastSignalMskDayKey) {
+      symbolState.lastSignalMskDayKey = nextKey;
+      return;
+    }
+    if (symbolState.lastSignalMskDayKey !== nextKey) {
+      symbolState.lastSignalMskDayKey = nextKey;
+      symbolState.signalEvents24h = [];
+      symbolState.lastSignalBucketStart = null;
+      symbolState.lastSignalCount24h = 0;
+      symbolState.lastSignalAtMs = null;
+    }
+  }
+
+  private syncFundingState(symbolState: SymbolRuntimeState, marketState: MarketState, nowMs: number): void {
+    symbolState.fundingRate = marketState.fundingRate ?? null;
+    symbolState.nextFundingTimeMs = marketState.nextFundingTimeMs ?? null;
+    if (!Number.isFinite(symbolState.fundingRate ?? NaN)) {
+      symbolState.tradingAllowed = "MISSING";
+      return;
+    }
+    const nextFunding = symbolState.nextFundingTimeMs;
+    if (!nextFunding) {
+      symbolState.tradingAllowed = "OK";
+      return;
+    }
+    const timeToFunding = nextFunding - nowMs;
+    if (timeToFunding < 30 * 60_000 && timeToFunding >= 0) {
+      symbolState.tradingAllowed = "BLACKOUT";
+      if (!symbolState.fundingActionTs || nowMs - symbolState.fundingActionTs > 60_000) {
+        symbolState.fundingActionTs = nowMs;
+        void this.closeSymbolExposure(symbolState, marketState);
+      }
+      return;
+    }
+    if (nowMs < nextFunding + 10 * 60_000) {
+      symbolState.tradingAllowed = "COOLDOWN";
+      return;
+    }
+    symbolState.tradingAllowed = "OK";
+  }
+
+  private async closeSymbolExposure(symbolState: SymbolRuntimeState, marketState: MarketState): Promise<void> {
+    if (!this.state.config || this.state.config.mode !== "demo") {
+      await this.cancelSymbolPendingOrder(symbolState, marketState, "CANCELLED");
+      if (symbolState.position) {
+        symbolState.position = null;
+        this.resetToIdle(symbolState);
+      }
+      return;
+    }
+    try {
+      await this.deps.demoTradeClient?.cancelOrder({ symbol: symbolState.symbol });
+      await this.deps.demoTradeClient?.closePositionMarket({ symbol: symbolState.symbol, side: symbolState.position?.side === "LONG" ? "Sell" : "Buy", qty: String(symbolState.position?.qty ?? 0) });
+    } catch {}
   }
 
   private tryConfirmArmedSignal(symbolState: SymbolRuntimeState, marketState: MarketState, now: number): boolean {
@@ -1882,6 +1965,13 @@ export class BotEngine {
       lastPriceDeltaPct: null,
       lastOiDeltaPct: null,
       lastSignalCount24h: 0,
+      fundingRate: null,
+      nextFundingTimeMs: null,
+      tradingAllowed: "MISSING",
+      fundingBlackoutUntilMs: null,
+      fundingActionTs: null,
+      lastSignalAtMs: null,
+      lastSignalMskDayKey: "",
       gates: null,
       lastBothCandidate: null
     };
@@ -2894,65 +2984,16 @@ export class BotEngine {
     priceDeltaPct: number,
     oiDeltaPct: number
   ): { side: 'LONG' | 'SHORT'; entryReason: EntryReason; bothCandidate?: BothCandidateDiagnostics } | null {
-    const direction = this.state.config!.direction;
-    const longTrue = this.isLongConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
-    const shortDivergenceTrue = this.isShortDivergenceConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
-    const shortContinuationTrue = this.isShortContinuationConditionTrue(symbolState, priceDeltaPct, oiDeltaPct);
-
-    if (direction === 'both') {
-      const shortEntryReason: EntryReason | null = shortDivergenceTrue ? 'SHORT_DIVERGENCE' : shortContinuationTrue ? 'SHORT_CONTINUATION' : null;
-      const shortTrue = !!shortEntryReason;
-      if (longTrue && shortTrue) {
-        const tieBreak = this.state.config?.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK;
-        if (tieBreak === 'longPriority') {
-          return {
-            side: 'LONG',
-            entryReason: 'LONG_CONTINUATION',
-            bothCandidate: { hadBoth: true, chosen: 'long', tieBreak }
-          };
-        }
-        if (tieBreak === 'strongerSignal') {
-          const edgeLong = this.computeLongEdge(priceDeltaPct, oiDeltaPct);
-          const edgeShort = this.computeShortEdge(priceDeltaPct, oiDeltaPct);
-          if (edgeLong > edgeShort + 1e-6) {
-            return {
-              side: 'LONG',
-              entryReason: 'LONG_CONTINUATION',
-              bothCandidate: { hadBoth: true, chosen: 'long', tieBreak, edgeLong, edgeShort }
-            };
-          }
-          return {
-            side: 'SHORT',
-            entryReason: shortEntryReason,
-            bothCandidate: { hadBoth: true, chosen: 'short', tieBreak, edgeLong, edgeShort }
-          };
-        }
-
-        return {
-          side: 'SHORT',
-          entryReason: shortEntryReason,
-          bothCandidate: { hadBoth: true, chosen: 'short', tieBreak }
-        };
-      }
-
-      if (shortEntryReason) {
-        return { side: 'SHORT', entryReason: shortEntryReason };
-      }
-      if (longTrue) {
-        return { side: 'LONG', entryReason: 'LONG_CONTINUATION' };
-      }
+    const longTrue = priceDeltaPct >= this.state.config!.priceUpThrPct && oiDeltaPct >= this.state.config!.oiUpThrPct;
+    const shortTrue = priceDeltaPct <= -this.state.config!.priceUpThrPct && oiDeltaPct <= -this.state.config!.oiUpThrPct;
+    const fundingRate = symbolState.fundingRate;
+    if (!Number.isFinite(fundingRate ?? NaN) || fundingRate === 0) {
       return null;
     }
-
-    if (direction === 'long') {
+    if ((fundingRate ?? 0) > 0) {
       return longTrue ? { side: 'LONG', entryReason: 'LONG_CONTINUATION' } : null;
     }
-
-    if (shortDivergenceTrue) {
-      return { side: 'SHORT', entryReason: 'SHORT_DIVERGENCE' };
-    }
-
-    return shortContinuationTrue ? { side: 'SHORT', entryReason: 'SHORT_CONTINUATION' } : null;
+    return shortTrue ? { side: 'SHORT', entryReason: 'SHORT_CONTINUATION' } : null;
   }
 
   private computeLongEdge(priceDeltaPct: number, oiDeltaPct: number): number {
@@ -3136,9 +3177,6 @@ export class BotEngine {
   }
 
   private recordSignalEventAndGetCount(symbolState: SymbolRuntimeState, now: number): number {
-    const cutoffTs = now - ONE_DAY_MS;
-    symbolState.signalEvents = symbolState.signalEvents.filter((ts) => ts >= cutoffTs);
-    symbolState.signalEvents24h = [...symbolState.signalEvents];
     const bucketStart = this.computeTfBucketStart(now);
     if (symbolState.lastSignalBucketKey !== bucketStart) {
       symbolState.signalEvents.push(now);
@@ -3156,34 +3194,18 @@ export class BotEngine {
   }
 
   private getOiForSignals(marketState: MarketState): number {
-    const asAny = marketState as unknown as { openInterest?: number | null };
-    if (typeof asAny.openInterest === 'number' && Number.isFinite(asAny.openInterest) && asAny.openInterest > 0) {
-      return asAny.openInterest;
-    }
-    if (Number.isFinite(marketState.openInterestValue) && marketState.openInterestValue > 0 && marketState.markPrice > 0) {
-      return marketState.openInterestValue / marketState.markPrice;
-    }
     return marketState.openInterestValue;
   }
 
   private computeDeltas(symbolState: SymbolRuntimeState, marketState: MarketState): { priceDeltaPct: number; oiDeltaPct: number } {
-    const candle = symbolState.tfCandle;
-    if (!candle || candle.openMark <= 0 || candle.openOi <= 0) {
+    if (!symbolState.prevCandleMark || !symbolState.prevCandleOi || symbolState.prevCandleMark <= 0 || symbolState.prevCandleOi <= 0) {
       return { priceDeltaPct: 0, oiDeltaPct: 0 };
     }
 
     const oiNow = this.getOiForSignals(marketState);
-    const useLegacyFirstTickFallback = candle.openTs === this.now() && (symbolState.prevCandleMark ?? 0) > 0 && (symbolState.prevCandleOi ?? 0) > 0;
-    if (useLegacyFirstTickFallback && symbolState.prevCandleMark && symbolState.prevCandleOi) {
-      return {
-        priceDeltaPct: ((marketState.markPrice - symbolState.prevCandleMark) / symbolState.prevCandleMark) * 100,
-        oiDeltaPct: ((oiNow - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100
-      };
-    }
-
     return {
-      priceDeltaPct: ((marketState.markPrice - candle.openMark) / candle.openMark) * 100,
-      oiDeltaPct: ((oiNow - candle.openOi) / candle.openOi) * 100
+      priceDeltaPct: ((marketState.markPrice - symbolState.prevCandleMark) / symbolState.prevCandleMark) * 100,
+      oiDeltaPct: ((oiNow - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100
     };
   }
 

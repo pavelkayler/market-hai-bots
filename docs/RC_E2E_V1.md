@@ -286,3 +286,7 @@ This is the release-candidate runbook for a full operator validation pass. It is
 ## Notes
 - `npm run rc:e2e` is intentionally read-only/non-destructive and should be used before and during RC execution.
 - For strict gatekeeping, treat any doctor `FAIL` as release-blocking.
+
+
+## v2 note
+RC smoke for simplified mode only requires `/api/doctor` and `/api/bot/state` checks; run-history and autotune checks are deprecated.

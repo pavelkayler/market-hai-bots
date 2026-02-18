@@ -4,7 +4,8 @@ import type { TickerStream, TickerUpdate, TickerStreamStatus } from './tickerStr
 export type MarketState = {
   markPrice: number;
   openInterestValue: number;
-  openInterest?: number | null;
+  fundingRate?: number | null;
+  nextFundingTimeMs?: number | null;
   ts: number;
   lastPrice: number | null;
   bid: number | null;
@@ -118,7 +119,8 @@ export class MarketHub {
     const nextState: MarketState = {
       markPrice: update.markPrice,
       openInterestValue: update.openInterestValue,
-      openInterest: update.openInterest ?? null,
+      fundingRate: update.fundingRate ?? null,
+      nextFundingTimeMs: update.nextFundingTimeMs ?? null,
       ts: update.ts,
       lastPrice: update.lastPrice ?? null,
       bid: update.bid ?? null,

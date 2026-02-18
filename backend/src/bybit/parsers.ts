@@ -4,7 +4,8 @@ export type WsTickerEvent = {
   symbol: string;
   markPrice: number;
   openInterestValue: number;
-  openInterest: number | null;
+  fundingRate: number | null;
+  nextFundingTimeMs: number | null;
   ts: number;
   lastPrice: number | null;
   bid: number | null;
@@ -94,7 +95,8 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
     askPrice?: unknown;
     ts?: unknown;
     openInterestValue?: unknown;
-    openInterest?: unknown;
+    fundingRate?: unknown;
+    nextFundingTime?: unknown;
   };
 
   if (typeof data.symbol !== 'string') {
@@ -104,7 +106,8 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
   const markPrice = parseFiniteNumber(data.markPrice);
   const lastPrice = parseFiniteNumber(data.lastPrice);
   const openInterestValue = parseFiniteNumber(data.openInterestValue);
-  const openInterest = parseFiniteNumber((data as { openInterest?: unknown }).openInterest);
+  const fundingRate = parseFiniteNumber((data as { fundingRate?: unknown }).fundingRate);
+  const nextFundingTimeMs = parseFiniteNumber((data as { nextFundingTime?: unknown }).nextFundingTime);
   const ts = parseFiniteNumber(packet.ts);
 
   if (markPrice === null || openInterestValue === null || ts === null) {
@@ -121,7 +124,8 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
     symbol: data.symbol,
     markPrice,
     openInterestValue,
-    openInterest: openInterest ?? null,
+    fundingRate: fundingRate ?? null,
+    nextFundingTimeMs: nextFundingTimeMs ?? null,
     ts,
     lastPrice,
     bid,
