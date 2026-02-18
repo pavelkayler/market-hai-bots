@@ -206,6 +206,22 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         };
       })
       .filter((value): value is NonNullable<typeof value> => value !== null);
+    const activeSymbolDiagnostics = symbols
+      .map((symbol) => {
+        const runtime = botEngine.getSymbolState(symbol);
+        if (!runtime) {
+          return null;
+        }
+        const threshold = state.config?.signalCounterThreshold ?? 2;
+        return {
+          symbol,
+          signalCount24h: runtime.lastSignalCount24h ?? 0,
+          signalCounterThreshold: threshold,
+          signalConfirmed: (runtime.lastSignalCount24h ?? 0) >= threshold,
+          lastSignalAt: runtime.signalEvents24h?.length ? runtime.signalEvents24h[runtime.signalEvents24h.length - 1] : undefined
+        };
+      })
+      .filter((value): value is NonNullable<typeof value> => value !== null);
 
     return {
       running: state.running,
@@ -222,6 +238,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       journalAgeMs: lastJournalTs > 0 ? Math.max(0, now - lastJournalTs) : 0,
       openOrders,
       positions,
+      activeSymbolDiagnostics,
       startedAt: state.startedAt,
       uptimeMs: state.uptimeMs,
       killInProgress,
@@ -474,6 +491,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         signalCounterMin: currentConfig?.signalCounterMin,
         signalCounterMax: currentConfig?.signalCounterMax,
         signalCounterEligible: currentConfig ? symbolState.lastSignalCount24h >= currentConfig.signalCounterMin && symbolState.lastSignalCount24h <= currentConfig.signalCounterMax : undefined,
+        signalConfirmed: currentConfig ? symbolState.lastSignalCount24h >= currentConfig.signalCounterThreshold : undefined,
+        lastSignalAt: symbolState.signalEvents24h.length > 0 ? symbolState.signalEvents24h[symbolState.signalEvents24h.length - 1] : undefined,
         gates: symbolState.gates,
         bothCandidate: symbolState.lastBothCandidate
       }

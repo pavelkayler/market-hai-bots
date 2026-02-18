@@ -89,6 +89,13 @@ export type BotState = {
   killInProgress?: boolean;
   killCompletedAt?: number | null;
   killWarning?: string | null;
+  activeSymbolDiagnostics?: Array<{
+    symbol: string;
+    signalCount24h: number;
+    signalCounterThreshold: number;
+    signalConfirmed: boolean;
+    lastSignalAt?: number;
+  }>;
 };
 
 
@@ -343,6 +350,8 @@ export type SymbolUpdatePayload = {
   signalCounterMin?: number;
   signalCounterMax?: number;
   signalCounterEligible?: boolean;
+  signalConfirmed?: boolean;
+  lastSignalAt?: number;
   gates?: GateSnapshot | null;
   bothCandidate?: BothCandidateDiagnostics | null;
 };

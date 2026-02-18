@@ -1495,6 +1495,21 @@ export function BotPage({
                     <Form.Text muted>{settings.strategyMode === 'PUMP_DUMP_2ND_TRIGGER' ? 'Targets 2nd/3rd triggers by default (min=2 max=3).' : 'IMPULSE uses counter min/max; keep max high for >=min behavior.'}</Form.Text>
                   </Col>
                   <Col md={4}>
+                    <Form.Label>signalCounterThreshold</Form.Label>
+                    <Form.Control
+                      disabled={disableSettings}
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={settings.signalCounterThreshold}
+                      onChange={(event) => {
+                        const next = Math.max(1, Math.floor(Number(event.target.value) || 1));
+                        persistSettings({ ...settings, signalCounterThreshold: next, signalCounterMin: next });
+                      }}
+                    />
+                    <Form.Text muted>Signal is confirmed after N occurrences in last 24h; deduped per TF candle (UTC bucket). Percent convention stays 3 = 3%.</Form.Text>
+                  </Col>
+                  <Col md={4}>
                     <Form.Label>signalCounterMin</Form.Label>
                     <Form.Control disabled={disableSettings} type="number" step={1} value={settings.signalCounterMin} onChange={(event) => persistSettings({ ...settings, signalCounterMin: Number(event.target.value), signalCounterThreshold: Number(event.target.value) })} />
                   </Col>
@@ -1780,7 +1795,7 @@ export function BotPage({
                     ? ` | BOTH: chosen ${item.bothCandidate.chosen.toUpperCase()} (${item.bothCandidate.tieBreak}${item.bothCandidate.tieBreak === 'strongerSignal' ? ` edgeS=${(item.bothCandidate.edgeShort ?? 0).toFixed(2)} edgeL=${(item.bothCandidate.edgeLong ?? 0).toFixed(2)}` : ''})`
                     : '';
                   const signalDetails = item.baseline
-                    ? `prev candle ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0} [${item.signalCounterMin ?? 0}-${item.signalCounterMax ?? 0}] eligible=${String(item.signalCounterEligible ?? false)} | ${gateDetails}${bothDetails}`
+                    ? `prev candle ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | Signal count (24h): ${item.signalCount24h ?? 0} / Threshold: ${item.signalCounterThreshold ?? item.signalCounterMin ?? 2} | Confirmed: ${(item.signalConfirmed ?? item.signalCounterEligible ?? false) ? 'Yes' : 'No'} | ${gateDetails}${bothDetails}`
                     : '—';
                   return (
                     <tr key={`phase-${item.symbol}`}>

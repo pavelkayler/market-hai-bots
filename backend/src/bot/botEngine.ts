@@ -171,6 +171,8 @@ export type SymbolRuntimeState = {
   holdStartTs: number | null;
   signalEvents: number[];
   lastSignalBucketKey: number | null;
+  signalEvents24h: number[];
+  lastSignalBucketStart: number | null;
   prevCandleOi: number | null;
   lastCandleOi: number | null;
   prevCandleMark: number | null;
@@ -891,8 +893,10 @@ export class BotEngine {
         fsmState: state.fsmState,
         baseline: state.baseline,
         holdStartTs: null,
-        signalEvents: state.signalEvents ?? [],
-        lastSignalBucketKey: state.lastSignalBucketKey ?? null,
+        signalEvents: state.signalEvents ?? state.signalEvents24h ?? [],
+        lastSignalBucketKey: state.lastSignalBucketKey ?? state.lastSignalBucketStart ?? null,
+        signalEvents24h: state.signalEvents24h ?? state.signalEvents ?? [],
+        lastSignalBucketStart: state.lastSignalBucketStart ?? state.lastSignalBucketKey ?? null,
         prevCandleOi: state.prevCandleOi ?? null,
         lastCandleOi: state.lastCandleOi ?? null,
         prevCandleMark: state.prevCandleMark ?? null,
@@ -1059,6 +1063,8 @@ export class BotEngine {
       demo: symbolState.demo ? { ...symbolState.demo } : null,
       signalEvents: [...symbolState.signalEvents],
       lastSignalBucketKey: symbolState.lastSignalBucketKey,
+      signalEvents24h: [...symbolState.signalEvents24h],
+      lastSignalBucketStart: symbolState.lastSignalBucketStart,
       prevCandleOi: symbolState.prevCandleOi,
       lastCandleOi: symbolState.lastCandleOi,
       prevCandleMark: symbolState.prevCandleMark,
@@ -1417,7 +1423,7 @@ export class BotEngine {
     if (!confirmed) {
       this.recordNoEntryReason(symbolState, {
         code: 'SIGNAL_COUNTER_OUT_OF_RANGE',
-        message: `Signal counter out of range (${minCount}-${maxCount}).`,
+        message: `Need ${minCount} signals in last 24h (count=${signalCount24h}).`,
         value: signalCount24h,
         threshold: minCount
       });
@@ -1754,7 +1760,7 @@ export class BotEngine {
       return `${entry.code} (confirmZ=${(gates?.confirmZ ?? 0).toFixed(3)}%; need >=${(this.state.config?.confirmMinContinuationPct ?? 0).toFixed(3)}%)`;
     }
     if (entry.code === 'SIGNAL_COUNTER_OUT_OF_RANGE') {
-      return `${entry.code} (current=${Math.floor(entry.value ?? 0)}, min=${this.state.config?.signalCounterMin ?? 1}, max=${this.state.config?.signalCounterMax ?? Number.MAX_SAFE_INTEGER})`;
+      return `${entry.code} (Need ${this.state.config?.signalCounterThreshold ?? this.state.config?.signalCounterMin ?? 1} signals in last 24h; count=${Math.floor(entry.value ?? 0)})`;
     }
     const valuePart = typeof entry.value === 'number' ? ` value=${entry.value.toFixed(4)}` : '';
     const thresholdPart = typeof entry.threshold === 'number' ? ` thr=${entry.threshold}` : '';
@@ -1769,6 +1775,8 @@ export class BotEngine {
       holdStartTs: null,
       signalEvents: [],
       lastSignalBucketKey: null,
+      signalEvents24h: [],
+      lastSignalBucketStart: null,
       prevCandleOi: null,
       lastCandleOi: null,
       prevCandleMark: null,
@@ -2363,6 +2371,8 @@ export class BotEngine {
         demo: symbolState.demo,
         signalEvents: symbolState.signalEvents,
         lastSignalBucketKey: symbolState.lastSignalBucketKey,
+        signalEvents24h: symbolState.signalEvents24h,
+        lastSignalBucketStart: symbolState.lastSignalBucketStart,
         prevCandleOi: symbolState.prevCandleOi,
         lastCandleOi: symbolState.lastCandleOi,
         prevCandleMark: symbolState.prevCandleMark,
@@ -2919,11 +2929,14 @@ export class BotEngine {
   private recordSignalEventAndGetCount(symbolState: SymbolRuntimeState, now: number): number {
     const cutoffTs = now - ONE_DAY_MS;
     symbolState.signalEvents = symbolState.signalEvents.filter((ts) => ts >= cutoffTs);
+    symbolState.signalEvents24h = [...symbolState.signalEvents];
     const bucketStart = this.computeTfBucketStart(now);
     if (symbolState.lastSignalBucketKey !== bucketStart) {
       symbolState.signalEvents.push(now);
       symbolState.lastSignalBucketKey = bucketStart;
+      symbolState.signalEvents24h = [...symbolState.signalEvents];
     }
+    symbolState.lastSignalBucketStart = symbolState.lastSignalBucketKey;
 
     return symbolState.signalEvents.length;
   }

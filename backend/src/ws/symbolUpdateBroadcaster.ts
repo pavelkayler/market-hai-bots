@@ -25,6 +25,8 @@ type SymbolBroadcastPayload = {
   signalCounterMin?: number;
   signalCounterMax?: number;
   signalCounterEligible?: boolean;
+  signalConfirmed?: boolean;
+  lastSignalAt?: number;
   gates?: GateSnapshot | null;
   bothCandidate?: BothCandidateDiagnostics | null;
 };
@@ -116,6 +118,8 @@ export class SymbolUpdateBroadcaster {
       signalCounterMin?: number;
       signalCounterMax?: number;
       signalCounterEligible?: boolean;
+      signalConfirmed?: boolean;
+      lastSignalAt?: number;
       gates?: GateSnapshot | null;
       bothCandidate?: BothCandidateDiagnostics | null;
     } = {}
@@ -149,6 +153,8 @@ export class SymbolUpdateBroadcaster {
       ...(signalDiagnostics.signalCounterMin !== undefined ? { signalCounterMin: signalDiagnostics.signalCounterMin } : {}),
       ...(signalDiagnostics.signalCounterMax !== undefined ? { signalCounterMax: signalDiagnostics.signalCounterMax } : {}),
       ...(signalDiagnostics.signalCounterEligible !== undefined ? { signalCounterEligible: signalDiagnostics.signalCounterEligible } : {}),
+      ...(signalDiagnostics.signalConfirmed !== undefined ? { signalConfirmed: signalDiagnostics.signalConfirmed } : {}),
+      ...(signalDiagnostics.lastSignalAt !== undefined ? { lastSignalAt: signalDiagnostics.lastSignalAt } : {}),
       ...(signalDiagnostics.gates !== undefined && signalDiagnostics.gates !== null ? { gates: signalDiagnostics.gates } : {}),
       ...(signalDiagnostics.bothCandidate !== undefined && signalDiagnostics.bothCandidate !== null ? { bothCandidate: signalDiagnostics.bothCandidate } : {})
     };
