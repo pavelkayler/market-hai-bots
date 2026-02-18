@@ -3,7 +3,8 @@ import { Alert, Badge, Button, Card, ListGroup } from 'react-bootstrap';
 import { Link } from 'react-router-dom';
 
 import { getBotStats, getDoctor } from '../api';
-import type { BotState, BotStats, DoctorResponse, WsConnectionState } from '../types';
+import { isDoctorReport } from '../types';
+import type { BotState, BotStats, DoctorCheckStatus, DoctorResponse, WsConnectionState } from '../types';
 import { formatDuration } from '../utils/time';
 
 type Props = {
@@ -93,29 +94,27 @@ export function HomePage({ restHealthy, wsState, botState, onPause, onResume, on
   }, [botState.activeOrders, botState.openPositions, botState.running]);
 
   const warnings = useMemo(() => {
-    if (!doctor) {
+    if (!doctor || !isDoctorReport(doctor)) {
       return [];
     }
 
-    const messages: string[] = [];
-    if (!doctor.universe.ready) {
-      messages.push('Universe is not ready. Create the universe before starting the bot.');
+    const checkWarnings = (doctor.checks ?? [])
+      .filter((check) => check?.status && check.status !== 'PASS')
+      .map((check) => `${check.status} ${check.id}: ${check.message}`);
+    const reportWarnings = (doctor.warnings ?? []).filter((warning) => typeof warning === 'string');
+
+    if (selectedMode === 'demo' && checkWarnings.length === 0 && reportWarnings.length === 0 && doctor.ok === false) {
+      return ['WARN doctor report indicates degraded state while in demo mode.'];
     }
 
-    if (!doctor.market.running) {
-      messages.push('Market hub is not running.');
-    }
-
-    if (!doctor.demo.configured && selectedMode === 'demo') {
-      messages.push('Demo mode selected, but DEMO_API_KEY/DEMO_API_SECRET are not configured.');
-    }
-
-    if (doctor.journal.sizeBytes === 0) {
-      messages.push('Journal file is missing or empty.');
-    }
-
-    return messages;
+    return [...checkWarnings, ...reportWarnings];
   }, [doctor, selectedMode]);
+
+  const checkBadgeVariant = (status: DoctorCheckStatus): 'success' | 'warning' | 'danger' => {
+    if (status === 'PASS') return 'success';
+    if (status === 'WARN') return 'warning';
+    return 'danger';
+  };
 
   return (
     <>
@@ -217,33 +216,43 @@ export function HomePage({ restHealthy, wsState, botState, onPause, onResume, on
             </Alert>
           ))}
 
-          {doctor ? (
+          {doctor && isDoctorReport(doctor) ? (
             <ListGroup>
-              <ListGroup.Item>Server time: {new Date(doctor.serverTime).toLocaleString()}</ListGroup.Item>
-              <ListGroup.Item>Uptime (sec): {doctor.uptimeSec}</ListGroup.Item>
-              <ListGroup.Item>Version: {doctor.version}</ListGroup.Item>
-              <ListGroup.Item>Universe ready: {String(doctor.universe.ready)}</ListGroup.Item>
-              <ListGroup.Item>Universe symbols: {doctor.universe.symbols}</ListGroup.Item>
-              <ListGroup.Item>Market running: {String(doctor.market.running)}</ListGroup.Item>
-              <ListGroup.Item>Market subscribed: {doctor.market.subscribed}</ListGroup.Item>
-              <ListGroup.Item>Market updates/sec: {doctor.market.updatesPerSec}</ListGroup.Item>
-              <ListGroup.Item>Market tick handler avg (ms): {doctor.market.tickHandlersMsAvg}</ListGroup.Item>
-              <ListGroup.Item>WS clients: {doctor.market.wsClients}</ListGroup.Item>
-              <ListGroup.Item>WS frames/sec: {doctor.market.wsFramesPerSec}</ListGroup.Item>
-              <ListGroup.Item>Bot running: {String(doctor.bot.running)}</ListGroup.Item>
-              <ListGroup.Item>Bot paused: {String(doctor.bot.paused)}</ListGroup.Item>
-              <ListGroup.Item>Bot mode: {doctor.bot.mode ?? '-'}</ListGroup.Item>
-              <ListGroup.Item>Bot direction: {doctor.bot.direction ?? '-'}</ListGroup.Item>
-              <ListGroup.Item>Bot tf: {doctor.bot.tf ?? '-'}</ListGroup.Item>
-              <ListGroup.Item>Bot evals/sec: {doctor.bot.evalsPerSec}</ListGroup.Item>
-              <ListGroup.Item>Replay recording: {String(doctor.replay.recording)}</ListGroup.Item>
-              <ListGroup.Item>Replay replaying: {String(doctor.replay.replaying)}</ListGroup.Item>
-              <ListGroup.Item>Replay file: {doctor.replay.fileName ?? '-'}</ListGroup.Item>
-              <ListGroup.Item>Journal enabled: {String(doctor.journal.enabled)}</ListGroup.Item>
-              <ListGroup.Item>Journal path: {doctor.journal.path}</ListGroup.Item>
-              <ListGroup.Item>Journal size bytes: {doctor.journal.sizeBytes}</ListGroup.Item>
-              <ListGroup.Item>Demo configured: {String(doctor.demo.configured)}</ListGroup.Item>
+              <ListGroup.Item>Timestamp: {doctor.ts ? new Date(doctor.ts).toLocaleString() : '-'}</ListGroup.Item>
+              <ListGroup.Item>
+                Overall:{' '}
+                <Badge bg={doctor.ok ? 'success' : 'danger'}>{doctor.ok ? 'OK' : 'DEGRADED'}</Badge>
+              </ListGroup.Item>
+              <ListGroup.Item>Version commit: {doctor.version?.commit ?? '-'}</ListGroup.Item>
+              <ListGroup.Item>Version node: {doctor.version?.node ?? '-'}</ListGroup.Item>
+              <ListGroup.Item>
+                Checks:
+                {(doctor.checks ?? []).length === 0 ? (
+                  <div className="small text-muted mt-1">No checks reported.</div>
+                ) : (
+                  <ListGroup className="mt-2">
+                    {doctor.checks.map((check) => (
+                      <ListGroup.Item key={`${check.id}-${check.message}`}>
+                        <Badge bg={checkBadgeVariant(check.status)} className="me-2">
+                          {check.status}
+                        </Badge>
+                        <strong>{check.id}</strong> — {check.message}
+                        {check.details ? (
+                          <details className="mt-1">
+                            <summary className="small">details</summary>
+                            <pre className="small mb-0">{JSON.stringify(check.details, null, 2)}</pre>
+                          </details>
+                        ) : null}
+                      </ListGroup.Item>
+                    ))}
+                  </ListGroup>
+                )}
+              </ListGroup.Item>
             </ListGroup>
+          ) : doctor ? (
+            <Alert variant="info" className="mb-0">
+              Diagnostics payload received in legacy/unknown format.
+            </Alert>
           ) : (
             <div>Diagnostics not loaded yet.</div>
           )}

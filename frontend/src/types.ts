@@ -416,7 +416,24 @@ export type WsEnvelope<T = unknown> = {
   payload: T;
 };
 
-export type DoctorResponse = {
+export type DoctorCheckStatus = 'PASS' | 'WARN' | 'FAIL';
+
+export type DoctorCheck = {
+  id: string;
+  status: DoctorCheckStatus;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
+export type DoctorReport = {
+  ok: boolean;
+  ts: number;
+  version?: { commit?: string; node?: string };
+  checks: DoctorCheck[];
+  warnings?: string[];
+};
+
+export type DoctorResponseLegacy = {
   ok: true;
   serverTime: number;
   uptimeSec: number;
@@ -442,6 +459,16 @@ export type DoctorResponse = {
   journal: { enabled: true; path: string; sizeBytes: number };
   demo: { configured: boolean };
 };
+
+export type DoctorResponse = DoctorReport | DoctorResponseLegacy;
+
+export function isDoctorReport(value: unknown): value is DoctorReport {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return Array.isArray((value as { checks?: unknown }).checks);
+}
 
 export type AutoTuneRuntimeState = {
   enabled: boolean;
