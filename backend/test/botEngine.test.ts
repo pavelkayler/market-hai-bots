@@ -388,6 +388,58 @@ describe('BotEngine paper execution', () => {
   });
 
 
+
+  it('normalizes legacy config with holdSeconds only by applying signalCounterThreshold default', () => {
+    const normalized = normalizeBotConfig({
+      mode: 'paper',
+      direction: 'long',
+      tf: 1,
+      holdSeconds: 9,
+      priceUpThrPct: 1,
+      oiUpThrPct: 1,
+      marginUSDT: 10,
+      leverage: 2,
+      tpRoiPct: 1,
+      slRoiPct: 1
+    });
+
+    expect(normalized).not.toBeNull();
+    expect(normalized?.holdSeconds).toBe(9);
+    expect(normalized?.signalCounterThreshold).toBe(2);
+  });
+
+  it('computes entryOffsetPct=0.01% entry limit from mark for long and short', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const longEngine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+    longEngine.setUniverseSymbols(['BTCUSDT']);
+    longEngine.start({ ...defaultConfig, direction: 'long', signalCounterThreshold: 1, entryOffsetPct: 0.01, priceUpThrPct: 0.1, oiUpThrPct: 0.1 });
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1015, ts: now });
+    expect(longEngine.getSymbolState('BTCUSDT')?.pendingOrder?.limitPrice).toBe(99.99);
+
+    let shortNow = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const shortEngine = new BotEngine({
+      now: () => shortNow,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+    shortEngine.setUniverseSymbols(['BTCUSDT']);
+    shortEngine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, entryOffsetPct: 0.01, priceUpThrPct: 0.5, oiUpThrPct: 4 });
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1000, ts: shortNow });
+    shortNow += 60_000;
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 900, ts: shortNow });
+    expect(shortEngine.getSymbolState('BTCUSDT')?.pendingOrder?.limitPrice).toBe(100.01);
+  });
+
   it('keeps default BOTH tie-break as shortPriority', () => {
     const normalized = normalizeBotConfig({ ...defaultConfig, direction: 'both' } as unknown as Record<string, unknown>);
     expect(normalized?.bothTieBreak).toBe('shortPriority');

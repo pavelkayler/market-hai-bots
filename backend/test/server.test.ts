@@ -387,6 +387,7 @@ describe('server routes', () => {
       journalAgeMs: 0,
       openOrders: [],
       positions: [],
+      activeSymbolDiagnostics: [],
       startedAt: null,
       uptimeMs: 0,
       killInProgress: false,

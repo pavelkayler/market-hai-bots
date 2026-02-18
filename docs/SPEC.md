@@ -42,7 +42,9 @@ Short:
 - `priceDeltaPct < 0`
 - `oiDeltaPct < 0` (no magnitude threshold)
 
-Hold: condition must remain true for `holdSeconds` (default 3s), recomputed on market updates.
+Signal confirmation is counter-based: `signalCounterThreshold` (default 2) qualifying signals in a rolling 24h per symbol window.
+- Counter increments only on qualifying SIGNAL events.
+- Dedupe: max one increment per symbol per TF candle bucket (UTC).
 
 ## Timeframe gate (UTC)
 User chooses `tf` ∈ {1,3,5}.

@@ -14,6 +14,8 @@ export type RuntimeSnapshotSymbol = {
   demo: DemoRuntimeState | null;
   signalEvents?: number[];
   lastSignalBucketKey?: number | null;
+  signalEvents24h?: number[];
+  lastSignalBucketStart?: number | null;
   prevCandleOi?: number | null;
   lastCandleOi?: number | null;
   prevCandleMark?: number | null;

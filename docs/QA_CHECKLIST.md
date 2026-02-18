@@ -177,3 +177,15 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 4. Query `/api/bot/state`.
    - Expected: numeric fields always present as numbers (`queueDepth`, `activeOrders`, `openPositions`, `symbolUpdatesPerSec`, `journalAgeMs`).
    - Expected: `openOrders`/`positions` mapping is present (possibly empty arrays).
+
+## I) Signal counter + entry offset verification (Task: threshold + offset)
+1. Set `tf=1`, `signalCounterThreshold=2`.
+   - Generate multiple qualifying signal updates within the same UTC TF bucket.
+   - Expect `signalCount24h` to increment once only (dedupe per candle bucket).
+2. Wait for next UTC TF bucket and trigger one more qualifying signal.
+   - Expect `signalCount24h=2`, `signalConfirmed=true`, and entry gating to proceed.
+3. Set `entryOffsetPct=0.01`.
+   - Verify LONG entry limit uses `mark*(1-0.0001)` and SHORT uses `mark*(1+0.0001)` before tick rounding.
+   - Verify paper/demo entry payloads use the tick-rounded offset price.
+4. Import older profile/snapshot payloads containing `holdSeconds` only.
+   - Verify loading remains successful and defaults are applied (`signalCounterThreshold=2`, `entryOffsetPct=0.01`).
