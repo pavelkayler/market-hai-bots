@@ -73,6 +73,9 @@ Demo:
 - Place LIMIT + attached TP/SL in one request.
 - FIFO placement queue (concurrency=1).
 - Order status via polling; cancel per symbol.
+- Hedge/one-way compatibility: demo order create and market close retry with `positionIdx` mapping on `retCode=10001`.
+- Demo close accounting: use Bybit closed-pnl endpoint best-effort, fallback to mark-price math for gross/fees/net.
+- KILL in demo: cancel + close + confirmation polling (best-effort).
 
 Real:
 - Not implemented (stub).

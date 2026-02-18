@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import type { DemoCreateOrderParams, DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
+import type { DemoClosedPnlItem, DemoCreateOrderParams, DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
 import { BotEngine, normalizeBotConfig, type BotConfig, type OrderUpdatePayload, type PositionUpdatePayload, type SignalPayload } from '../src/bot/botEngine.js';
 import { PAPER_FEES } from '../src/bot/paperFees.js';
 import { FileSnapshotStore } from '../src/bot/snapshotStore.js';
@@ -50,6 +50,7 @@ class FakeDemoTradeClient implements IDemoTradeClient {
   public openOrdersBySymbol = new Map<string, DemoOpenOrder[]>();
   public positionsBySymbol = new Map<string, DemoPosition | null>();
   public blockCreate = false;
+  public closedPnlBySymbol = new Map<string, DemoClosedPnlItem[]>();
 
   async createLimitOrderWithTpSl(params: DemoCreateOrderParams): Promise<{ orderId: string; orderLinkId: string }> {
     this.createCalls.push(params);
@@ -76,6 +77,10 @@ class FakeDemoTradeClient implements IDemoTradeClient {
   }
 
   async closePositionMarket(): Promise<void> {}
+
+  async getClosedPnl(params: { symbol: string }): Promise<DemoClosedPnlItem[]> {
+    return this.closedPnlBySymbol.get(params.symbol) ?? [];
+  }
 }
 
 const flush = async (): Promise<void> => {
@@ -1287,16 +1292,65 @@ describe('BotEngine demo execution', () => {
     });
     expect(positionUpdates[positionUpdates.length - 1]).toMatchObject({
       status: 'CLOSED',
-      exitPrice: closeMarket.markPrice,
-      impact: {
-        grossPnlUSDT: 0,
-        feesUSDT: 0,
-        slippageUSDT: null,
-        netPnlUSDT: 0
-      }
+      closeReason: 'SL',
+      exitPrice: closeMarket.markPrice
     });
+    expect(positionUpdates[positionUpdates.length - 1]?.impact?.netPnlUSDT ?? 0).not.toBe(0);
     expect(positionUpdates[positionUpdates.length - 1]?.entry?.spreadBpsAtEntry).not.toBeUndefined();
     expect(positionUpdates[positionUpdates.length - 1]?.exit?.spreadBpsAtExit).not.toBeUndefined();
+  });
+
+  it('uses closed-pnl payload for demo close accounting best-effort', async () => {
+    const demoClient = new FakeDemoTradeClient();
+    const positionUpdates: PositionUpdatePayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      demoTradeClient: demoClient,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: (payload) => positionUpdates.push(payload),
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, mode: 'demo', signalCounterThreshold: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, ts: now });
+    await flush();
+
+    const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
+    demoClient.openOrdersBySymbol.set('BTCUSDT', [
+      { symbol: 'BTCUSDT', orderStatus: 'Filled', orderId: pendingOrder?.orderId, orderLinkId: pendingOrder?.orderLinkId }
+    ]);
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 102, openInterestValue: 1010, ts: now } });
+
+    const opened = engine.getSymbolState('BTCUSDT')?.position;
+    expect(opened).toBeTruthy();
+    if (!opened) {
+      return;
+    }
+
+    demoClient.closedPnlBySymbol.set('BTCUSDT', [
+      {
+        symbol: 'BTCUSDT',
+        side: 'Buy',
+        qty: opened.qty,
+        avgEntryPrice: opened.entryPrice,
+        avgExitPrice: opened.tpPrice,
+        updatedTime: opened.openedTs + 1_000
+      }
+    ]);
+    demoClient.positionsBySymbol.set('BTCUSDT', null);
+
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 101, openInterestValue: 1008, ts: now + 1_000 } });
+
+    const closed = positionUpdates.find((entry) => entry.status === 'CLOSED');
+    expect(closed?.closeReason).toBe('TP');
+    expect(closed?.realizedNetPnlUSDT ?? 0).not.toBe(0);
+    expect(closed?.feesUSDT ?? 0).toBeGreaterThan(0);
   });
 
 });
@@ -1649,6 +1703,60 @@ describe('BotEngine snapshot + pause/resume', () => {
     expect(result.openPositionsRemaining).toBe(1);
     expect(result.warning).toContain('Demo close failed');
     expect(engine.getSymbolState('BTCUSDT')?.position).toBeTruthy();
+  });
+
+  it('demo killSwitch confirms close after polling and clears warning', async () => {
+    let now = Date.UTC(2025, 0, 1, 0, 1, 0);
+    const originalSetTimeout = global.setTimeout;
+    global.setTimeout = ((handler: (...args: unknown[]) => void, delay?: number) => {
+      now += Number(delay ?? 0);
+      handler();
+      return 0 as unknown as NodeJS.Timeout;
+    }) as typeof setTimeout;
+
+    try {
+      const client = new FakeDemoTradeClient();
+      let pollCount = 0;
+      client.getPosition = async () => {
+        pollCount += 1;
+        if (pollCount < 4) {
+          return { symbol: 'BTCUSDT', side: 'Buy', size: 1, entryPrice: 100, positionIdx: 1 };
+        }
+        return null;
+      };
+
+      const engine = new BotEngine({
+        now: () => now,
+        emitSignal: () => undefined,
+        emitOrderUpdate: () => undefined,
+        emitPositionUpdate: () => undefined,
+        emitQueueUpdate: () => undefined,
+        demoTradeClient: client
+      });
+
+      engine.setUniverseSymbols(['BTCUSDT']);
+      engine.start({ ...defaultConfig, mode: 'demo', signalCounterThreshold: 1 });
+
+      const symbolState = (engine as unknown as {
+        symbols: Map<string, { position?: Record<string, unknown> | null; fsmState?: string }>;
+      }).symbols.get('BTCUSDT');
+      symbolState.position = {
+        symbol: 'BTCUSDT',
+        side: 'LONG',
+        qty: 1,
+        entryPrice: 100,
+        tpPrice: 101,
+        slPrice: 99,
+        openedTs: now
+      };
+      symbolState.fsmState = 'POSITION_OPEN';
+
+      const result = await engine.killSwitch(() => ({ markPrice: 100, openInterestValue: 1_000, ts: now }));
+      expect(result.openPositionsRemaining).toBe(0);
+      expect(result.warning).toBeNull();
+    } finally {
+      global.setTimeout = originalSetTimeout;
+    }
   });
 });
 

@@ -1,4 +1,4 @@
-import type { DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../bybit/demoTradeClient.js';
+import type { DemoClosedPnlItem, DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../bybit/demoTradeClient.js';
 import type { MarketState } from '../market/marketHub.js';
 import { DemoOrderQueue, type DemoQueueSnapshot } from './demoOrderQueue.js';
 import { PAPER_FEES } from './paperFees.js';
@@ -1135,10 +1135,14 @@ export class BotEngine {
           await this.deps.demoTradeClient.closePositionMarket({
             symbol: symbolState.symbol,
             side: symbolState.position.side === 'LONG' ? 'Sell' : 'Buy',
-            qty: symbolState.position.qty.toString()
+            qty: symbolState.position.qty.toString(),
+            positionIdx: symbolState.position.side === 'LONG' ? 1 : 2
           });
 
-          for (let attempt = 0; attempt < 5; attempt += 1) {
+          let closeAttemptedTwice = false;
+          const startedAt = this.now();
+          let waitMs = 250;
+          while (this.now() - startedAt < 10_000) {
             const position = await this.deps.demoTradeClient.getPosition(symbolState.symbol);
             const size = position?.size;
             const isClosed = !position || typeof size !== 'number' || !Number.isFinite(size) || Math.abs(size) <= 0;
@@ -1147,15 +1151,28 @@ export class BotEngine {
               break;
             }
 
-            await new Promise((resolve) => setTimeout(resolve, 350));
+            if (!closeAttemptedTwice && this.now() - startedAt >= 2_500) {
+              closeAttemptedTwice = true;
+              await this.deps.demoTradeClient.closePositionMarket({
+                symbol: symbolState.symbol,
+                side: symbolState.position.side === 'LONG' ? 'Sell' : 'Buy',
+                qty: symbolState.position.qty.toString(),
+                positionIdx: symbolState.position.side === 'LONG' ? 1 : 2
+              });
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            waitMs = Math.min(waitMs + 150, 1200);
           }
 
           if (!demoCloseConfirmed) {
-            warnings.push(`Demo close not confirmed for ${symbolState.symbol} after retries`);
+            warnings.push(`Demo close timeout waiting close confirmation for ${symbolState.symbol}`);
             continue;
           }
         } catch (error) {
-          warnings.push(`Demo close failed for ${symbolState.symbol}: ${(error as Error).message}`);
+          const message = (error as Error).message;
+          const reason = message.includes('10001') ? 'positionIdx mismatch' : 'exchange close error';
+          warnings.push(`Demo close failed (${reason}) for ${symbolState.symbol}: ${message}`);
           continue;
         }
       }
@@ -1271,7 +1288,7 @@ export class BotEngine {
 
       if (startedAsPositionOpen && symbolState.fsmState === 'POSITION_OPEN' && symbolState.position) {
         const position = await this.deps.demoTradeClient.getPosition(symbolState.symbol);
-        this.processDemoOpenPosition(symbolState, marketState, position);
+        await this.processDemoOpenPosition(symbolState, marketState, position);
       }
     }
   }
@@ -2004,7 +2021,7 @@ export class BotEngine {
 
 
 
-  private processDemoOpenPosition(symbolState: SymbolRuntimeState, marketState: MarketState, position: DemoPosition | null): void {
+  private async processDemoOpenPosition(symbolState: SymbolRuntimeState, marketState: MarketState, position: DemoPosition | null): Promise<void> {
     if (!symbolState.position) {
       return;
     }
@@ -2019,6 +2036,31 @@ export class BotEngine {
         position && position.entryPrice !== null && Number.isFinite(position.entryPrice) ? position.entryPrice : symbolState.position.entryPrice
     };
 
+    const closedPnl = await this.loadDemoClosedPnlBestEffort(symbolState.symbol);
+    const matchedClosedPnl = this.matchDemoClosedPnl(symbolState.position, closedPnl, symbolState.symbol);
+    const exitPrice =
+      matchedClosedPnl && typeof matchedClosedPnl.avgExitPrice === 'number' && Number.isFinite(matchedClosedPnl.avgExitPrice)
+        ? matchedClosedPnl.avgExitPrice
+        : marketState.markPrice;
+    const closeReason = this.resolveCloseReason(symbolState.position, exitPrice);
+    const entryFeeRate = PAPER_FEES.makerFeeRate;
+    const exitFeeRate = PAPER_FEES.takerFeeRate;
+    const {
+      grossPnlUSDT: grossPnl,
+      entryFeeUSDT,
+      exitFeeUSDT,
+      feeTotalUSDT,
+      netPnlUSDT
+    } = computePnlBreakdown({
+      side: symbolState.position.side,
+      qty: symbolState.position.qty,
+      entryPrice: symbolState.position.entryPrice,
+      exitPrice,
+      entryFeeRate,
+      exitFeeRate,
+      slippageUSDT: null
+    });
+
     symbolState.position = null;
     symbolState.fsmState = 'IDLE';
     this.resetBaseline(symbolState, marketState);
@@ -2026,9 +2068,16 @@ export class BotEngine {
       symbol: symbolState.symbol,
       status: 'CLOSED',
       position: closedPosition,
-      exitPrice: marketState.markPrice,
-      pnlUSDT: 0,
-      closeReason: 'MANUAL',
+      exitPrice,
+      pnlUSDT: netPnlUSDT,
+      closeReason,
+      realizedGrossPnlUSDT: grossPnl,
+      feesUSDT: feeTotalUSDT,
+      realizedNetPnlUSDT: netPnlUSDT,
+      entryFeeUSDT,
+      exitFeeUSDT,
+      entryFeeRate,
+      exitFeeRate,
       entry: {
         markAtSignal: closedPosition.markAtSignal,
         entryLimit: closedPosition.entryLimit,
@@ -2040,28 +2089,28 @@ export class BotEngine {
       exit: {
         tpPrice: closedPosition.tpPrice,
         slPrice: closedPosition.slPrice,
-        closePrice: marketState.markPrice,
+        closePrice: exitPrice,
         slippageBpsApplied: 0,
         spreadBpsAtExit: marketState.spreadBps ?? null
       },
       impact: {
-        grossPnlUSDT: 0,
-        feesUSDT: 0,
+        grossPnlUSDT: grossPnl,
+        feesUSDT: feeTotalUSDT,
         slippageUSDT: null,
-        netPnlUSDT: 0
+        netPnlUSDT
       }
     });
     this.recordClosedTrade(
       symbolState.symbol,
       closedPosition.side,
-      0,
-      0,
-      0,
-      'MANUAL',
-      undefined,
-      undefined,
+      grossPnl,
+      feeTotalUSDT,
+      netPnlUSDT,
+      closeReason,
+      entryFeeUSDT,
+      exitFeeUSDT,
       closedPosition.openedTs,
-      0,
+      null,
       closedPosition.spreadBpsAtEntry ?? null,
       marketState.spreadBps ?? null,
       {
@@ -2075,13 +2124,70 @@ export class BotEngine {
       {
         tpPrice: closedPosition.tpPrice,
         slPrice: closedPosition.slPrice,
-        closePrice: marketState.markPrice,
+        closePrice: exitPrice,
         slippageBpsApplied: 0,
         spreadBpsAtExit: marketState.spreadBps ?? null
       }
     );
     this.updateSummaryCounts();
     this.persistSnapshot();
+  }
+
+  private async loadDemoClosedPnlBestEffort(symbol: string): Promise<DemoClosedPnlItem[]> {
+    if (!this.deps.demoTradeClient || this.state.config?.mode !== 'demo') {
+      return [];
+    }
+
+    try {
+      return await this.deps.demoTradeClient.getClosedPnl({ symbol, limit: 3 });
+    } catch {
+      return [];
+    }
+  }
+
+  private matchDemoClosedPnl(position: PaperPosition, closedList: DemoClosedPnlItem[], symbol: string): DemoClosedPnlItem | null {
+    const expectedSide = position.side === 'LONG' ? 'Buy' : 'Sell';
+    const qtyStep = this.lotSizeBySymbol.get(symbol)?.qtyStep ?? null;
+    const qtyTolerance = Math.max(typeof qtyStep === 'number' && Number.isFinite(qtyStep) ? qtyStep : 0, position.qty * 0.02);
+    for (const item of closedList) {
+      const ts = item.updatedTime ?? item.createdTime;
+      if (
+        item.symbol === position.symbol &&
+        item.side === expectedSide &&
+        Math.abs(item.qty - position.qty) <= qtyTolerance &&
+        typeof ts === 'number' &&
+        ts >= position.openedTs - 60_000
+      ) {
+        return item;
+      }
+    }
+
+    return null;
+  }
+
+  private resolveCloseReason(position: PaperPosition, exitPrice: number): TradeCloseReason {
+    if (position.closeReason === 'KILL') {
+      return 'KILL';
+    }
+
+    const tolerance = Math.max(position.entryPrice * 0.001, 0.00000001);
+    if (position.side === 'LONG') {
+      if (exitPrice >= position.tpPrice - tolerance) {
+        return 'TP';
+      }
+      if (exitPrice <= position.slPrice + tolerance) {
+        return 'SL';
+      }
+      return 'MANUAL';
+    }
+
+    if (exitPrice <= position.tpPrice + tolerance) {
+      return 'TP';
+    }
+    if (exitPrice >= position.slPrice - tolerance) {
+      return 'SL';
+    }
+    return 'MANUAL';
   }
 
   private processPendingPaperOrder(symbolState: SymbolRuntimeState, marketState: MarketState): void {

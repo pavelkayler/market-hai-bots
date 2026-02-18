@@ -1,0 +1,24 @@
+{
+  "result": {
+    "list": [
+      {
+        "symbol": "BTCUSDT",
+        "side": "Buy",
+        "size": "0.010",
+        "avgPrice": "65010.5",
+        "positionIdx": 1,
+        "leverage": "10",
+        "unrealisedPnl": "12.34"
+      },
+      {
+        "symbol": "BTCUSDT",
+        "side": "Sell",
+        "size": "0",
+        "avgPrice": "0",
+        "positionIdx": 2,
+        "leverage": "10",
+        "unrealisedPnl": "0"
+      }
+    ]
+  }
+}

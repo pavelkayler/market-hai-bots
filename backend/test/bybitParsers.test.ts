@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { parseInstrumentsInfo, parseOpenOrders, parsePositions, parseWsTickerEvent } from '../src/bybit/parsers.js';
+import { parseClosedPnl, parseInstrumentsInfo, parseOpenOrders, parsePositions, parseWsTickerEvent } from '../src/bybit/parsers.js';
 
 const readFixture = (fileName: string): unknown => {
   const fixturePath = resolve(import.meta.dirname, 'fixtures/bybit', fileName);
@@ -107,5 +107,31 @@ describe('Bybit parsers', () => {
         }
       })
     ).toEqual([]);
+  });
+
+  it('parses hedge position list fixture into both legs', () => {
+    const fixture = readFixture('position-list-hedge.json');
+    expect(parsePositions(fixture)).toHaveLength(2);
+    expect(parsePositions(fixture)[0]).toMatchObject({ symbol: 'BTCUSDT', side: 'Buy', size: 0.01, positionIdx: 1 });
+    expect(parsePositions(fixture)[1]).toMatchObject({ symbol: 'BTCUSDT', side: 'Sell', size: 0, positionIdx: 2 });
+  });
+
+  it('parses closed pnl list and skips malformed rows', () => {
+    const fixture = readFixture('closed-pnl-list.json') as { result?: { list?: unknown[] } };
+    const result = parseClosedPnl(fixture.result?.list);
+    expect(result).toEqual([
+      {
+        symbol: 'BTCUSDT',
+        side: 'Buy',
+        qty: 2,
+        avgEntryPrice: 100,
+        avgExitPrice: 102,
+        closedPnl: 4,
+        createdTime: 1739942400123,
+        updatedTime: 1739942401123,
+        orderId: 'closed-order-1',
+        orderLinkId: 'demo-order-1'
+      }
+    ]);
   });
 });

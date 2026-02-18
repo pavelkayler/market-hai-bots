@@ -42,7 +42,7 @@ Use `docs/QA_CHECKLIST.md` for manual steps and record results in `docs/QA_REPOR
 4. **Pause/Resume/Kill**
    - Pause sets `paused=true` and snapshot.
    - Resume requires snapshot + ready universe.
-   - Kill cancels pending entries; does not force-close open positions.
+   - Kill cancels pending entries and attempts to close open positions (paper force-close; demo exchange close with confirmation polling).
 5. **Export pack**
    - Click Export Pack; button is disabled while exporting.
    - Validate zip: `meta.json` always present; optional files included only when present.
@@ -415,5 +415,16 @@ Notes:
   - Manual start payloads do not overwrite saved profiles.
 
 ### KILL demo-mode confirmation
-- In demo mode, KILL now requires exchange close confirmation polling before local position state is cleared.
-- If close cannot be confirmed, position remains in local runtime state, warning is surfaced, and residual counters remain non-zero.
+- In demo mode, KILL cancels open orders and sends reduce-only market close, then polls confirmation (up to ~10s, backoff, one re-close attempt).
+- If close cannot be confirmed, position remains in local runtime state; warning is actionable (`positionIdx mismatch` vs `timeout waiting close confirmation`) and residual counters remain non-zero.
+
+
+### How to verify (this PR scope)
+1. Demo one-way + hedge check:
+   - Start DEMO, open a position, then let TP/SL trigger or close manually on exchange.
+   - Confirm Results/Run History stats include non-zero gross/fees/net when closed.
+2. KILL check:
+   - While DEMO position is open, run KILL.
+   - Confirm `openPositionsRemaining=0` in normal case and no warning; if warning appears, message names mismatch vs timeout and symbols.
+3. Runs history check:
+   - Open Runs tab and verify trade count/stats are updated for the run.
