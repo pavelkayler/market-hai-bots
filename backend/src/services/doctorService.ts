@@ -54,8 +54,6 @@ type DoctorServiceDeps = {
     lastError: string | null;
   };
   getUniverseState: () => Promise<UniverseStateLike | null>;
-  getCurrentRunDir: () => string | null;
-  getRunRecorderLastWriteError: () => string | null;
   getDataDir: () => string;
   now?: () => number;
   getVersion?: () => Promise<{ commit?: string; node?: string }>;
@@ -112,13 +110,6 @@ export class DoctorService {
     } catch (error) {
       checks.push({ id: 'market_age_per_symbol', status: 'WARN', message: 'unable to evaluate market ages' });
       warnings.push(`market_age_per_symbol:${(error as Error).message}`);
-    }
-
-    try {
-      checks.push(await this.buildRunRecordingStatusCheck(ts));
-    } catch (error) {
-      checks.push({ id: 'run_recording_status', status: 'WARN', message: 'unable to verify run recording status' });
-      warnings.push(`run_recording_status:${(error as Error).message}`);
     }
 
     try {
@@ -232,57 +223,6 @@ export class DoctorService {
         scannedSymbols: symbols.length,
         worst
       }
-    };
-  }
-
-  private async buildRunRecordingStatusCheck(nowMs: number): Promise<DoctorCheck> {
-    const botState = this.deps.getBotState();
-    const phase = phaseOf(botState);
-    const runDir = this.deps.getCurrentRunDir();
-    const lastWriteError = this.deps.getRunRecorderLastWriteError();
-
-    if (phase === 'STOPPED') {
-      return {
-        id: 'run_recording_status',
-        status: 'WARN',
-        message: 'bot stopped; run recording inactive',
-        details: { phase }
-      };
-    }
-
-    if (lastWriteError) {
-      return {
-        id: 'run_recording_status',
-        status: 'FAIL',
-        message: 'bot running but run recording has write errors',
-        details: { phase, lastWriteError }
-      };
-    }
-
-    if (!runDir) {
-      return {
-        id: 'run_recording_status',
-        status: 'WARN',
-        message: 'bot active but runId unavailable',
-        details: { phase }
-      };
-    }
-
-    const writableProbe = await checkWritableDir(runDir, nowMs);
-    if (!writableProbe.ok) {
-      return {
-        id: 'run_recording_status',
-        status: 'FAIL',
-        message: 'bot active but run directory is not writable',
-        details: { phase, runDir, error: writableProbe.error }
-      };
-    }
-
-    return {
-      id: 'run_recording_status',
-      status: 'PASS',
-      message: 'run recording active and writable',
-      details: { phase, runDir, runId: path.basename(runDir) }
     };
   }
 

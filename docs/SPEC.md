@@ -81,3 +81,11 @@ Demo:
 
 Real:
 - Not implemented (stub).
+
+
+## Simplified Strategy (v2)
+- Active settings are limited to: `tfMinutes` (1/3/5/10/15), `priceUpThrPct`, `oiUpThrPct`, `minTriggerCount`, `maxTriggerCount`.
+- Signal deltas are computed against previous TF candle close (price + openInterestValue in USDT).
+- Direction is funding-driven (`fundingRate>0 => LONG`, `<0 => SHORT`, missing => `MISSING` and no trade).
+- Per-symbol funding blackout: block + force flatten at `<30m` to funding; resume only `+10m` after funding time.
+- Auto-Tune, Records/Run History, and Export Pack surfaces are removed from strategy flow.

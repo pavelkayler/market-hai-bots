@@ -222,13 +222,21 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         if (!runtime) {
           return null;
         }
-        const threshold = state.config?.signalCounterThreshold ?? 2;
+        const market = marketHub.getState(symbol);
+        const nextFunding = runtime.nextFundingTimeMs ?? market?.nextFundingTimeMs ?? null;
+        const timeToFundingMs = nextFunding ? nextFunding - now : null;
         return {
           symbol,
           signalCount24h: runtime.lastSignalCount24h ?? 0,
-          signalCounterThreshold: threshold,
-          signalConfirmed: (runtime.lastSignalCount24h ?? 0) >= threshold,
-          lastSignalAt: runtime.signalEvents24h?.length ? runtime.signalEvents24h[runtime.signalEvents24h.length - 1] : undefined
+          minTriggerCount: state.config?.minTriggerCount ?? state.config?.signalCounterMin ?? 2,
+          maxTriggerCount: state.config?.maxTriggerCount ?? state.config?.signalCounterMax ?? 3,
+          lastSignalAt: runtime.lastSignalAtMs ?? (runtime.signalEvents24h?.length ? runtime.signalEvents24h[runtime.signalEvents24h.length - 1] : undefined),
+          fundingRate: runtime.fundingRate ?? market?.fundingRate ?? null,
+          nextFundingTimeMs: nextFunding,
+          timeToFundingMs,
+          tradingAllowed: runtime.tradingAllowed ?? 'MISSING',
+          priceDeltaPct: runtime.lastPriceDeltaPct ?? null,
+          oiDeltaPct: runtime.lastOiDeltaPct ?? null
         };
       })
       .filter((value): value is NonNullable<typeof value> => value !== null);
@@ -303,8 +311,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     getTrackedSymbols: () => botEngine.getRuntimeSymbols(),
     getTickerStreamStatus: () => marketHub.getTickerStreamStatus(),
     getUniverseState: () => universeService.get(),
-    getCurrentRunDir: () => runRecorder.getCurrentRunDir(),
-    getRunRecorderLastWriteError: () => runRecorder.getLastWriteError(),
     getDataDir: () => dataDirPath,
     getVersion: async () => ({
       commit: getCommitHash() ?? undefined,

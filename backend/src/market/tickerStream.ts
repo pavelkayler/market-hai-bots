@@ -2,7 +2,8 @@ export type TickerUpdate = {
   symbol: string;
   markPrice: number;
   openInterestValue: number;
-  openInterest?: number | null;
+  fundingRate?: number | null;
+  nextFundingTimeMs?: number | null;
   ts: number;
   lastPrice?: number | null;
   bid?: number | null;
