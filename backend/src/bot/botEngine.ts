@@ -192,10 +192,13 @@ export type SymbolRuntimeState = {
   signalEvents24h: number[];
   lastSignalBucketStart: number | null;
   prevCandleOi: number | null;
+  prevTfCloseOiv: number | null;
   lastCandleOi: number | null;
   prevCandleMark: number | null;
+  prevTfCloseMark: number | null;
   lastCandleMark: number | null;
   lastCandleBucketStart: number | null;
+  lastTfBucketStart: number | null;
   lastEvaluationGateTs: number | null;
   blockedUntilTs: number;
   overrideGateOnce: boolean;
@@ -976,10 +979,13 @@ export class BotEngine {
         signalEvents24h: state.signalEvents24h ?? state.signalEvents ?? [],
         lastSignalBucketStart: state.lastSignalBucketStart ?? state.lastSignalBucketKey ?? null,
         prevCandleOi: state.prevCandleOi ?? null,
+        prevTfCloseOiv: state.prevTfCloseOiv ?? state.prevCandleOi ?? null,
         lastCandleOi: state.lastCandleOi ?? null,
         prevCandleMark: state.prevCandleMark ?? null,
+        prevTfCloseMark: state.prevTfCloseMark ?? state.prevCandleMark ?? null,
         lastCandleMark: state.lastCandleMark ?? null,
-        lastCandleBucketStart: state.lastCandleBucketStart ?? null,
+        lastCandleBucketStart: state.lastCandleBucketStart ?? state.lastTfBucketStart ?? null,
+        lastTfBucketStart: state.lastTfBucketStart ?? state.lastCandleBucketStart ?? null,
         lastEvaluationGateTs: null,
         blockedUntilTs: state.blockedUntilTs,
         overrideGateOnce: state.overrideGateOnce,
@@ -1116,10 +1122,13 @@ export class BotEngine {
         ...this.buildEmptySymbolState(symbol),
         baseline: symbolState.baseline ? { ...symbolState.baseline } : null,
         prevCandleOi: symbolState.prevCandleOi,
+        prevTfCloseOiv: symbolState.prevTfCloseOiv,
         lastCandleOi: symbolState.lastCandleOi,
         prevCandleMark: symbolState.prevCandleMark,
+        prevTfCloseMark: symbolState.prevTfCloseMark,
         lastCandleMark: symbolState.lastCandleMark,
         lastCandleBucketStart: symbolState.lastCandleBucketStart,
+        lastTfBucketStart: symbolState.lastTfBucketStart,
         tfCandle: symbolState.tfCandle ? { ...symbolState.tfCandle } : null,
         lastClosedOiCandle: symbolState.lastClosedOiCandle ? { ...symbolState.lastClosedOiCandle } : null,
         lastImpulseProcessedBucketStart: symbolState.lastImpulseProcessedBucketStart
@@ -1151,10 +1160,13 @@ export class BotEngine {
       signalEvents24h: [...symbolState.signalEvents24h],
       lastSignalBucketStart: symbolState.lastSignalBucketStart,
       prevCandleOi: symbolState.prevCandleOi,
+      prevTfCloseOiv: symbolState.prevTfCloseOiv,
       lastCandleOi: symbolState.lastCandleOi,
       prevCandleMark: symbolState.prevCandleMark,
+      prevTfCloseMark: symbolState.prevTfCloseMark,
       lastCandleMark: symbolState.lastCandleMark,
       lastCandleBucketStart: symbolState.lastCandleBucketStart,
+      lastTfBucketStart: symbolState.lastTfBucketStart,
       trendCandles5m: symbolState.trendCandles5m.map((candle) => ({ ...candle })),
       trendCandles15m: symbolState.trendCandles15m.map((candle) => ({ ...candle })),
       tfCandle: symbolState.tfCandle ? { ...symbolState.tfCandle } : null,
@@ -1181,6 +1193,33 @@ export class BotEngine {
 
     await this.cancelSymbolPendingOrder(symbolState, marketState, 'CANCELLED');
     return true;
+  }
+
+  async cancelAllPendingOrders(getMarketState: (symbol: string) => MarketState | undefined): Promise<number> {
+    let cancelledOrders = 0;
+    for (const symbolState of this.symbols.values()) {
+      if (symbolState.fsmState !== 'ENTRY_PENDING' || !symbolState.pendingOrder) {
+        continue;
+      }
+
+      const marketState =
+        getMarketState(symbolState.symbol) ?? {
+          markPrice: symbolState.pendingOrder.limitPrice,
+          openInterestValue: symbolState.baseline?.baseOiValue ?? 0,
+          ts: this.now(),
+          lastPrice: null,
+          bid: null,
+          ask: null,
+          spreadBps: null,
+          lastTickTs: this.now()
+        };
+      await this.cancelSymbolPendingOrder(symbolState, marketState, 'CANCELLED');
+      cancelledOrders += 1;
+    }
+
+    this.updateSummaryCounts();
+    this.persistSnapshot();
+    return cancelledOrders;
   }
 
   async killSwitch(getMarketState: (symbol: string) => MarketState | undefined): Promise<KillSwitchResult> {
@@ -1410,10 +1449,15 @@ export class BotEngine {
       return;
     }
 
+    if (!this.state.running || this.state.paused) {
+      this.recordNoEntryReason(symbolState, { code: 'GUARDRAIL_PAUSED', message: 'Bot paused/running disabled.' });
+      return;
+    }
+
     if (symbolState.fsmState === 'ENTRY_PENDING') {
       this.lastEntryPlacedTs = now;
 
-    if (this.state.config.mode === 'paper') {
+      if (this.state.config.mode === 'paper') {
         this.processPendingPaperOrder(symbolState, marketState);
       }
       return;
@@ -1422,14 +1466,9 @@ export class BotEngine {
     if (symbolState.fsmState === 'POSITION_OPEN') {
       this.lastEntryPlacedTs = now;
 
-    if (this.state.config.mode === 'paper') {
+      if (this.state.config.mode === 'paper') {
         this.processOpenPosition(symbolState, marketState);
       }
-      return;
-    }
-
-    if (!this.state.running || this.state.paused) {
-      this.recordNoEntryReason(symbolState, { code: 'GUARDRAIL_PAUSED', message: 'Bot paused/running disabled.' });
       return;
     }
 
@@ -1980,10 +2019,13 @@ export class BotEngine {
       signalEvents24h: [],
       lastSignalBucketStart: null,
       prevCandleOi: null,
+      prevTfCloseOiv: null,
       lastCandleOi: null,
       prevCandleMark: null,
+      prevTfCloseMark: null,
       lastCandleMark: null,
       lastCandleBucketStart: null,
+      lastTfBucketStart: null,
       lastEvaluationGateTs: null,
       blockedUntilTs: 0,
       overrideGateOnce: false,
@@ -2613,10 +2655,13 @@ export class BotEngine {
     const bucketStart = this.computeTfBucketStart(now);
     const oiNow = this.getOiForSignals(marketState);
     symbolState.prevCandleOi = oiNow;
+    symbolState.prevTfCloseOiv = null;
     symbolState.lastCandleOi = oiNow;
     symbolState.prevCandleMark = marketState.markPrice;
+    symbolState.prevTfCloseMark = null;
     symbolState.lastCandleMark = marketState.markPrice;
     symbolState.lastCandleBucketStart = bucketStart;
+    symbolState.lastTfBucketStart = bucketStart;
     symbolState.tfCandle = {
       bucketStart,
       openTs: now,
@@ -2694,10 +2739,13 @@ export class BotEngine {
         signalEvents24h: symbolState.signalEvents24h,
         lastSignalBucketStart: symbolState.lastSignalBucketStart,
         prevCandleOi: symbolState.prevCandleOi,
+        prevTfCloseOiv: symbolState.prevTfCloseOiv,
         lastCandleOi: symbolState.lastCandleOi,
         prevCandleMark: symbolState.prevCandleMark,
+        prevTfCloseMark: symbolState.prevTfCloseMark,
         lastCandleMark: symbolState.lastCandleMark,
         lastCandleBucketStart: symbolState.lastCandleBucketStart,
+        lastTfBucketStart: symbolState.lastTfBucketStart,
         trend5mBucketStart: symbolState.trendCandles5m.at(-1)?.bucketStart ?? null,
         trend5mPrevClose: symbolState.trendCandles5m.at(-2)?.close ?? null,
         trend5mLastClose: symbolState.trendCandles5m.at(-1)?.close ?? null,
@@ -3120,9 +3168,12 @@ export class BotEngine {
     if (candle.bucketStart !== bucketStart) {
       this.onTfCandleClosed(symbolState, candle);
       symbolState.lastCandleBucketStart = candle.bucketStart;
+      symbolState.lastTfBucketStart = candle.bucketStart;
       symbolState.prevCandleMark = candle.openMark;
+      symbolState.prevTfCloseMark = candle.closeMark;
       symbolState.lastCandleMark = candle.closeMark;
       symbolState.prevCandleOi = candle.openOi;
+      symbolState.prevTfCloseOiv = candle.closeOi;
       symbolState.lastCandleOi = candle.closeOi;
 
       symbolState.tfCandle = {
@@ -3145,6 +3196,7 @@ export class BotEngine {
     candle.lowMark = Math.min(candle.lowMark, marketState.markPrice);
     candle.closeOi = oiNow;
     symbolState.lastCandleBucketStart = candle.bucketStart;
+    symbolState.lastTfBucketStart = candle.bucketStart;
     symbolState.lastCandleMark = candle.closeMark;
     symbolState.lastCandleOi = candle.closeOi;
   }

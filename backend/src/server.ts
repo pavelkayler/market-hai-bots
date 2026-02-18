@@ -354,13 +354,25 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         const nextFundingTimeMs = runtime?.nextFundingTimeMs ?? marketWithFunding?.nextFundingTimeMs ?? null;
         const timeToFundingMs = nextFundingTimeMs === null ? null : Math.max(0, nextFundingTimeMs - now);
 
+        const prevTfCloseMark = typeof runtime?.prevTfCloseMark === 'number' && Number.isFinite(runtime.prevTfCloseMark) ? runtime.prevTfCloseMark : null;
+        const prevTfCloseOiv = typeof runtime?.prevTfCloseOiv === 'number' && Number.isFinite(runtime.prevTfCloseOiv) ? runtime.prevTfCloseOiv : null;
+        const hasPrevTfClose = prevTfCloseMark !== null && prevTfCloseMark > 0 && prevTfCloseOiv !== null && prevTfCloseOiv > 0;
+        const priceDeltaPct =
+          hasPrevTfClose && typeof market?.markPrice === 'number' && Number.isFinite(market.markPrice)
+            ? ((market.markPrice - prevTfCloseMark) / prevTfCloseMark) * 100
+            : 0;
+        const oiDeltaPct =
+          hasPrevTfClose && typeof market?.openInterestValue === 'number' && Number.isFinite(market.openInterestValue)
+            ? ((market.openInterestValue - prevTfCloseOiv) / prevTfCloseOiv) * 100
+            : 0;
+
         return {
           symbol,
           markPrice: typeof market?.markPrice === 'number' && Number.isFinite(market.markPrice) ? market.markPrice : 0,
           openInterestValue:
             typeof market?.openInterestValue === 'number' && Number.isFinite(market.openInterestValue) ? market.openInterestValue : 0,
-          priceDeltaPct: typeof runtime?.lastPriceDeltaPct === 'number' && Number.isFinite(runtime.lastPriceDeltaPct) ? runtime.lastPriceDeltaPct : 0,
-          oiDeltaPct: typeof runtime?.lastOiDeltaPct === 'number' && Number.isFinite(runtime.lastOiDeltaPct) ? runtime.lastOiDeltaPct : 0,
+          priceDeltaPct,
+          oiDeltaPct,
           fundingRate: runtime?.fundingRate ?? marketWithFunding?.fundingRate ?? null,
           nextFundingTimeMs,
           fundingFetchedAtMs: fundingInfo.fundingFetchedAtMs,
@@ -773,7 +785,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   app.post('/api/bot/start', async (request, reply) => {
     const universe = await universeService.get();
     if (!universe?.ready || universe.symbols.length === 0) {
-      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+      return reply.code(409).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }
 
     if (!marketHub.isRunning()) {
@@ -815,13 +827,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.post('/api/bot/stop', async () => {
+    const cancelledOrders = await botEngine.cancelAllPendingOrders((symbol) => marketHub.getState(symbol));
     botEngine.stop();
     currentRunProfileNameUsed = null;
     currentRunId = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
     await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_STOP' });
     broadcastBotState();
-    return { ok: true, ...botEngine.getState() };
+    return { ok: true, cancelledOrders, ...botEngine.getState() };
   });
 
   app.post('/api/bot/pause', async () => {
@@ -909,6 +922,57 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     });
 
     return { ok: true, ...result, warning };
+  });
+
+  app.post('/api/bot/reset', async () => {
+    killInProgress = true;
+    killCompletedAt = null;
+    killWarning = null;
+    broadcastBotState();
+
+    const result = await botEngine.killSwitch((symbol) => marketHub.getState(symbol));
+    const warning =
+      result.warning ??
+      (result.activeOrdersRemaining > 0 || result.openPositionsRemaining > 0
+        ? `RESET finished with remaining activeOrders=${result.activeOrdersRemaining}, openPositions=${result.openPositionsRemaining}`
+        : null);
+
+    killWarning = warning;
+    killInProgress = false;
+    killCompletedAt = Date.now();
+    botEngine.stop();
+    botEngine.resetRuntimeStateForAllSymbols();
+    await universeService.clear();
+    await marketHub.setUniverseSymbols([]);
+    botEngine.setUniverseSymbols([]);
+    setTrackedUniverseSymbols([]);
+    symbolUpdateBroadcaster.reset();
+    currentRunProfileNameUsed = null;
+    currentRunId = null;
+
+    await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
+    await runRecorder.appendEvent({
+      ts: Date.now(),
+      type: 'SYSTEM',
+      event: 'BOT_RESET',
+      payload: {
+        cancelledOrders: result.cancelledOrders,
+        closedPositions: result.closedPositions,
+        activeOrdersRemaining: result.activeOrdersRemaining,
+        openPositionsRemaining: result.openPositionsRemaining,
+        warning
+      }
+    });
+    await appendOpsJournalEvent('SYSTEM_RESET_ALL', {
+      cancelledOrders: result.cancelledOrders,
+      closedPositions: result.closedPositions,
+      activeOrdersRemaining: result.activeOrdersRemaining,
+      openPositionsRemaining: result.openPositionsRemaining,
+      warning
+    });
+    broadcastBotState();
+
+    return { ok: true, warning, cleared: { universe: true, runtime: true } };
   });
 
   app.get('/api/bot/guardrails', async () => {
@@ -1377,4 +1441,3 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   return app;
 }
-

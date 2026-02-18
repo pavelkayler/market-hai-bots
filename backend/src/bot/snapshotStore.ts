@@ -17,10 +17,13 @@ export type RuntimeSnapshotSymbol = {
   signalEvents24h?: number[];
   lastSignalBucketStart?: number | null;
   prevCandleOi?: number | null;
+  prevTfCloseOiv?: number | null;
   lastCandleOi?: number | null;
   prevCandleMark?: number | null;
+  prevTfCloseMark?: number | null;
   lastCandleMark?: number | null;
   lastCandleBucketStart?: number | null;
+  lastTfBucketStart?: number | null;
   trend5mBucketStart?: number | null;
   trend5mPrevClose?: number | null;
   trend5mLastClose?: number | null;
