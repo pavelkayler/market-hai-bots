@@ -19,8 +19,6 @@ import {
   getJournalTail,
   getProfile,
   getProfiles,
-  getReplayFiles,
-  getReplayState,
   getUniverse,
   getUniverseExclusions,
   killBot,
@@ -33,14 +31,10 @@ import {
   saveProfile,
   setActiveProfile,
   startBot,
-  startRecording,
-  startReplay,
   stopBot,
-  stopRecording,
-  stopReplay,
   uploadProfiles
 } from '../api';
-import type { AutoTuneRuntimeState, BotPerSymbolStats, BotSettings, BotState, BotStats, EntryReason, JournalEntry, ReplaySpeed, ReplayState, SymbolUpdatePayload, UniverseState } from '../types';
+import type { AutoTuneRuntimeState, BotPerSymbolStats, BotSettings, BotState, BotStats, EntryReason, JournalEntry, SymbolUpdatePayload, UniverseState } from '../types';
 import { useSort } from '../hooks/useSort';
 import type { SortState } from '../utils/sort';
 import { formatDuration } from '../utils/time';
@@ -236,19 +230,6 @@ export function BotPage({
   const [universeSearch, setUniverseSearch] = useState<string>('');
   const [excludedSymbols, setExcludedSymbols] = useState<string[]>([]);
   const [universePage, setUniversePage] = useState<number>(1);
-  const [recordTopN, setRecordTopN] = useState<number>(20);
-  const [recordFileName, setRecordFileName] = useState<string>(`session-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.ndjson`);
-  const [replayFileName, setReplayFileName] = useState<string>('');
-  const [replaySpeed, setReplaySpeed] = useState<ReplaySpeed>('1x');
-  const [replayState, setReplayState] = useState<ReplayState>({
-    recording: false,
-    replaying: false,
-    fileName: null,
-    speed: null,
-    recordsWritten: 0,
-    progress: { read: 0, total: 0 }
-  });
-  const [replayFiles, setReplayFiles] = useState<string[]>([]);
   const [journalLimit, setJournalLimit] = useState<number>(200);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [showPhaseHelp, setShowPhaseHelp] = useState<boolean>(false);
@@ -351,26 +332,6 @@ export function BotPage({
     setUniversePage(1);
   }, [sortedUniverseSymbols, universeSearch]);
 
-  useEffect(() => {
-    const refreshReplayState = async () => {
-      try {
-        const [state, filesResponse] = await Promise.all([getReplayState(), getReplayFiles()]);
-        setReplayState(state);
-        setReplayFiles(filesResponse.files);
-      } catch {
-        // no-op: optional card state
-      }
-    };
-
-    void refreshReplayState();
-    const interval = window.setInterval(() => {
-      void refreshReplayState();
-    }, 2000);
-
-    return () => {
-      window.clearInterval(interval);
-    };
-  }, []);
 
   const persistSettings = (next: BotSettings) => {
     setSettings(next);
@@ -705,53 +666,6 @@ export function BotPage({
     }
   };
 
-  const handleRecordStart = async () => {
-    setError('');
-    try {
-      await startRecording(recordTopN, recordFileName);
-      setStatus('Recording started');
-      setReplayState(await getReplayState());
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const handleRecordStop = async () => {
-    setError('');
-    try {
-      await stopRecording();
-      setStatus('Recording stopped');
-      setReplayState(await getReplayState());
-      const files = await getReplayFiles();
-      setReplayFiles(files.files);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const handleReplayStart = async () => {
-    setError('');
-    try {
-      await startReplay(replayFileName, replaySpeed);
-      setStatus('Replay started');
-      setReplayState(await getReplayState());
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const handleReplayStop = async () => {
-    setError('');
-    try {
-      await stopReplay();
-      setStatus('Replay stopped');
-      setReplayState(await getReplayState());
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-
   const refreshJournal = async (limit: number = journalLimit) => {
     const response = await getJournalTail(limit);
     setJournalEntries(response.entries);
@@ -861,7 +775,7 @@ export function BotPage({
   const handleClearAllTables = async () => {
     if (
       !window.confirm(
-        'Clear runtime data? This clears runtime symbol state, orders/positions, journal tail, bot stats, universe, exclusions, and replay state. Profiles are kept.'
+        'Clear runtime data? This clears runtime symbol state, orders/positions, journal tail, bot stats, universe, and exclusions. Profiles are kept.'
       )
     ) {
       return;
@@ -875,9 +789,8 @@ export function BotPage({
       setDashboardEntries([]);
       setBotStats(EMPTY_BOT_STATS);
       setExcludedSymbols([]);
-      const [nextUniverse, nextReplayState] = await Promise.all([getUniverse(), getReplayState()]);
+      const nextUniverse = await getUniverse();
       setUniverseState(nextUniverse);
-      setReplayState(nextReplayState);
       await syncRest();
       setStatus('Runtime tables cleared. Profiles were preserved.');
     } catch (err) {
@@ -893,8 +806,6 @@ export function BotPage({
 
   const formatPnl = (value: number): string => value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-  const winPct = botStats.totalTrades > 0 ? (botStats.wins / botStats.totalTrades) * 100 : 0;
-  const lossPct = botStats.totalTrades > 0 ? (botStats.losses / botStats.totalTrades) * 100 : 0;
   const dashboardLatencyMs = dashboardFetchedAt ? Math.max(0, Date.now() - dashboardFetchedAt) : null;
 
   const formatJournalSummary = (entry: JournalEntry): string => {
@@ -927,7 +838,7 @@ export function BotPage({
     { key: 'ts', dir: 'desc' },
     { tableId: 'dashboard-events', getSortValue: (row, key) => dashboardColumns.find((column) => column.sortKey === key)?.accessor(row) }
   );
-  const dashboardEvents = sortedDashboardRows.slice(0, 10);
+  const dashboardEvents = sortedDashboardRows.slice(0, 3);
 
   const perSymbolRows = useMemo(() => {
     return (botStats.perSymbol ?? []).map((entry) => {
@@ -1108,27 +1019,35 @@ export function BotPage({
           <Card.Body className="universe-panel">
             <Row className="g-3">
               <Col md={3}>
-                <div><strong>Trades:</strong> {botStats.totalTrades}</div>
+                <div><strong>Total trades:</strong> {botStats.totalTrades}</div>
+                <div><strong>Wins/Losses:</strong> {botStats.wins}/{botStats.losses}</div>
                 <div><strong>Winrate:</strong> {botStats.winratePct.toFixed(1)}%</div>
                 <div><strong>PnL:</strong> {formatPnl(botStats.pnlUSDT)} USDT</div>
                 <div><strong>Today:</strong> {formatPnl(botStats.todayPnlUSDT)} USDT</div>
                 <div><strong>Loss streak:</strong> {botStats.lossStreak}</div>
-                <div><strong>Guardrail:</strong> {botStats.guardrailPauseReason ?? '-'}</div>
               </Col>
               <Col md={3}>
+                <div><strong>Total fees:</strong> {formatPnl(botStats.totalFeesUSDT)} USDT</div>
+                <div><strong>Total slippage:</strong> {formatPnl(botStats.totalSlippageUSDT)} USDT</div>
+                <div><strong>Avg spread entry:</strong> {botStats.avgSpreadBpsEntry === null ? '-' : `${botStats.avgSpreadBpsEntry.toFixed(2)} bps`}</div>
+                <div><strong>Avg spread exit:</strong> {botStats.avgSpreadBpsExit === null ? '-' : `${botStats.avgSpreadBpsExit.toFixed(2)} bps`}</div>
+                <div><strong>Expectancy:</strong> {botStats.expectancyUSDT === null ? '-' : `${formatPnl(botStats.expectancyUSDT)} USDT`}</div>
+                <div><strong>Profit factor:</strong> {botStats.profitFactor === null ? '-' : botStats.profitFactor.toFixed(3)}</div>
+              </Col>
+              <Col md={3}>
+                <div><strong>Guardrail pause reason:</strong> {botStats.guardrailPauseReason ?? '-'}</div>
+                <div><strong>Guardrail state:</strong> {botState.paused ? 'paused' : 'active'}</div>
                 <div><strong>Bot:</strong> {botState.running ? (botState.paused ? 'paused' : 'running') : 'stopped'}</div>
-                <div><strong>Auto-Tune:</strong> {autoTuneState.enabled ? 'ON' : 'OFF'}{autoTuneState.lastApplied ? `, last ${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after}` : ''}</div>
                 <div><strong>Mode:</strong> {botState.mode ?? '-'}</div>
                 <div><strong>TF:</strong> {botState.tf ?? '-'}</div>
                 <div><strong>Direction:</strong> {botState.direction ?? '-'}</div>
-                <div><strong>Uptime (active):</strong> {formatDuration(botState.uptimeMs)}</div>
               </Col>
               <Col md={3}>
+                <div><strong>Auto-Tune:</strong> {autoTuneState.enabled ? 'ON' : 'OFF'}{autoTuneState.lastApplied ? `, last ${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after}` : ''}</div>
                 <div><strong>Queue depth:</strong> {botState.queueDepth}</div>
                 <div><strong>Active orders:</strong> {botState.activeOrders}</div>
                 <div><strong>Open positions:</strong> {botState.openPositions}</div>
-              </Col>
-              <Col md={3}>
+                <div><strong>Uptime (active):</strong> {formatDuration(botState.uptimeMs)}</div>
                 <div><strong>Symbol updates/s:</strong> {symbolUpdatesPerSecond.toFixed(2)}</div>
                 <div><strong>Journal age:</strong> {dashboardLatencyMs === null ? '-' : `${dashboardLatencyMs}ms`}</div>
                 <div><strong>Last event:</strong> {dashboardEntries.length === 0 ? '-' : new Date(dashboardEntries[dashboardEntries.length - 1].ts).toLocaleTimeString()}</div>
@@ -1138,6 +1057,12 @@ export function BotPage({
             <div className="d-flex flex-wrap gap-2 mt-3">
               <Button variant="outline-primary" onClick={() => void refreshDashboardEvents()}>
                 Refresh
+              </Button>
+              <Button variant="danger" onClick={() => void handleClearAllTables()} disabled={botState.running}>
+                Clear all tables
+              </Button>
+              <Button variant="outline-danger" onClick={() => void handleResetStats()}>
+                Reset
               </Button>
               <Button variant="outline-secondary" onClick={() => void handleDownloadJournal('csv')}>
                 Download CSV
@@ -1189,7 +1114,7 @@ export function BotPage({
       ) : null}
 
       {activeTab === 'settings' ? (
-        <Col md={6}>
+        <Col md={12}>
           <Card>
             <Card.Header>Universe</Card.Header>
           <Card.Body>
@@ -1365,65 +1290,6 @@ export function BotPage({
         </Col>
       ) : null}
 
-      {activeTab === 'dashboard' ? (
-        <>
-          <Col md={6}>
-          <Card className="mt-3">
-            <Card.Header className="d-flex justify-content-between align-items-center">
-            <span>Results</span>
-            <div className="d-flex gap-2">
-              <Button size="sm" variant="outline-secondary" onClick={() => void refreshBotStats()}>
-                Refresh
-              </Button>
-              <Button size="sm" variant="danger" onClick={() => void handleClearAllTables()} disabled={botState.running}>
-                Clear all tables
-              </Button>
-              <Button size="sm" variant="outline-danger" onClick={() => void handleResetStats()}>
-                Reset
-              </Button>
-            </div>
-          </Card.Header>
-          <Card.Body>
-            <div>Total trades: {botStats.totalTrades}</div>
-            <div>Wins: {botStats.wins} ({winPct.toFixed(2)}%)</div>
-            <div>Losses: {botStats.losses} ({lossPct.toFixed(2)}%)</div>
-            <div>Winrate: {botStats.winratePct.toFixed(2)}%</div>
-            <div>PnL (USDT): {formatPnl(botStats.pnlUSDT)}</div>
-            <div>Today PnL (USDT): {formatPnl(botStats.todayPnlUSDT)}</div>
-            <div>Loss streak: {botStats.lossStreak}</div>
-            <div>Guardrail pause reason: {botStats.guardrailPauseReason ?? '-'}</div>
-            <div>Avg win (USDT): {botStats.avgWinUSDT === null ? '-' : formatPnl(botStats.avgWinUSDT)}</div>
-            <div>Avg loss (USDT): {botStats.avgLossUSDT === null ? '-' : formatPnl(botStats.avgLossUSDT)}</div>
-            <div>Total fees (USDT): {formatPnl(botStats.totalFeesUSDT)}</div>
-            <div>Total slippage (USDT): {formatPnl(botStats.totalSlippageUSDT)}</div>
-            <div>Avg spread entry (bps): {botStats.avgSpreadBpsEntry === null ? '-' : botStats.avgSpreadBpsEntry.toFixed(2)}</div>
-            <div>Avg spread exit (bps): {botStats.avgSpreadBpsExit === null ? '-' : botStats.avgSpreadBpsExit.toFixed(2)}</div>
-            {botStats.totalTrades > 0 ? (
-              <div className="mt-2">
-                <div>Expectancy (USDT): {botStats.expectancyUSDT === null ? '-' : formatPnl(botStats.expectancyUSDT)}</div>
-                <div>Profit factor: {botStats.profitFactor === null ? '-' : botStats.profitFactor.toFixed(3)}</div>
-                <div>Avg fee/trade (USDT): {botStats.avgFeePerTradeUSDT === null ? '-' : formatPnl(botStats.avgFeePerTradeUSDT)}</div>
-                <div>Avg net/trade (USDT): {botStats.avgNetPerTradeUSDT === null ? '-' : formatPnl(botStats.avgNetPerTradeUSDT)}</div>
-              </div>
-            ) : null}
-            <div>
-              Last closed:{' '}
-              {botStats.lastClosed ? (
-                <div className="font-monospace">
-                  <div>{new Date(botStats.lastClosed.ts).toLocaleString()} {botStats.lastClosed.symbol} {botStats.lastClosed.side} ({botStats.lastClosed.reason})</div>
-                  <div>Impact: gross {formatPnl(botStats.lastClosed.impact?.grossPnlUSDT ?? botStats.lastClosed.grossPnlUSDT)} | fees {formatPnl(botStats.lastClosed.impact?.feesUSDT ?? botStats.lastClosed.feesUSDT)} | slippage {botStats.lastClosed.impact?.slippageUSDT === null || botStats.lastClosed.impact?.slippageUSDT === undefined ? '-' : formatPnl(botStats.lastClosed.impact.slippageUSDT)} | net {formatPnl(botStats.lastClosed.impact?.netPnlUSDT ?? botStats.lastClosed.netPnlUSDT)}</div>
-                  <div>Entry: mark {botStats.lastClosed.entry?.markAtSignal?.toFixed(4) ?? '-'} | limit {botStats.lastClosed.entry?.entryLimit?.toFixed(4) ?? '-'} | fill {botStats.lastClosed.entry?.fillPrice?.toFixed(4) ?? '-'} | offset {botStats.lastClosed.entry?.entryOffsetPct?.toFixed(4) ?? '-'}% | spread {botStats.lastClosed.entry?.spreadBpsAtEntry?.toFixed(2) ?? '-'}bps</div>
-                  <div>Exit: close {botStats.lastClosed.exit?.closePrice?.toFixed(4) ?? '-'} | spread {botStats.lastClosed.exit?.spreadBpsAtExit?.toFixed(2) ?? '-'}bps</div>
-                </div>
-              ) : (
-                '-'
-              )}
-            </div>
-          </Card.Body>
-
-        </Card>
-      </Col>
-
       {showPerSymbolTab ? (
       <Col md={12}>
         <Card className="mt-3">
@@ -1484,11 +1350,9 @@ export function BotPage({
         </Card>
       </Col>
       ) : null}
-        </>
-      ) : null}
 
       {activeTab === 'settings' ? (
-        <Col md={6}>
+        <Col md={12}>
           <Card>
             <Card.Header>Settings</Card.Header>
           <Card.Body>
@@ -1878,98 +1742,6 @@ export function BotPage({
       </Col>
 
       <Col md={12}>
-        <Card>
-          <Card.Header>Replay</Card.Header>
-          <Card.Body>
-            <Row className="g-3">
-              <Col md={6}>
-                <Card>
-                  <Card.Header>Recording</Card.Header>
-                  <Card.Body>
-                    <Form.Group className="mb-2">
-                      <Form.Label>Top N symbols by turnover</Form.Label>
-                      <Form.Control type="number" value={recordTopN} onChange={(event) => setRecordTopN(Number(event.target.value))} />
-                    </Form.Group>
-                    <Form.Group className="mb-2">
-                      <Form.Label>File name (.ndjson)</Form.Label>
-                      <Form.Control value={recordFileName} onChange={(event) => setRecordFileName(event.target.value)} />
-                    </Form.Group>
-                    <div className="d-flex gap-2">
-                      <Button variant="success" onClick={() => void handleRecordStart()} disabled={replayState.recording || replayState.replaying}>
-                        Start recording
-                      </Button>
-                      <Button variant="danger" onClick={() => void handleRecordStop()} disabled={!replayState.recording}>
-                        Stop recording
-                      </Button>
-                    </div>
-                  </Card.Body>
-                </Card>
-              </Col>
-              <Col md={6}>
-                <Card>
-                  <Card.Header>Replay run</Card.Header>
-                  <Card.Body>
-                    <Form.Group className="mb-2">
-                      <Form.Label>Recorded file</Form.Label>
-                      <Form.Select value={replayFileName} onChange={(event) => setReplayFileName(event.target.value)}>
-                        <option value="">Select file</option>
-                        {replayFiles.map((file) => (
-                          <option key={file} value={file}>
-                            {file}
-                          </option>
-                        ))}
-                      </Form.Select>
-                    </Form.Group>
-                    <Form.Group className="mb-2">
-                      <Form.Label>Or type file name</Form.Label>
-                      <Form.Control value={replayFileName} onChange={(event) => setReplayFileName(event.target.value)} />
-                    </Form.Group>
-                    <Form.Group className="mb-2">
-                      <Form.Label>Speed</Form.Label>
-                      <Form.Select value={replaySpeed} onChange={(event) => setReplaySpeed(event.target.value as ReplaySpeed)}>
-                        <option value="1x">1x</option>
-                        <option value="5x">5x</option>
-                        <option value="20x">20x</option>
-                        <option value="fast">fast</option>
-                      </Form.Select>
-                    </Form.Group>
-                    <div className="d-flex gap-2">
-                      <Button variant="primary" onClick={() => void handleReplayStart()} disabled={replayState.recording || replayState.replaying || replayFileName.length === 0}>
-                        Start replay
-                      </Button>
-                      <Button variant="outline-danger" onClick={() => void handleReplayStop()} disabled={!replayState.replaying}>
-                        Stop replay
-                      </Button>
-                    </div>
-                  </Card.Body>
-                </Card>
-              </Col>
-            </Row>
-            <div className="mt-3">
-              <Badge bg={replayState.recording ? 'success' : 'secondary'} className="me-2">
-                recording: {replayState.recording ? 'on' : 'off'}
-              </Badge>
-              <Badge bg={replayState.replaying ? 'warning' : 'secondary'} className="me-2">
-                replaying: {replayState.replaying ? 'on' : 'off'}
-              </Badge>
-              <Badge bg="info" className="me-2">
-                file: {replayState.fileName ?? '-'}
-              </Badge>
-              <Badge bg="dark" className="me-2">
-                speed: {replayState.speed ?? '-'}
-              </Badge>
-              <Badge bg="primary" className="me-2">
-                recordsWritten: {replayState.recordsWritten}
-              </Badge>
-              <Badge bg="light" text="dark">
-                progress: {replayState.progress.read}/{replayState.progress.total}
-              </Badge>
-            </div>
-          </Card.Body>
-        </Card>
-      </Col>
-
-      <Col md={12}>
         <Card className="mb-3">
           <Card.Header className="d-flex justify-content-between align-items-center">
             <span>Phase monitor</span>
@@ -2131,6 +1903,9 @@ export function BotPage({
         </Card>
       </Col>
 
+        </>
+      ) : null}
+
 
       {showJournalTab ? (
       <Col md={12}>
@@ -2210,8 +1985,6 @@ export function BotPage({
           </Card.Body>
         </Card>
         </Col>
-      ) : null}
-        </>
       ) : null}
 
       {status ? <Alert variant="success">{status}</Alert> : null}

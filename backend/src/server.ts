@@ -572,7 +572,16 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }
 
+    const resumedState = botEngine.getState();
+    await runRecorder.startRun({
+      startTime: Date.now(),
+      configSnapshot: resumedState.config,
+      universeSummary: { total: universe?.symbols.length ?? 0, effective: effectiveEntries.length },
+      commitHash: getCommitHash(),
+      resumedFromSnapshot: true
+    });
     botEngine.resume(true);
+    await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_RESUME' });
     broadcastBotState();
     await appendOpsJournalEvent('BOT_RESUME');
     return { ok: true, ...botEngine.getState() };
@@ -600,6 +609,19 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     killInProgress = false;
     killCompletedAt = Date.now();
     botEngine.stop();
+    await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
+    await runRecorder.appendEvent({
+      ts: Date.now(),
+      type: 'SYSTEM',
+      event: 'BOT_KILL',
+      payload: {
+        cancelledOrders: result.cancelledOrders,
+        closedPositions: result.closedPositions,
+        activeOrdersRemaining: result.activeOrdersRemaining,
+        openPositionsRemaining: result.openPositionsRemaining,
+        warning
+      }
+    });
     broadcastBotState();
 
     await appendOpsJournalEvent('BOT_KILL', {
