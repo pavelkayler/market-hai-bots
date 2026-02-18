@@ -7,8 +7,8 @@
 - `runtime.json` — bot runtime snapshot (symbols FSM state, config, stats).
 - `profiles.json` — profile registry + active profile.
 - `journal.ndjson` — append-only journal events.
-- `universe_exclusions.json` — current exclusions list.
-- `universe_exclusions_<timestamp>.json` — historical exclusion snapshots.
+- `universe-exclusions.json` — current exclusions list (legacy mirror: `universe_exclusions.json`).
+- `universe-exclusions-<YYYYMMDD-HHMMSS>.json` — historical exclusion snapshots (legacy mirror: `universe_exclusions_<timestamp>.json`).
 - `runs/<runId>/meta.json`, `events.ndjson`, optional `stats.json`.
 - `autotune/state.json` — autotune state and history.
 - `replay/*.ndjson` — captured market replay streams.

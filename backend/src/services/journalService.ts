@@ -14,6 +14,7 @@ export type JournalEvent =
   | 'BOT_RESUME'
   | 'BOT_KILL'
   | 'AUTO_TUNE_APPLIED'
+  | 'GUARDRAIL_PAUSED'
   | 'SYSTEM_RESET_ALL'
   | 'EXPORT_PACK_REQUESTED';
 

@@ -67,7 +67,7 @@ Expected:
 - Read `X-Export-Included` header for included artifact list.
 
 ## 7) Reset-all (STOP-only)
-- Call `POST /api/reset/all` only when bot stopped.
+- Call `POST /api/reset/all` (or `POST /api/bot/clearAllTables`) only when bot stopped.
 - Running bot => `400 BOT_RUNNING`.
 - Clears: stats/journal/runtime/exclusions/universe/replay state.
 

@@ -367,6 +367,7 @@ type BotEngineDeps = {
   demoTradeClient?: IDemoTradeClient;
   snapshotStore?: SnapshotStore;
   emitLog?: (message: string) => void;
+  onGuardrailPaused?: (payload: { reason: string; stats: BotStats; state: BotState }) => void;
 };
 
 const DEFAULT_HOLD_SECONDS = 3;
@@ -2604,6 +2605,7 @@ export class BotEngine {
     };
     this.stats.guardrailPauseReason = reason;
     this.deps.emitLog?.(`Guardrail pause: ${reason}`);
+    this.deps.onGuardrailPaused?.({ reason, stats: this.getStats(), state: this.getState() });
   }
 
   private finalizeActiveUptime(): void {

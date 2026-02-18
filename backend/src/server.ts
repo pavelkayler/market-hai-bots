@@ -77,7 +77,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
   const activeSymbolSet = options.activeSymbolSet ?? new ActiveSymbolSet();
   const universeService = new UniverseService(marketClient, activeSymbolSet, app.log, storagePaths.universePath);
-  const universeExclusionsService = new UniverseExclusionsService(options.universeExclusionsFilePath ?? path.resolve(process.cwd(), 'data/universe_exclusions.json'));
+  const universeExclusionsService = new UniverseExclusionsService(options.universeExclusionsFilePath ?? path.resolve(process.cwd(), 'data/universe-exclusions.json'));
   const wsClients = options.wsClients ?? new Set<{ send: (payload: string) => unknown }>();
   const demoTradeClient = options.demoTradeClient ?? new DemoTradeClient();
   const rawMode = process.env.WS_SYMBOL_UPDATE_MODE;
@@ -163,12 +163,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   const getEffectiveUniverseEntries = async (entries: UniverseEntry[]): Promise<UniverseEntry[]> => {
     const exclusions = await universeExclusionsService.get();
-    const excludedSet = new Set(exclusions.excluded);
+    const excludedSet = new Set(exclusions.symbols);
     return entries.filter((entry) => !excludedSet.has(entry.symbol));
   };
 
   const buildBroadcastBotState = () => {
     const state = botEngine.getState();
+    const stats = botEngine.getStats();
     const perf = getPerfMetrics();
     const now = Date.now();
     const symbols = botEngine.getRuntimeSymbols();
@@ -226,6 +227,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return {
       running: state.running,
       paused: state.paused,
+      pauseReason: stats.guardrailPauseReason,
       hasSnapshot: state.hasSnapshot,
       lastConfig: state.config,
       mode: state.config?.mode ?? null,
@@ -421,9 +423,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
             }
 
             const exclusions = await universeExclusionsService.get();
-            const beforeCount = exclusions.excluded.length;
-            await universeExclusionsService.add(plan.symbol);
-            const afterCount = (await universeExclusionsService.get()).excluded.length;
+            const beforeCount = exclusions.symbols.length;
+            await universeExclusionsService.add(plan.symbol, 'autotune');
+            const afterCount = (await universeExclusionsService.get()).symbols.length;
 
             await autoTuneService.noteApplied({
               parameter: 'universeExclusionsCount',
@@ -450,7 +452,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     },
     demoTradeClient,
     snapshotStore,
-    emitLog: (message) => emitLog(message)
+    emitLog: (message) => emitLog(message),
+    onGuardrailPaused: (payload) => {
+      void appendOpsJournalEvent('GUARDRAIL_PAUSED', {
+        reason: payload.reason,
+        stats: payload.stats
+      });
+    }
   });
 
   const emitLog = (message: string): void => {
@@ -753,8 +761,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/reset/all', async (_request, reply) => {
     const botState = botEngine.getState();
-    if (botState.running) {
-      return reply.code(400).send({ ok: false, error: 'BOT_RUNNING' });
+    if (botState.running || botState.paused) {
+      return reply.code(409).send({ ok: false, error: 'BOT_RUNNING', message: 'Reset all is STOP-only.' });
     }
 
     await replayService.stopRecording();
@@ -765,7 +773,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     botEngine.resetRuntimeStateForAllSymbols();
 
     await journalService.clear();
-    await universeExclusionsService.clear();
+    await universeExclusionsService.clear('operator');
     await universeService.clear();
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
@@ -788,6 +796,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         replay: true
       }
     };
+  });
+
+  app.post('/api/bot/clearAllTables', async (_request, reply) => {
+    const response = await app.inject({ method: 'POST', url: '/api/reset/all', payload: {} });
+    return reply.code(response.statusCode).send(response.json());
   });
 
   app.get('/api/doctor', async () => {
@@ -1151,7 +1164,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       });
     }
 
-    await universeExclusionsService.clear();
+    // Keep persisted exclusions across create/refresh; they are applied to effective universe.
     const effectiveEntries = await getEffectiveUniverseEntries(result.state.symbols);
     const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
@@ -1245,7 +1258,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.get('/api/universe/exclusions', async () => {
     const state = await universeExclusionsService.get();
-    return { ok: true, excluded: state.excluded };
+    return { ok: true, schemaVersion: state.schemaVersion, symbols: state.symbols, excluded: state.symbols, updatedAt: state.updatedAt, source: state.source };
   });
 
   app.post('/api/universe/exclusions/add', async (request, reply) => {
@@ -1256,26 +1269,26 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const botState = botEngine.getState();
-    if (botState.running) {
-      return reply.code(400).send({ ok: false, error: 'BOT_RUNNING' });
+    if (botState.running || botState.paused) {
+      return reply.code(409).send({ ok: false, error: 'BOT_RUNNING', message: 'Exclusions are STOP-only.' });
     }
 
     const universe = await universeService.get();
+    const warnings: string[] = [];
     if (!universe?.ready) {
-      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+      warnings.push('UNIVERSE_NOT_READY_VALIDATION_SKIPPED');
+    } else if (!universe.symbols.some((entry) => entry.symbol === symbol)) {
+      warnings.push('SYMBOL_NOT_IN_UNIVERSE');
     }
 
-    if (!universe.symbols.some((entry) => entry.symbol === symbol)) {
-      return reply.code(400).send({ ok: false, error: 'SYMBOL_NOT_IN_UNIVERSE' });
-    }
-
-    const state = await universeExclusionsService.add(symbol);
-    const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
+    const persisted = await universeExclusionsService.add(symbol, 'operator');
+    warnings.push(...persisted.warnings);
+    const effectiveEntries = await getEffectiveUniverseEntries(universe?.symbols ?? []);
     const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(effectiveEntries);
     symbolUpdateBroadcaster.setTrackedSymbols(symbols);
-    return { ok: true, excluded: state.excluded };
+    return { ok: true, schemaVersion: persisted.state.schemaVersion, symbols: persisted.state.symbols, excluded: persisted.state.symbols, updatedAt: persisted.state.updatedAt, warnings: warnings.length ? warnings : undefined };
   });
 
   app.post('/api/universe/exclusions/remove', async (request, reply) => {
@@ -1286,28 +1299,28 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const botState = botEngine.getState();
-    if (botState.running) {
-      return reply.code(400).send({ ok: false, error: 'BOT_RUNNING' });
+    if (botState.running || botState.paused) {
+      return reply.code(409).send({ ok: false, error: 'BOT_RUNNING', message: 'Exclusions are STOP-only.' });
     }
 
     const universe = await universeService.get();
+    const persisted = await universeExclusionsService.remove(symbol);
+    const warnings: string[] = [...persisted.warnings];
     if (!universe?.ready) {
-      return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
+      warnings.push('UNIVERSE_NOT_READY_VALIDATION_SKIPPED');
     }
-
-    const state = await universeExclusionsService.remove(symbol);
-    const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
+    const effectiveEntries = await getEffectiveUniverseEntries(universe?.symbols ?? []);
     const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(effectiveEntries);
     symbolUpdateBroadcaster.setTrackedSymbols(symbols);
-    return { ok: true, excluded: state.excluded };
+    return { ok: true, schemaVersion: persisted.state.schemaVersion, symbols: persisted.state.symbols, excluded: persisted.state.symbols, updatedAt: persisted.state.updatedAt, warnings: warnings.length ? warnings : undefined };
   });
 
   app.post('/api/universe/exclusions/clear', async (_request, reply) => {
     const botState = botEngine.getState();
-    if (botState.running) {
-      return reply.code(400).send({ ok: false, error: 'BOT_RUNNING' });
+    if (botState.running || botState.paused) {
+      return reply.code(409).send({ ok: false, error: 'BOT_RUNNING', message: 'Exclusions are STOP-only.' });
     }
 
     const universe = await universeService.get();
@@ -1315,12 +1328,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.code(400).send({ ok: false, error: 'UNIVERSE_NOT_READY' });
     }
 
-    const state = await universeExclusionsService.clear();
+    const persisted = await universeExclusionsService.clear('operator');
     const symbols = universe.symbols.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(universe.symbols);
     symbolUpdateBroadcaster.setTrackedSymbols(symbols);
-    return { ok: true, excluded: state.excluded };
+    return { ok: true, schemaVersion: persisted.state.schemaVersion, symbols: persisted.state.symbols, excluded: persisted.state.symbols, updatedAt: persisted.state.updatedAt, warnings: persisted.warnings.length ? persisted.warnings : undefined };
   });
 
   app.get('/api/universe', async () => {
@@ -1340,7 +1353,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return {
       ok: true,
       ...state,
-      excluded: exclusions.excluded,
+      excluded: exclusions.symbols,
       upstreamStatus: lastUpstreamError ? 'error' : 'ok',
       upstreamError: lastUpstreamError ?? undefined,
       lastKnownUniverseAvailable: true
@@ -1358,7 +1371,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/universe/clear', async () => {
     await universeService.clear();
-    await universeExclusionsService.clear();
+    await universeExclusionsService.clear('operator');
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
     botEngine.clearSnapshotState();

@@ -375,6 +375,7 @@ describe('server routes', () => {
     expect(response.json()).toEqual({
       running: false,
       paused: false,
+      pauseReason: null,
       hasSnapshot: false,
       lastConfig: null,
       mode: null,
@@ -440,6 +441,12 @@ describe('server routes', () => {
   });
 
 
+  it('POST /api/bot/clearAllTables aliases reset-all response', async () => {
+    const response = await app.inject({ method: 'POST', url: '/api/bot/clearAllTables', payload: {} });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ ok: true, cleared: { runtime: true } });
+  });
+
   it('POST /api/reset/all rejects when bot is running', async () => {
     app = buildIsolatedServer({
       marketClient: new FakeMarketClient(
@@ -482,8 +489,8 @@ describe('server routes', () => {
     });
 
     const response = await app.inject({ method: 'POST', url: '/api/reset/all', payload: {} });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ ok: false, error: 'BOT_RUNNING' });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ ok: false, error: 'BOT_RUNNING', message: 'Reset all is STOP-only.' });
   });
 
   it('POST /api/reset/all clears runtime data while preserving profiles', async () => {
@@ -574,7 +581,7 @@ describe('server routes', () => {
 
     const exclusionsResponse = await app.inject({ method: 'GET', url: '/api/universe/exclusions' });
     expect(exclusionsResponse.statusCode).toBe(200);
-    expect(exclusionsResponse.json()).toEqual({ ok: true, excluded: [] });
+    expect(exclusionsResponse.json()).toMatchObject({ ok: true, symbols: [], excluded: [] });
 
     const journalTailResponse = await app.inject({ method: 'GET', url: '/api/journal/tail?limit=10' });
     expect(journalTailResponse.statusCode).toBe(200);
@@ -1821,11 +1828,11 @@ describe('universe exclusions routes', () => {
     } });
 
     const response = await app.inject({ method: 'POST', url: '/api/universe/exclusions/add', payload: { symbol: 'BTCUSDT' } });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ ok: false, error: 'BOT_RUNNING' });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ ok: false, error: 'BOT_RUNNING', message: 'Exclusions are STOP-only.' });
   });
 
-  it('filters excluded symbols from ticker subscriptions and create clears exclusions', async () => {
+  it('filters excluded symbols from ticker subscriptions and create keeps exclusions', async () => {
     const tickerStream = new FakeTickerStream();
     const marketClient: IBybitMarketClient = {
       async getInstrumentsLinearAll() {
@@ -1854,7 +1861,7 @@ describe('universe exclusions routes', () => {
 
     await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
     const exclusionsAfterCreate = await app.inject({ method: 'GET', url: '/api/universe/exclusions' });
-    expect(exclusionsAfterCreate.json()).toEqual({ ok: true, excluded: [] });
+    expect(exclusionsAfterCreate.json()).toMatchObject({ ok: true, symbols: ['BTCUSDT'], excluded: ['BTCUSDT'] });
   });
 });
 describe('runs APIs', () => {

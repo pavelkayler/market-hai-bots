@@ -871,6 +871,42 @@ describe('BotEngine paper execution', () => {
     expect(engine.getStats().guardrailPauseReason).toBe('DAILY_LOSS_LIMIT');
   });
 
+
+  it('emits guardrail paused callback and blocks new entries while paused', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 1, 0);
+    const guardrailEvents: Array<{ reason: string }> = [];
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      onGuardrailPaused: (payload) => guardrailEvents.push({ reason: payload.reason })
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, dailyLossLimitUSDT: 0.05 });
+    const mutable = engine as unknown as {
+      recordClosedTrade: (symbol: string, side: 'LONG' | 'SHORT', gross: number, fees: number, net: number, reason: string) => void;
+    };
+    mutable.recordClosedTrade('BTCUSDT', 'LONG', 0, 0.06, -0.06, 'OTHER');
+
+    expect(engine.getState()).toMatchObject({ paused: true, running: true });
+    expect(engine.getStats().guardrailPauseReason).toBe('DAILY_LOSS_LIMIT');
+    expect(guardrailEvents).toEqual([{ reason: 'DAILY_LOSS_LIMIT' }]);
+
+    const beforeAttempts = engine.getSymbolState('BTCUSDT')?.signalsAttempted ?? 0;
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 10;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    const afterAttempts = engine.getSymbolState('BTCUSDT')?.signalsAttempted ?? 0;
+
+    expect(afterAttempts).toBe(beforeAttempts);
+  });
+
   it('maxConsecutiveLosses triggers pause after N losses', () => {
     let now = Date.UTC(2025, 0, 1, 0, 1, 0);
     const engine = new BotEngine({

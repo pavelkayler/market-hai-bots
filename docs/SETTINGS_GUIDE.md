@@ -252,7 +252,7 @@ All operator presets are seeded only when missing profile names, so edited value
 ## STOP-only exclusions and clear-all semantics
 
 - Per-symbol universe exclusions are **STOP-only** (rejected while running to avoid state drift).
-- `Reset All` is **STOP-only** and clears runtime tables (`runtime`, `journal`, `stats`, `universe`, `exclusions`, `replay`) while preserving profiles.
+- `Reset All / Clear all tables` is **STOP-only** and clears runtime tables (`runtime`, `journal`, `stats`, `universe`, `exclusions`, `replay`) while preserving profiles.
 - After reset, operator should expect empty runtime panels and preserved profile list/active profile defaults.
 
 ## Troubleshooting
