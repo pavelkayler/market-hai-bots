@@ -21,6 +21,7 @@ import { RunRecorderService } from './services/runRecorderService.js';
 import { AutoTuneService } from './services/autoTuneService.js';
 import { planAutoTuneChange } from './services/autoTunePlanner.js';
 import { RunHistoryService } from './services/runHistoryService.js';
+import { RunEventsService } from './services/runEventsService.js';
 import { resolveStoragePaths } from './services/storagePaths.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
 import { UniverseExclusionsService } from './services/universeExclusionsService.js';
@@ -94,6 +95,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const profileService = new ProfileService(storagePaths.profilesPath);
   const runRecorder = new RunRecorderService();
   const runHistoryService = new RunHistoryService();
+  const runEventsService = new RunEventsService();
   const autoTuneService = new AutoTuneService();
   void autoTuneService.init();
 
@@ -951,9 +953,34 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return reply.send(payload);
   });
 
+  app.get('/api/runs/:id/events', async (request) => {
+    const id = (request.params as { id: string }).id;
+    const query = request.query as { limit?: string | number; types?: string };
+    const parsedLimit = Number(query.limit ?? 200);
+    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(2000, Math.floor(parsedLimit))) : 200;
+    const types = typeof query.types === 'string'
+      ? query.types
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+      : [];
+
+    const result = await runEventsService.tailEvents(id, { limit, types });
+    return { ok: true, ...result };
+  });
+
   app.get('/api/autotune/state', async () => {
     await autoTuneService.init();
     return { ok: true, state: autoTuneService.getState() };
+  });
+
+  app.get('/api/autotune/history', async (request) => {
+    await autoTuneService.init();
+    const query = request.query as { limit?: string | number };
+    const parsedLimit = Number(query.limit ?? 100);
+    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(200, Math.floor(parsedLimit))) : 100;
+    const state = autoTuneService.getState();
+    return { ok: true, items: state.history.slice(-limit).reverse() };
   });
 
   app.get('/api/journal/tail', async (request, reply) => {

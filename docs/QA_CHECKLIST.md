@@ -123,7 +123,7 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 1. Open `/bot` in a fresh browser profile (no `bot:tab` in storage).
    - Expect default tab = **Dashboard**.
 2. Validate tab order exactly:
-   - Dashboard, Settings, Journal, Log, Per-symbol performance, Entry reasons.
+   - Dashboard, Settings, Runs, Journal, Log, Per-symbol performance, Entry reasons.
 3. Switch tabs and reload page.
    - Expect last selected tab restored from localStorage (`bot:tab`).
 4. Dashboard checks:
@@ -189,3 +189,16 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
    - Verify paper/demo entry payloads use the tick-rounded offset price.
 4. Import older profile/snapshot payloads containing `holdSeconds` only.
    - Verify loading remains successful and defaults are applied (`signalCounterThreshold=2`, `entryOffsetPct=0.01`).
+
+## K) Runs tab + Auto-Tune transparency
+1. Start bot in paper mode, then stop bot to produce a run directory.
+2. Open **Runs** tab and click **Refresh**.
+   - Expected: latest run appears with started/ended/mode/tf/direction and stats columns.
+3. Click **Details** on the run.
+   - Expected: SYSTEM events tail includes BOT_START/BOT_STOP (and BOT_RESUME/BOT_KILL when applicable).
+   - If auto-tune triggered, expect AUTO_TUNE_APPLIED in the tail.
+4. Click **Download**.
+   - Expected: run zip downloads and includes `meta.json`, `events.ndjson`, `stats.json` when available.
+5. Open **Dashboard** and inspect **Last Auto-Tune** panel.
+   - Expected: shows parameter `before -> after`, reason, and timestamp when available.
+   - Expected: **Refresh last tune** updates value without adding polling.

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Alert, Badge, Button, Card, Col, Collapse, Form, Row, Tab, Table, Tabs } from 'react-bootstrap';
 
 import {
+  API_BASE,
   ApiRequestError,
   addUniverseExclusion,
   cancelOrder,
@@ -15,7 +16,10 @@ import {
   downloadUniverseJson,
   getBotState,
   getBotStats,
+  getAutoTuneHistory,
   getAutoTuneState,
+  getRunEvents,
+  getRunsSummary,
   getJournalTail,
   getProfile,
   getProfiles,
@@ -34,7 +38,7 @@ import {
   stopBot,
   uploadProfiles
 } from '../api';
-import type { AutoTuneRuntimeState, BotPerSymbolStats, BotSettings, BotState, BotStats, EntryReason, JournalEntry, SymbolUpdatePayload, UniverseState } from '../types';
+import type { AutoTuneApplied, AutoTuneRuntimeState, BotPerSymbolStats, BotSettings, BotState, BotStats, EntryReason, JournalEntry, RunEvent, RunSummary, SymbolUpdatePayload, UniverseState } from '../types';
 import { useSort } from '../hooks/useSort';
 import type { SortState } from '../utils/sort';
 import { formatDuration } from '../utils/time';
@@ -70,12 +74,12 @@ type PerSymbolRow = BotPerSymbolStats & {
 
 const USE_ACTIVE_PROFILE_ON_START_KEY = 'bot.settings.useActiveProfileOnStart.v1';
 
-type BotPageTab = 'dashboard' | 'settings' | 'journal' | 'log' | 'perSymbolPerformance' | 'entryReasons';
+type BotPageTab = 'dashboard' | 'settings' | 'runs' | 'journal' | 'log' | 'perSymbolPerformance' | 'entryReasons';
 
 function loadBotPageTab(): BotPageTab {
   try {
     const stored = localStorage.getItem(BOT_TAB_KEY);
-    if (stored === 'settings' || stored === 'journal' || stored === 'log' || stored === 'perSymbolPerformance' || stored === 'entryReasons') {
+    if (stored === 'settings' || stored === 'runs' || stored === 'journal' || stored === 'log' || stored === 'perSymbolPerformance' || stored === 'entryReasons') {
       return stored;
     }
     return 'dashboard';
@@ -236,6 +240,13 @@ export function BotPage({
   const [expandedSymbolRows, setExpandedSymbolRows] = useState<Record<string, boolean>>({});
   const [dashboardEntries, setDashboardEntries] = useState<JournalEntry[]>([]);
   const [dashboardFetchedAt, setDashboardFetchedAt] = useState<number | null>(null);
+  const [runsSummary, setRunsSummary] = useState<RunSummary[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsError, setRunsError] = useState<string>('');
+  const [expandedRuns, setExpandedRuns] = useState<Record<string, boolean>>({});
+  const [runEventsById, setRunEventsById] = useState<Record<string, { loading: boolean; events: RunEvent[]; warnings?: string[]; error?: string }>>({});
+  const [lastAutoTune, setLastAutoTune] = useState<AutoTuneApplied | null>(null);
+  const [lastAutoTuneLoading, setLastAutoTuneLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<BotPageTab>(loadBotPageTab());
   const profileUploadInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -677,9 +688,72 @@ export function BotPage({
     setDashboardFetchedAt(Date.now());
   }, []);
 
+  const refreshRunsSummary = useCallback(async () => {
+    setRunsLoading(true);
+    setRunsError('');
+    try {
+      const response = await getRunsSummary(50);
+      setRunsSummary(response.runs);
+    } catch (err) {
+      setRunsError((err as Error).message);
+    } finally {
+      setRunsLoading(false);
+    }
+  }, []);
+
+  const refreshLastAutoTune = useCallback(async () => {
+    setLastAutoTuneLoading(true);
+    try {
+      const response = await getAutoTuneHistory(1);
+      setLastAutoTune(response.items[0] ?? null);
+    } catch {
+      setLastAutoTune(null);
+    } finally {
+      setLastAutoTuneLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshLastAutoTune();
+  }, [refreshLastAutoTune]);
+
+  const handleToggleRunDetails = useCallback(async (runId: string) => {
+    setExpandedRuns((current) => ({ ...current, [runId]: !current[runId] }));
+
+    if (runEventsById[runId]) {
+      return;
+    }
+
+    setRunEventsById((current) => ({
+      ...current,
+      [runId]: { loading: true, events: [] }
+    }));
+
+    try {
+      const response = await getRunEvents(runId, 200, ['SYSTEM']);
+      setRunEventsById((current) => ({
+        ...current,
+        [runId]: { loading: false, events: response.events, warnings: response.warnings }
+      }));
+    } catch (err) {
+      setRunEventsById((current) => ({
+        ...current,
+        [runId]: { loading: false, events: [], error: (err as Error).message }
+      }));
+    }
+  }, [runEventsById]);
+
   useEffect(() => {
     void refreshJournal();
   }, [journalLimit]);
+
+  useEffect(() => {
+    if (activeTab !== 'runs') {
+      return;
+    }
+
+    void refreshRunsSummary();
+  }, [activeTab, refreshRunsSummary]);
 
   useEffect(() => {
     void refreshDashboardEvents();
@@ -980,6 +1054,7 @@ export function BotPage({
 
   const showPerSymbolTab = activeTab === 'perSymbolPerformance';
   const showEntryReasonsTab = activeTab === 'entryReasons';
+  const showRunsTab = activeTab === 'runs';
   const showJournalTab = activeTab === 'journal';
   const showLogTab = activeTab === 'log';
 
@@ -1005,6 +1080,7 @@ export function BotPage({
         >
           <Tab eventKey="dashboard" title="Dashboard" />
           <Tab eventKey="settings" title="Settings" />
+          <Tab eventKey="runs" title="Runs" />
           <Tab eventKey="journal" title="Journal" />
           <Tab eventKey="log" title="Log" />
           <Tab eventKey="perSymbolPerformance" title="Per-symbol performance" />
@@ -1043,7 +1119,16 @@ export function BotPage({
                 <div><strong>Direction:</strong> {botState.direction ?? '-'}</div>
               </Col>
               <Col md={3}>
-                <div><strong>Auto-Tune:</strong> {autoTuneState.enabled ? 'ON' : 'OFF'}{autoTuneState.lastApplied ? `, last ${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after}` : ''}</div>
+                <div><strong>Auto-Tune:</strong> {autoTuneState.enabled ? 'ON' : 'OFF'}</div>
+                <div>
+                  <strong>Last Auto-Tune:</strong>{' '}
+                  {lastAutoTune
+                    ? `${lastAutoTune.parameter} ${lastAutoTune.before}→${lastAutoTune.after} (${lastAutoTune.reason}) @ ${new Date(lastAutoTune.ts).toLocaleTimeString()}`
+                    : autoTuneState.lastApplied
+                      ? `${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after} (${autoTuneState.lastApplied.reason}) @ ${new Date(autoTuneState.lastApplied.ts).toLocaleTimeString()}`
+                      : '-'}
+                </div>
+                <div className="mt-1"><Button size="sm" variant="outline-secondary" onClick={() => void refreshLastAutoTune()} disabled={lastAutoTuneLoading}>Refresh last tune</Button></div>
                 <div><strong>Queue depth:</strong> {botState.queueDepth}</div>
                 <div><strong>Active orders:</strong> {botState.activeOrders}</div>
                 <div><strong>Open positions:</strong> {botState.openPositions}</div>
@@ -1939,6 +2024,137 @@ export function BotPage({
       </Col>
 
         </>
+      ) : null}
+
+
+      {showRunsTab ? (
+        <Col md={12}>
+          <Card>
+            <Card.Header>Run history</Card.Header>
+            <Card.Body>
+              <div className="d-flex flex-wrap gap-2 mb-3">
+                <Button variant="outline-primary" size="sm" onClick={() => void refreshRunsSummary()} disabled={runsLoading}>Refresh</Button>
+              </div>
+              {runsError ? <Alert variant="danger" className="mb-2">{runsError}</Alert> : null}
+              <div className="table-responsive">
+                <Table bordered striped size="sm" className="mb-0">
+                  <thead>
+                    <tr>
+                      <th>Started</th>
+                      <th>Ended</th>
+                      <th>Mode</th>
+                      <th>TF</th>
+                      <th>Direction</th>
+                      <th className="text-end">Trades</th>
+                      <th className="text-end">Winrate</th>
+                      <th className="text-end">PnL (USDT)</th>
+                      <th className="text-end">Fees (USDT)</th>
+                      <th className="text-end">Slippage (USDT)</th>
+                      <th>Traded symbols</th>
+                      <th>Warnings</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {runsSummary.map((run) => {
+                      const isExpanded = !!expandedRuns[run.id];
+                      const runEvents = runEventsById[run.id];
+                      const traded = run.tradedSymbols ?? [];
+                      const tradedLabel = traded.length <= 2 ? traded.join(', ') : `${traded.slice(0, 2).join(', ')} (+${traded.length - 2})`;
+                      return (
+                        <Fragment key={run.id}>
+                          <tr key={`run-${run.id}`}>
+                            <td>{new Date(run.startedAt).toLocaleString()}</td>
+                            <td>{run.endedAt ? new Date(run.endedAt).toLocaleString() : 'running'}</td>
+                            <td>{run.mode ?? '-'}</td>
+                            <td>{run.tf ?? '-'}</td>
+                            <td>{run.direction ?? '-'}</td>
+                            <td className="text-end">{run.stats?.totalTrades ?? 0}</td>
+                            <td className="text-end">{(run.stats?.winratePct ?? 0).toFixed(1)}%</td>
+                            <td className="text-end">{formatPnl(run.stats?.pnlUSDT ?? 0)}</td>
+                            <td className="text-end">{formatPnl(run.stats?.totalFeesUSDT ?? 0)}</td>
+                            <td className="text-end">{formatPnl(run.stats?.totalSlippageUSDT ?? 0)}</td>
+                            <td>{tradedLabel || '-'}</td>
+                            <td>{(run.warnings?.length ?? 0) > 0 ? <Badge bg="warning" text="dark">{run.warnings?.length}</Badge> : '-'}</td>
+                            <td>
+                              <div className="d-flex gap-1">
+                                <Button
+                                  as="a"
+                                  href={`${API_BASE}/api/runs/${encodeURIComponent(run.id)}/download`}
+                                  variant="outline-secondary"
+                                  size="sm"
+                                >
+                                  Download
+                                </Button>
+                                <Button variant="outline-primary" size="sm" onClick={() => void handleToggleRunDetails(run.id)}>
+                                  {isExpanded ? 'Hide details' : 'Details'}
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                          <tr key={`run-details-${run.id}`}>
+                            <td colSpan={13} className="p-0">
+                              <Collapse in={isExpanded}>
+                                <div className="p-2">
+                                  <div className="small fw-semibold mb-2">SYSTEM events tail</div>
+                                  {runEvents?.loading ? <div className="small text-muted">Loading…</div> : null}
+                                  {runEvents?.error ? <Alert variant="warning" className="mb-2 py-1">{runEvents.error}</Alert> : null}
+                                  {runEvents?.warnings?.length ? <Alert variant="warning" className="mb-2 py-1">{runEvents.warnings.join('; ')}</Alert> : null}
+                                  <Table bordered size="sm" className="mb-0">
+                                    <thead>
+                                      <tr>
+                                        <th>ts</th>
+                                        <th>event</th>
+                                        <th>symbol</th>
+                                        <th>reason/message</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {(runEvents?.events ?? []).map((evt, index) => {
+                                        const payload = evt.payload ?? evt.data ?? {};
+                                        const payloadObj = typeof payload === 'object' && payload ? (payload as Record<string, unknown>) : {};
+                                        const symbol = typeof payloadObj.symbol === 'string' ? payloadObj.symbol : '-';
+                                        const reason = typeof payloadObj.reason === 'string'
+                                          ? payloadObj.reason
+                                          : typeof payloadObj.message === 'string'
+                                            ? payloadObj.message
+                                            : typeof payloadObj.warning === 'string'
+                                              ? payloadObj.warning
+                                              : '-';
+                                        return (
+                                          <tr key={`${run.id}-event-${index}`}>
+                                            <td>{typeof evt.ts === 'number' ? new Date(evt.ts).toLocaleString() : '-'}</td>
+                                            <td>{typeof evt.event === 'string' ? evt.event : (typeof evt.type === 'string' ? evt.type : '-')}</td>
+                                            <td>{symbol}</td>
+                                            <td>{reason}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                      {(runEvents?.events?.length ?? 0) === 0 && !runEvents?.loading ? (
+                                        <tr>
+                                          <td colSpan={4} className="text-center text-muted">No SYSTEM events available for this run.</td>
+                                        </tr>
+                                      ) : null}
+                                    </tbody>
+                                  </Table>
+                                </div>
+                              </Collapse>
+                            </td>
+                          </tr>
+                        </Fragment>
+                      );
+                    })}
+                    {runsSummary.length === 0 && !runsLoading ? (
+                      <tr>
+                        <td colSpan={13} className="text-center text-muted">No runs yet.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </Table>
+              </div>
+            </Card.Body>
+          </Card>
+        </Col>
       ) : null}
 
 

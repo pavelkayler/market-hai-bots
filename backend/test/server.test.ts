@@ -1890,6 +1890,86 @@ describe('runs APIs', () => {
     }
   });
 
+
+
+  it('GET /api/runs/:id/events returns SYSTEM tail with warnings on malformed lines', async () => {
+    const runId = `2025-01-05T00-00-00.000Z-${Math.random().toString(16).slice(2)}`;
+    const runDir = path.join(process.cwd(), 'data', 'runs', runId);
+    await mkdir(runDir, { recursive: true });
+    await writeFile(
+      path.join(runDir, 'events.ndjson'),
+      `${JSON.stringify({ ts: 1, type: 'SYSTEM', event: 'BOT_START' })}
+${JSON.stringify({ ts: 2, type: 'position:update', payload: { symbol: 'BTCUSDT' } })}
+not-json
+${JSON.stringify({ ts: 3, type: 'SYSTEM', event: 'BOT_STOP' })}
+`,
+      'utf-8'
+    );
+
+    try {
+      const response = await app.inject({ method: 'GET', url: `/api/runs/${runId}/events?limit=2&types=SYSTEM` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        ok: true,
+        runId,
+        events: [
+          { ts: 3, type: 'SYSTEM', event: 'BOT_STOP' },
+          { ts: 1, type: 'SYSTEM', event: 'BOT_START' }
+        ],
+        warnings: expect.arrayContaining(['events.ndjson line parse failed'])
+      });
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('GET /api/autotune/history returns latest applied changes', async () => {
+    const statePath = path.join(process.cwd(), 'data', 'autotune', 'state.json');
+    const existingState = await readFile(statePath, 'utf-8').catch(() => null);
+
+    try {
+      await rm(statePath, { force: true });
+      await app.close();
+      app = buildIsolatedServer();
+
+      const response = await app.inject({ method: 'GET', url: '/api/autotune/history?limit=1' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ ok: true, items: [] });
+
+      await mkdir(path.dirname(statePath), { recursive: true });
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          enabled: true,
+          scope: 'GLOBAL',
+          lastApplied: { ts: 3, parameter: 'maxActiveSymbols', before: 4, after: 3, reason: 'test', bounds: { min: 1, max: 10 } },
+          history: [
+            { ts: 1, parameter: 'signalCounterThreshold', before: 2, after: 3, reason: 'older', bounds: { min: 1, max: 10 } },
+            { ts: 2, parameter: 'entryOffsetPct', before: 0.01, after: 0.02, reason: 'newer', bounds: { min: 0, max: 1 } }
+          ],
+          closesSeen: 2
+        }),
+        'utf-8'
+      );
+
+      await app.close();
+      app = buildIsolatedServer();
+
+      const updatedResponse = await app.inject({ method: 'GET', url: '/api/autotune/history?limit=1' });
+      expect(updatedResponse.statusCode).toBe(200);
+      expect(updatedResponse.json()).toMatchObject({
+        ok: true,
+        items: [{ ts: 2, parameter: 'entryOffsetPct', before: 0.01, after: 0.02, reason: 'newer' }]
+      });
+    } finally {
+      if (existingState === null) {
+        await rm(statePath, { force: true });
+      } else {
+        await mkdir(path.dirname(statePath), { recursive: true });
+        await writeFile(statePath, existingState, 'utf-8');
+      }
+    }
+  });
   it('GET /api/runs/summary returns best-effort summaries', async () => {
     const runA = `9999-01-04T00-00-00.000Z`;
     const runB = `9999-01-03T00-00-00.000Z`;
