@@ -1505,12 +1505,12 @@ export function BotPage({
                   <Col md={4}>
                     <Form.Label>priceUpThrPct <span className="text-muted small">(%)</span></Form.Label>
                     <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="0.5" value={settings.priceUpThrPct} onChange={(event) => persistSettings({ ...settings, priceUpThrPct: Number(event.target.value) })} />
-                    <Form.Text muted>Price move threshold vs baseline. 0.5 = 0.5% (not 0.005); SHORT uses symmetric price-down.</Form.Text>
+                    <Form.Text muted>Price move threshold vs previous TF candle. 0.5 = 0.5% (not 0.005); SHORT uses symmetric price-down.</Form.Text>
                   </Col>
                   <Col md={4}>
                     <Form.Label>oiUpThrPct <span className="text-muted small">(%)</span></Form.Label>
                     <Form.Control disabled={disableSettings} type="number" step={0.01} placeholder="1" value={settings.oiUpThrPct} onChange={(event) => persistSettings({ ...settings, oiUpThrPct: Number(event.target.value) })} />
-                    <Form.Text muted>OI move threshold vs baseline. 1 = 1% (not 0.01); divergence-short also checks OI↑ with price↓.</Form.Text>
+                    <Form.Text muted>OI move threshold vs previous TF candle. 1 = 1% (not 0.01); divergence-short also checks OI↑ with price↓.</Form.Text>
                   </Col>
                   <Col md={4}>
                     <Form.Label>oiCandleThrPct <span className="text-muted small">(%)</span></Form.Label>
@@ -1780,7 +1780,7 @@ export function BotPage({
                     ? ` | BOTH: chosen ${item.bothCandidate.chosen.toUpperCase()} (${item.bothCandidate.tieBreak}${item.bothCandidate.tieBreak === 'strongerSignal' ? ` edgeS=${(item.bothCandidate.edgeShort ?? 0).toFixed(2)} edgeL=${(item.bothCandidate.edgeLong ?? 0).toFixed(2)}` : ''})`
                     : '';
                   const signalDetails = item.baseline
-                    ? `base ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0} [${item.signalCounterMin ?? 0}-${item.signalCounterMax ?? 0}] eligible=${String(item.signalCounterEligible ?? false)} | ${gateDetails}${bothDetails}`
+                    ? `prev candle ${item.baseline.basePrice.toFixed(4)}/${item.baseline.baseOiValue.toFixed(2)} → now ${item.markPrice.toFixed(4)}/${item.openInterestValue.toFixed(2)} | ΔP ${(item.priceDeltaPct ?? 0).toFixed(2)}% ΔOI ${(item.oiDeltaPct ?? 0).toFixed(2)}% OI candle ${item.oiCandleDeltaPct === null || item.oiCandleDeltaPct === undefined ? '—' : `${item.oiCandleDeltaPct.toFixed(2)}%`} | counter ${item.signalCount24h ?? 0} [${item.signalCounterMin ?? 0}-${item.signalCounterMax ?? 0}] eligible=${String(item.signalCounterEligible ?? false)} | ${gateDetails}${bothDetails}`
                     : '—';
                   return (
                     <tr key={`phase-${item.symbol}`}>

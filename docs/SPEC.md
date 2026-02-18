@@ -28,10 +28,11 @@ On refresh: `universe = filteredNew ∪ activeSymbols`.
 ## Direction modes
 `long | short | both`. In `both`: **SHORT priority** on conflict.
 
-## Triggers (baseline-based)
-Per-symbol baseline: `basePrice` (mark), `baseOiValue`, `baseTs`.
-- `priceDeltaPct = (markNow - basePrice)/basePrice*100`
-- `oiDeltaPct = (oiNow - baseOiValue)/baseOiValue*100`
+## Triggers (previous TF candle based)
+Per-symbol trigger deltas compare current values to the previous TF candle (UTC bucket) for the configured `tf` (`1|3|5`).
+- `priceDeltaPct = (markNow - prevCandleMark)/prevCandleMark*100`
+- `oiDeltaPct = (oiNow - prevCandleOi)/prevCandleOi*100`
+- First-candle fallback: when previous TF candle is unavailable/invalid (`null`/`0`), both deltas are treated as `0` and no signal is eligible.
 
 Long:
 - `priceDeltaPct >= priceUpThrPct`
@@ -46,13 +47,13 @@ Hold: condition must remain true for `holdSeconds` (default 3s), recomputed on m
 ## Timeframe gate (UTC)
 User chooses `tf` ∈ {1,3,5}.
 - In `IDLE`, engine may start HOLD only on UTC boundaries matching tf.
-- Override: after baseline reset (cancel/close), evaluation may start immediately.
+- Override: after cancel/close reset, evaluation may start immediately (deltas still use previous TF candle semantics).
 
 ## Orders/positions
 - One active order or position per symbol.
 - Manual cancel in UI.
 - Auto-cancel entry after 1 hour if not filled.
-- After cancel/close: baseline reset to current mark & OI value.
+- After cancel/close: baseline state is reset to current mark & OI value for lifecycle compatibility (trigger calculations still use previous TF candle values).
 
 ## Execution
 Paper:

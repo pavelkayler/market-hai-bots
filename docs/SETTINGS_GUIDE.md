@@ -151,12 +151,16 @@ Stats and per-symbol performance use **net** PnL.
 - `confirmWindowBars`: continuation window after trigger (`1..5`).
 - `confirmMinContinuationPct`: required continuation from trigger mark.
 - `impulseMaxAgeBars`: rejects stale impulses that survive too long without follow-through.
-- `requireOiTwoCandles`: requires last 2 OI candle deltas to be >= `oiCandleThrPct` (for both LONG and SHORT divergence mode OI-rising checks).
+- `requireOiTwoCandles`: sign-aware by entry reason: LONG_CONTINUATION and SHORT_DIVERGENCE require both OI candle deltas `>= oiCandleThrPct`; SHORT_CONTINUATION requires both `<= -oiCandleThrPct`.
 - `maxSecondsIntoCandle`: keeps very-late impulse triggers out (especially on 1m).
 - `minNotionalUSDT`: block tiny entries in paper/demo.
 - `maxSpreadBps`: max allowed spread in **bps** for new entries. Example: `35` means `0.35%` max spread.
 - `maxTickStalenessMs`: max age (ms) of latest ticker update before blocking new entries (`TICK_STALE`).
 - `minSpreadBps`: legacy field retained for backward compatibility (not used by v1 gating).
+
+### Trigger delta semantics
+- `priceUpThrPct` and `oiUpThrPct` are interpreted vs the **previous TF candle** (UTC buckets for `tf=1/3/5`).
+- First-candle fallback: if previous candle values are missing/invalid, deltas are treated as `0` and no signal is triggered.
 
 ### Example presets
 
@@ -184,7 +188,7 @@ Starter profiles are auto-seeded when missing (without overwriting existing prof
   - Counter window is rolling **24h** per symbol.
   - Counter increments at most **once per UTC candle close** per symbol when signal conditions are satisfied.
 - `oiCandleThrPct`: OI threshold for candle-to-candle gate, in percent units (`0.2` means `0.2%`).
-- `requireOiTwoCandles=true`: both most recent candle-to-candle OI deltas must be `>= oiCandleThrPct`; otherwise reason `OI_2CANDLES_FAIL` blocks entry.
+- `requireOiTwoCandles=true`: the two most recent OI candle deltas must match entry-reason sign semantics (`>= oiCandleThrPct` for LONG_CONTINUATION / SHORT_DIVERGENCE, `<= -oiCandleThrPct` for SHORT_CONTINUATION); otherwise `OI_2CANDLES_FAIL` blocks entry.
 - `direction=both` with `bothTieBreak` controls tie resolution when long/short candidates are simultaneously valid:
   - `shortPriority`: chooses SHORT.
   - `longPriority`: chooses LONG.
@@ -343,7 +347,7 @@ If an invariant is violated, v1 safe fallback is applied: symbol is logged and r
    - Stop and verify `running=false`.
 3. **Orders / Positions / Phase table**
    - Trigger a confirmed signal and verify `ENTRY_PENDING` appears with entry reason label.
-   - Verify signal-phase rows show baseline/current mark+OI and deltas.
+   - Verify signal-phase rows show previous-candle/current mark+OI deltas (not run baseline deltas).
    - Verify order-phase rows show side/limit/qty/expires/status (queued/sent).
    - Verify fill transitions to `POSITION_OPEN` with entry/tp/sl/qty.
    - Verify close returns symbol to `IDLE` and `lastClosed` includes net + fees fields.

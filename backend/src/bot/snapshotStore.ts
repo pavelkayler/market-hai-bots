@@ -16,6 +16,8 @@ export type RuntimeSnapshotSymbol = {
   lastSignalBucketKey?: number | null;
   prevCandleOi?: number | null;
   lastCandleOi?: number | null;
+  prevCandleMark?: number | null;
+  lastCandleMark?: number | null;
   lastCandleBucketStart?: number | null;
   trend5mBucketStart?: number | null;
   trend5mPrevClose?: number | null;
