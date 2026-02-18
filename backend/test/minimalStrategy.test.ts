@@ -26,6 +26,39 @@ describe('minimal strategy behavior', () => {
     expect(cfg10?.signalCounterMax).toBe(3);
   });
 
+
+  it('resets signal counter exactly at 00:00 MSK boundary', () => {
+    let now = Date.UTC(2025, 0, 1, 20, 59, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start(normalizeBotConfig(baseRaw)!);
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, fundingRate: 0.001, nextFundingTimeMs: now + 60_000, lastPrice: 100, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
+    const stateBefore = engine.getSymbolState('BTCUSDT');
+    if (!stateBefore) throw new Error('missing state');
+    stateBefore.signalEvents24h = [now - 1_000];
+    stateBefore.lastSignalCount24h = 1;
+    stateBefore.lastSignalAtMs = now - 1_000;
+
+    now = Date.UTC(2025, 0, 1, 21, 0, 0);
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, fundingRate: 0.001, nextFundingTimeMs: now + 60_000, lastPrice: 100, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
+
+    const stateAfter = engine.getSymbolState('BTCUSDT');
+    expect(stateAfter?.signalEvents24h).toEqual([]);
+    expect(stateAfter?.lastSignalCount24h).toBe(0);
+    expect(stateAfter?.lastSignalAtMs).toBeNull();
+  });
+
+  it('marks symbol as MISSING when next funding time is stale', () => {
+    const now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start(normalizeBotConfig(baseRaw)!);
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, fundingRate: 0.001, nextFundingTimeMs: now - 6 * 60_000, lastPrice: 100, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
+
+    expect(engine.getSymbolState('BTCUSDT')?.tradingAllowed).toBe('MISSING');
+  });
   it('marks symbol as MISSING when funding is unavailable', () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });

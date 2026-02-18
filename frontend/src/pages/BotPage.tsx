@@ -53,21 +53,43 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
   }, [settings]);
 
   const symbolRows = useMemo(() => {
+    const contractSymbols = botState.symbols ?? [];
+    if (contractSymbols.length > 0) {
+      return contractSymbols.map((row) => ({
+        symbol: row.symbol,
+        markPrice: Number.isFinite(row.markPrice) ? row.markPrice : null,
+        openInterestValue: Number.isFinite(row.openInterestValue) ? row.openInterestValue : null,
+        priceDeltaPct: Number.isFinite(row.priceDeltaPct) ? row.priceDeltaPct : 0,
+        oiDeltaPct: Number.isFinite(row.oiDeltaPct) ? row.oiDeltaPct : 0,
+        fundingRate: row.fundingRate,
+        nextFundingTimeMs: row.nextFundingTimeMs,
+        timeToFundingMs: row.timeToFundingMs,
+        tradability: row.tradability,
+        signalCount24h: row.signalCount24h,
+        lastSignalAtMs: row.lastSignalAtMs,
+        blackoutReason: row.blackoutReason ?? null
+      }));
+    }
+
     const diagnostics = botState.activeSymbolDiagnostics ?? [];
     return diagnostics.map((diag) => {
       const ws = symbolMap[diag.symbol];
       return {
         symbol: diag.symbol,
+        markPrice: ws?.markPrice ?? null,
+        openInterestValue: ws?.openInterestValue ?? null,
+        priceDeltaPct: 0,
+        oiDeltaPct: 0,
         fundingRate: diag.fundingRate ?? null,
         nextFundingTimeMs: diag.nextFundingTimeMs ?? null,
         timeToFundingMs: diag.timeToFundingMs ?? null,
-        tradingAllowed: diag.tradingAllowed ?? 'MISSING',
+        tradability: diag.tradingAllowed ?? 'MISSING',
         signalCount24h: diag.signalCount24h ?? 0,
-        lastSignalAt: diag.lastSignalAt ?? null,
-        markPrice: ws?.markPrice ?? null
+        lastSignalAtMs: diag.lastSignalAt ?? null,
+        blackoutReason: null
       };
     });
-  }, [botState.activeSymbolDiagnostics, symbolMap]);
+  }, [botState.symbols, botState.activeSymbolDiagnostics, symbolMap]);
 
   const onStart = async () => {
     setError('');
@@ -136,18 +158,20 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
       <Card><Card.Body>
         <Card.Title>Active symbols</Card.Title>
         <Table size="sm" striped responsive>
-          <thead><tr><th>Symbol</th><th>Mark</th><th>Funding</th><th>Next funding</th><th>Time to funding</th><th>Tradability</th><th>Signal count 24h</th><th>Last signal</th></tr></thead>
+          <thead><tr><th>Symbol</th><th>Mark</th><th>OIV</th><th>ΔPrice%</th><th>ΔOIV%</th><th>Funding</th><th>Next funding (ETA)</th><th>Tradability</th><th>SignalCount</th><th>LastSignal</th></tr></thead>
           <tbody>
             {symbolRows.map((row) => (
               <tr key={row.symbol}>
                 <td>{row.symbol}</td>
-                <td>{row.markPrice ?? '—'}</td>
-                <td>{row.fundingRate == null ? <Badge bg="danger">MISSING</Badge> : row.fundingRate}</td>
-                <td>{row.nextFundingTimeMs ? new Date(row.nextFundingTimeMs).toLocaleString() : '—'}</td>
-                <td>{toHuman(row.timeToFundingMs)}</td>
-                <td><Badge bg={row.tradingAllowed === 'OK' ? 'success' : row.tradingAllowed === 'MISSING' ? 'danger' : 'warning'}>{row.tradingAllowed}</Badge></td>
-                <td>{row.signalCount24h}</td>
-                <td>{row.lastSignalAt ? new Date(row.lastSignalAt).toLocaleTimeString() : '—'}</td>
+                <td className="font-monospace">{row.markPrice ?? '—'}</td>
+                <td className="font-monospace">{row.openInterestValue ?? '—'}</td>
+                <td className="font-monospace">{row.priceDeltaPct.toFixed(3)}</td>
+                <td className="font-monospace">{row.oiDeltaPct.toFixed(3)}</td>
+                <td className="font-monospace">{row.fundingRate == null ? <Badge bg="danger">MISSING</Badge> : row.fundingRate}</td>
+                <td className="font-monospace">{row.nextFundingTimeMs ? `${new Date(row.nextFundingTimeMs).toLocaleString()} (${toHuman(row.timeToFundingMs)})` : '—'}</td>
+                <td><Badge bg={row.tradability === 'OK' ? 'success' : row.tradability === 'MISSING' ? 'danger' : 'warning'}>{row.tradability}</Badge></td>
+                <td className="font-monospace">{row.signalCount24h}</td>
+                <td className="font-monospace">{row.lastSignalAtMs ? new Date(row.lastSignalAtMs).toLocaleTimeString() : '—'}</td>
               </tr>
             ))}
           </tbody>

@@ -266,6 +266,75 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     };
   };
 
+  const buildApiBotState = async () => {
+    const state = botEngine.getState();
+    const perf = getPerfMetrics();
+    const now = Date.now();
+    const symbols = botEngine.getRuntimeSymbols();
+    const universe = await universeService.get();
+    const exclusions = await universeExclusionsService.get();
+    const phase: 'STOPPED' | 'RUNNING' | 'PAUSED' = state.paused ? 'PAUSED' : state.running ? 'RUNNING' : 'STOPPED';
+
+    const normalizedConfig = state.config ? normalizeBotConfig(state.config) : null;
+    const toFinite = (value: unknown): number => {
+      const asNumber = typeof value === 'number' ? value : Number.NaN;
+      return Number.isFinite(asNumber) ? asNumber : 0;
+    };
+
+    return {
+      bot: {
+        phase,
+        running: state.running,
+        startedAt: state.startedAt ?? null,
+        stoppedAt: !state.running && !state.paused ? now : null,
+        lastError: null
+      },
+      config: {
+        tfMinutes: toFinite(normalizedConfig?.tf),
+        priceUpThrPct: toFinite(normalizedConfig?.priceUpThrPct),
+        oiUpThrPct: toFinite(normalizedConfig?.oiUpThrPct),
+        minTriggerCount: toFinite(normalizedConfig?.signalCounterMin),
+        maxTriggerCount: toFinite(normalizedConfig?.signalCounterMax)
+      },
+      universe: {
+        ready: Boolean(universe?.ready),
+        symbolsCount: Array.isArray(universe?.symbols) ? universe.symbols.length : 0,
+        excludedCount: exclusions.symbols.length
+      },
+      activity: {
+        queueDepth: Number.isFinite(state.queueDepth) ? state.queueDepth : 0,
+        activeOrders: Number.isFinite(state.activeOrders) ? state.activeOrders : 0,
+        openPositions: Number.isFinite(state.openPositions) ? state.openPositions : 0,
+        symbolUpdatesPerSec: Number.isFinite(perf.evalsPerSec) ? Number(perf.evalsPerSec.toFixed(2)) : 0,
+        journalAgeMs: lastJournalTs > 0 ? Math.max(0, now - lastJournalTs) : 0
+      },
+      symbols: symbols.map((symbol) => {
+        const runtime = botEngine.getSymbolState(symbol);
+        const market = marketHub.getState(symbol);
+        const nextFundingTimeMs = runtime?.nextFundingTimeMs ?? market?.nextFundingTimeMs ?? null;
+        const timeToFundingMs = nextFundingTimeMs === null ? null : Math.max(0, nextFundingTimeMs - now);
+
+        return {
+          symbol,
+          markPrice: typeof market?.markPrice === 'number' && Number.isFinite(market.markPrice) ? market.markPrice : 0,
+          openInterestValue:
+            typeof market?.openInterestValue === 'number' && Number.isFinite(market.openInterestValue) ? market.openInterestValue : 0,
+          priceDeltaPct: typeof runtime?.lastPriceDeltaPct === 'number' && Number.isFinite(runtime.lastPriceDeltaPct) ? runtime.lastPriceDeltaPct : 0,
+          oiDeltaPct: typeof runtime?.lastOiDeltaPct === 'number' && Number.isFinite(runtime.lastOiDeltaPct) ? runtime.lastOiDeltaPct : 0,
+          fundingRate: runtime?.fundingRate ?? market?.fundingRate ?? null,
+          nextFundingTimeMs,
+          timeToFundingMs,
+          tradability: runtime?.tradingAllowed ?? 'MISSING',
+          blackoutReason: runtime?.blackoutReason ?? null,
+          signalCount24h: runtime?.lastSignalCount24h ?? 0,
+          lastSignalAtMs: runtime?.lastSignalAtMs ?? null
+        };
+      }),
+      // legacy fields kept for additive-safe migration
+      ...buildBroadcastBotState()
+    };
+  };
+
   const broadcastBotState = (): void => {
     broadcast('state', buildBroadcastBotState());
   };
@@ -750,7 +819,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.get('/api/bot/state', async () => {
-    return buildBroadcastBotState();
+    return buildApiBotState();
   });
 
 

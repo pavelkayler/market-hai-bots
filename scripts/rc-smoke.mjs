@@ -1,98 +1,53 @@
-import { spawn } from 'node:child_process';
+const baseUrl = process.env.RC_SMOKE_BASE_URL ?? 'http://127.0.0.1:8080';
 
-const timeoutMs = Number.parseInt(process.env.RC_SMOKE_TIMEOUT_MS ?? '12000', 10);
-
-const isWindows = process.platform === 'win32';
-
-const startService = (name, command) => {
-  const child = spawn(command, {
-    shell: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: !isWindows
-  });
-
-  child.stdout.on('data', (chunk) => {
-    process.stdout.write(`[${name}] ${chunk.toString()}`);
-  });
-
-  child.stderr.on('data', (chunk) => {
-    process.stderr.write(`[${name}] ${chunk.toString()}`);
-  });
-
-  child.on('error', (error) => {
-    process.stderr.write(`[${name}] start failed: ${error.message}\n`);
-  });
-
-  return child;
+const getJson = async (path) => {
+  const response = await fetch(`${baseUrl}${path}`);
+  if (!response.ok) {
+    throw new Error(`${path} returned HTTP ${response.status}`);
+  }
+  return response.json();
 };
 
-const stopService = (name, child) => {
-  if (!child || child.killed || child.exitCode !== null) {
-    return;
+const assert = (condition, message) => {
+  if (!condition) {
+    throw new Error(message);
+  }
+};
+
+const requiredStateKeys = ['bot', 'config', 'universe', 'activity', 'symbols'];
+
+const run = async () => {
+  const doctor = await getJson('/api/doctor');
+  assert(typeof doctor === 'object' && doctor !== null, 'doctor payload must be object');
+  assert(Array.isArray(doctor.checks), 'doctor.checks must be array');
+  assert(doctor.ok === true, 'doctor overall status must be PASS (ok=true)');
+
+  const state = await getJson('/api/bot/state');
+  assert(typeof state === 'object' && state !== null, 'state payload must be object');
+  for (const key of requiredStateKeys) {
+    assert(Object.hasOwn(state, key), `state missing key: ${key}`);
   }
 
-  if (isWindows) {
-    spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' });
-    return;
+  const activity = state.activity ?? {};
+  for (const key of ['queueDepth', 'activeOrders', 'openPositions', 'symbolUpdatesPerSec', 'journalAgeMs']) {
+    assert(Number.isFinite(activity[key]), `state.activity.${key} must be finite number`);
   }
 
-  try {
-    process.kill(-child.pid, 'SIGTERM');
-  } catch {
-    child.kill('SIGTERM');
-  }
-
-  setTimeout(() => {
-    if (child.exitCode === null) {
-      try {
-        process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        child.kill('SIGKILL');
-      }
-      process.stderr.write(`[${name}] force-killed after SIGTERM grace period\n`);
+  const symbols = Array.isArray(state.symbols) ? state.symbols : [];
+  for (const symbolState of symbols) {
+    for (const key of ['symbol', 'markPrice', 'openInterestValue', 'priceDeltaPct', 'oiDeltaPct', 'signalCount24h']) {
+      assert(Object.hasOwn(symbolState, key), `symbol row missing key: ${key}`);
     }
-  }, 1500);
+    assert(Object.hasOwn(symbolState, 'fundingRate'), 'symbol row missing fundingRate');
+    assert(Object.hasOwn(symbolState, 'nextFundingTimeMs'), 'symbol row missing nextFundingTimeMs');
+    assert(Object.hasOwn(symbolState, 'timeToFundingMs'), 'symbol row missing timeToFundingMs');
+  }
+
+  console.log('RC smoke PASS');
+  console.log(`doctor checks=${doctor.checks.length}, symbols=${symbols.length}, queueDepth=${activity.queueDepth}`);
 };
 
-const backend = startService('backend', 'npm --prefix backend run dev');
-const frontend = startService('frontend', 'npm --prefix frontend run dev');
-
-let exiting = false;
-
-const shutdown = (code) => {
-  if (exiting) {
-    return;
-  }
-  exiting = true;
-  stopService('backend', backend);
-  stopService('frontend', frontend);
-  setTimeout(() => process.exit(code), 1800);
-};
-
-const onEarlyExit = (name, code) => {
-  if (exiting) {
-    return;
-  }
-  if (code === 0 || code === null) {
-    return;
-  }
-  process.stderr.write(`RC smoke failed: ${name} exited early with code ${code}\n`);
-  shutdown(code);
-};
-
-backend.on('exit', (code) => onEarlyExit('backend', code));
-frontend.on('exit', (code) => onEarlyExit('frontend', code));
-
-process.stdout.write(`RC smoke: started backend + frontend; waiting ${timeoutMs}ms for sanity boot.\n`);
-
-setTimeout(() => {
-  process.stdout.write('RC smoke: timeout reached (expected). Stopping services cleanly.\n');
-  shutdown(0);
-}, timeoutMs);
-
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    process.stdout.write(`RC smoke: received ${signal}, shutting down.\n`);
-    shutdown(0);
-  });
-}
+run().catch((error) => {
+  console.error(`RC smoke FAIL: ${error.message}`);
+  process.exitCode = 1;
+});

@@ -26,6 +26,12 @@ describe('v2 determinism', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ mode: 'demo', direction: 'both', tf: 1, priceUpThrPct: 0.5, oiUpThrPct: 3, signalCounterMin: 2, signalCounterMax: 3 } as never);
+    const internalState = (engine as unknown as { symbols: Map<string, { fsmState: string; position: unknown }> }).symbols.get('BTCUSDT');
+    if (!internalState) {
+      throw new Error('symbol runtime missing');
+    }
+    internalState.fsmState = 'POSITION_OPEN';
+    internalState.position = { side: 'LONG', qty: 1, entryPrice: 100, tpPrice: 110, slPrice: 90, openedTs: now };
 
     const market = {
       markPrice: 100,

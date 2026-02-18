@@ -59,7 +59,36 @@ export type ProfilesState = {
   names: string[];
 };
 
+
+export type BotStateSymbol = {
+  symbol: string;
+  markPrice: number;
+  openInterestValue: number;
+  priceDeltaPct: number;
+  oiDeltaPct: number;
+  fundingRate: number | null;
+  nextFundingTimeMs: number | null;
+  timeToFundingMs: number | null;
+  tradability: 'OK' | 'BLACKOUT' | 'COOLDOWN' | 'MISSING';
+  blackoutReason?: string | null;
+  signalCount24h: number;
+  lastSignalAtMs: number | null;
+};
+
+export type BotStateContract = {
+  bot: { phase: 'STOPPED' | 'RUNNING' | 'PAUSED'; running: boolean; startedAt: number | null; stoppedAt: number | null; lastError: string | null };
+  config: { tfMinutes: number; priceUpThrPct: number; oiUpThrPct: number; minTriggerCount: number; maxTriggerCount: number };
+  universe: { ready: boolean; symbolsCount: number; excludedCount?: number };
+  activity: { queueDepth: number; activeOrders: number; openPositions: number; symbolUpdatesPerSec: number; journalAgeMs: number };
+  symbols: BotStateSymbol[];
+};
+
 export type BotState = {
+  bot?: BotStateContract['bot'];
+  config?: BotStateContract['config'];
+  universe?: BotStateContract['universe'];
+  activity?: BotStateContract['activity'];
+  symbols?: BotStateContract['symbols'];
   running: boolean;
   paused: boolean;
   pauseReason?: string | null;
