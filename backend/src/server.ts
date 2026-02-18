@@ -20,6 +20,7 @@ import { ProfileService } from './services/profileService.js';
 import { RunRecorderService } from './services/runRecorderService.js';
 import { AutoTuneService } from './services/autoTuneService.js';
 import { AUTO_TUNE_BOUNDS, planAutoTuneChange } from './services/autoTunePlanner.js';
+import { createDeterministicRng, mixSeed32 } from './utils/deterministicRng.js';
 import { DoctorService } from './services/doctorService.js';
 import { RunHistoryService } from './services/runHistoryService.js';
 import { RunEventsService } from './services/runEventsService.js';
@@ -80,6 +81,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   let killWarning: string | null = null;
   let lastJournalTs = 0;
   let currentRunProfileNameUsed: string | null = null;
+  let currentRunId: string | null = null;
   const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
   const marketClient = options.marketClient ?? new BybitMarketClient();
@@ -417,13 +419,20 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         if (currentConfig && tuneState.enabled) {
           void (async () => {
             const recentRuns = await runHistoryService.summarizeRecent(20);
+            const rngSeed = mixSeed32(
+              tuneState.closesSeen,
+              Number.parseInt((currentRunId ?? '').replace(/\D/g, ''), 10) || 0,
+              botEngine.getState().startedAt ?? 0,
+              Object.keys(AUTO_TUNE_BOUNDS).length
+            );
             const plan = planAutoTuneChange({
               currentConfig,
               autoTuneScope: tuneState.scope,
               recentRuns,
               currentBotStats: botEngine.getStats(),
               nowMs: Date.now(),
-              plannerMode: currentConfig.autoTunePlannerMode ?? 'DETERMINISTIC'
+              plannerMode: currentConfig.autoTunePlannerMode ?? 'DETERMINISTIC',
+              rng: createDeterministicRng(rngSeed)
             });
 
             if (!plan) {
@@ -674,12 +683,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     botEngine.setUniverseEntries(effectiveEntries);
     currentRunProfileNameUsed = shouldUseActiveProfile ? profilesList.activeProfile : null;
     await autoTuneService.setEnabledScope(config.autoTuneEnabled, config.autoTuneScope);
-    await runRecorder.startRun({
+    const run = await runRecorder.startRun({
       startTime: Date.now(),
       configSnapshot: config,
       universeSummary: { total: universe.symbols.length, effective: effectiveEntries.length },
       commitHash: getCommitHash()
     });
+    currentRunId = run?.runId ?? null;
     await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_START' });
     botEngine.start(config);
     broadcastBotState();
@@ -690,6 +700,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   app.post('/api/bot/stop', async () => {
     botEngine.stop();
     currentRunProfileNameUsed = null;
+    currentRunId = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
     await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_STOP' });
     broadcastBotState();
@@ -718,13 +729,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const resumedState = botEngine.getState();
     currentRunProfileNameUsed = null;
-    await runRecorder.startRun({
+    const run = await runRecorder.startRun({
       startTime: Date.now(),
       configSnapshot: resumedState.config,
       universeSummary: { total: universe?.symbols.length ?? 0, effective: effectiveEntries.length },
       commitHash: getCommitHash(),
       resumedFromSnapshot: true
     });
+    currentRunId = run?.runId ?? null;
     botEngine.resume(true);
     await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_RESUME' });
     broadcastBotState();
@@ -755,6 +767,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     killCompletedAt = Date.now();
     botEngine.stop();
     currentRunProfileNameUsed = null;
+    currentRunId = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
     await runRecorder.appendEvent({
       ts: Date.now(),
@@ -970,7 +983,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.get('/api/autotune/state', async () => {
     await autoTuneService.init();
-    return { ok: true, state: autoTuneService.getState() };
+    const state = autoTuneService.getState();
+    const currentConfig = botEngine.getState().config;
+    return {
+      ok: true,
+      state: {
+        ...state,
+        plannerMode: currentConfig?.autoTunePlannerMode ?? 'DETERMINISTIC',
+        autoTuneWindowHours: currentConfig?.autoTuneWindowHours ?? 24,
+        autoTuneTargetTradesInWindow: currentConfig?.autoTuneTargetTradesInWindow ?? 6,
+        autoTuneMinTradesBeforeTighten: currentConfig?.autoTuneMinTradesBeforeTighten ?? 4
+      }
+    };
   });
 
   app.get('/api/autotune/history', async (request) => {

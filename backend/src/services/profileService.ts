@@ -45,7 +45,10 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   minNotionalUSDT: 5,
   autoTuneEnabled: false,
   autoTuneScope: 'GLOBAL',
-  autoTunePlannerMode: 'DETERMINISTIC'
+  autoTunePlannerMode: 'DETERMINISTIC',
+  autoTuneWindowHours: 24,
+  autoTuneTargetTradesInWindow: 6,
+  autoTuneMinTradesBeforeTighten: 4
 };
 
 const SHIPPED_PRESET_NAMES = [
@@ -58,22 +61,22 @@ const SHIPPED_PRESET_NAMES = [
   'conservative_1m',
   'conservative_3m',
   'conservative_5m',
-  'skip_most_trades'
+  'skip_trades_max_filter'
 ] as const;
 
-const LEGACY_SHIPPED_PRESETS = ['fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m', 'smoke_min_thresholds_1m'] as const;
+const LEGACY_SHIPPED_PRESETS = ['fast_test_1m', 'overnight_1m_safe', 'smoke_min_1m', 'smoke_min_thresholds_1m', 'skip_most_trades'] as const;
 
 const SHIPPED_PRESETS: Record<(typeof SHIPPED_PRESET_NAMES)[number], BotConfig> = {
-  aggressive_1m: { ...DEFAULT_PROFILE_CONFIG, tf: 1, signalCounterThreshold: 1, signalCounterMin: 1, priceUpThrPct: 0.25, oiUpThrPct: 25, oiCandleThrPct: 0.1, maxActiveSymbols: 6, maxSpreadBps: 55, maxTickStalenessMs: 3000, minNotionalUSDT: 5, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTunePlannerMode: 'RANDOM_EXPLORE' },
-  aggressive_3m: { ...DEFAULT_PROFILE_CONFIG, tf: 3, signalCounterThreshold: 1, signalCounterMin: 1, priceUpThrPct: 0.35, oiUpThrPct: 30, oiCandleThrPct: 0.15, maxActiveSymbols: 5, maxSpreadBps: 50, maxTickStalenessMs: 3000, minNotionalUSDT: 6, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' },
-  aggressive_5m: { ...DEFAULT_PROFILE_CONFIG, tf: 5, signalCounterThreshold: 2, signalCounterMin: 1, priceUpThrPct: 0.4, oiUpThrPct: 35, oiCandleThrPct: 0.2, maxActiveSymbols: 4, maxSpreadBps: 45, maxTickStalenessMs: 3200, minNotionalUSDT: 8, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' },
-  balanced_1m: { ...DEFAULT_PROFILE_CONFIG, tf: 1, signalCounterThreshold: 2, signalCounterMin: 2, priceUpThrPct: 0.5, oiUpThrPct: 45, oiCandleThrPct: 0.25, maxActiveSymbols: 4, maxSpreadBps: 40, maxTickStalenessMs: 2500, minNotionalUSDT: 8, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' },
-  balanced_3m: { ...DEFAULT_PROFILE_CONFIG, tf: 3, signalCounterThreshold: 2, signalCounterMin: 2, priceUpThrPct: 0.55, oiUpThrPct: 50, oiCandleThrPct: 0.3, maxActiveSymbols: 3, maxSpreadBps: 38, maxTickStalenessMs: 2500, minNotionalUSDT: 10, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' },
-  balanced_5m: { ...DEFAULT_PROFILE_CONFIG, tf: 5, signalCounterThreshold: 2, signalCounterMin: 2, priceUpThrPct: 0.6, oiUpThrPct: 55, oiCandleThrPct: 0.35, maxActiveSymbols: 3, maxSpreadBps: 35, maxTickStalenessMs: 2400, minNotionalUSDT: 12, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' },
-  conservative_1m: { ...DEFAULT_PROFILE_CONFIG, tf: 1, signalCounterThreshold: 3, signalCounterMin: 3, priceUpThrPct: 0.7, oiUpThrPct: 70, oiCandleThrPct: 0.4, maxActiveSymbols: 2, maxSpreadBps: 35, maxTickStalenessMs: 2200, minNotionalUSDT: 12, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' },
-  conservative_3m: { ...DEFAULT_PROFILE_CONFIG, tf: 3, signalCounterThreshold: 3, signalCounterMin: 3, priceUpThrPct: 0.8, oiUpThrPct: 80, oiCandleThrPct: 0.5, maxActiveSymbols: 2, maxSpreadBps: 32, maxTickStalenessMs: 2000, minNotionalUSDT: 14, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' },
-  conservative_5m: { ...DEFAULT_PROFILE_CONFIG, tf: 5, signalCounterThreshold: 3, signalCounterMin: 3, priceUpThrPct: 0.9, oiUpThrPct: 90, oiCandleThrPct: 0.6, maxActiveSymbols: 2, maxSpreadBps: 30, maxTickStalenessMs: 2000, minNotionalUSDT: 16, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' },
-  skip_most_trades: { ...DEFAULT_PROFILE_CONFIG, tf: 5, signalCounterThreshold: 5, signalCounterMin: 5, signalCounterMax: Number.MAX_SAFE_INTEGER, priceUpThrPct: 4.5, oiUpThrPct: 280, oiCandleThrPct: 20, maxActiveSymbols: 1, maxSpreadBps: 12, maxTickStalenessMs: 900, minNotionalUSDT: 100, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' }
+  aggressive_1m: { ...DEFAULT_PROFILE_CONFIG, tf: 1, signalCounterThreshold: 1, signalCounterMin: 1, priceUpThrPct: 0.25, oiUpThrPct: 25, oiCandleThrPct: 0.1, maxActiveSymbols: 6, maxSpreadBps: 55, maxTickStalenessMs: 3000, minNotionalUSDT: 5, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTunePlannerMode: 'RANDOM_EXPLORE', autoTuneTargetTradesInWindow: 12, autoTuneMinTradesBeforeTighten: 7 },
+  aggressive_3m: { ...DEFAULT_PROFILE_CONFIG, tf: 3, signalCounterThreshold: 1, signalCounterMin: 1, priceUpThrPct: 0.35, oiUpThrPct: 30, oiCandleThrPct: 0.15, maxActiveSymbols: 5, maxSpreadBps: 50, maxTickStalenessMs: 3000, minNotionalUSDT: 6, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTunePlannerMode: 'RANDOM_EXPLORE', autoTuneTargetTradesInWindow: 9, autoTuneMinTradesBeforeTighten: 6 },
+  aggressive_5m: { ...DEFAULT_PROFILE_CONFIG, tf: 5, signalCounterThreshold: 2, signalCounterMin: 1, priceUpThrPct: 0.4, oiUpThrPct: 35, oiCandleThrPct: 0.2, maxActiveSymbols: 4, maxSpreadBps: 45, maxTickStalenessMs: 3200, minNotionalUSDT: 8, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTunePlannerMode: 'RANDOM_EXPLORE', autoTuneTargetTradesInWindow: 7, autoTuneMinTradesBeforeTighten: 5 },
+  balanced_1m: { ...DEFAULT_PROFILE_CONFIG, tf: 1, signalCounterThreshold: 2, signalCounterMin: 2, priceUpThrPct: 0.5, oiUpThrPct: 45, oiCandleThrPct: 0.25, maxActiveSymbols: 4, maxSpreadBps: 40, maxTickStalenessMs: 2500, minNotionalUSDT: 8, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTuneTargetTradesInWindow: 8, autoTuneMinTradesBeforeTighten: 5 },
+  balanced_3m: { ...DEFAULT_PROFILE_CONFIG, tf: 3, signalCounterThreshold: 2, signalCounterMin: 2, priceUpThrPct: 0.55, oiUpThrPct: 50, oiCandleThrPct: 0.3, maxActiveSymbols: 3, maxSpreadBps: 38, maxTickStalenessMs: 2500, minNotionalUSDT: 10, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTuneTargetTradesInWindow: 6, autoTuneMinTradesBeforeTighten: 4 },
+  balanced_5m: { ...DEFAULT_PROFILE_CONFIG, tf: 5, signalCounterThreshold: 2, signalCounterMin: 2, priceUpThrPct: 0.6, oiUpThrPct: 55, oiCandleThrPct: 0.35, maxActiveSymbols: 3, maxSpreadBps: 35, maxTickStalenessMs: 2400, minNotionalUSDT: 12, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTuneTargetTradesInWindow: 4, autoTuneMinTradesBeforeTighten: 3 },
+  conservative_1m: { ...DEFAULT_PROFILE_CONFIG, tf: 1, signalCounterThreshold: 3, signalCounterMin: 3, priceUpThrPct: 0.7, oiUpThrPct: 70, oiCandleThrPct: 0.4, maxActiveSymbols: 2, maxSpreadBps: 35, maxTickStalenessMs: 2200, minNotionalUSDT: 12, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTuneTargetTradesInWindow: 4, autoTuneMinTradesBeforeTighten: 3 },
+  conservative_3m: { ...DEFAULT_PROFILE_CONFIG, tf: 3, signalCounterThreshold: 3, signalCounterMin: 3, priceUpThrPct: 0.8, oiUpThrPct: 80, oiCandleThrPct: 0.5, maxActiveSymbols: 2, maxSpreadBps: 32, maxTickStalenessMs: 2000, minNotionalUSDT: 14, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTuneTargetTradesInWindow: 3, autoTuneMinTradesBeforeTighten: 2 },
+  conservative_5m: { ...DEFAULT_PROFILE_CONFIG, tf: 5, signalCounterThreshold: 3, signalCounterMin: 3, priceUpThrPct: 0.9, oiUpThrPct: 90, oiCandleThrPct: 0.6, maxActiveSymbols: 2, maxSpreadBps: 30, maxTickStalenessMs: 2000, minNotionalUSDT: 16, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTuneTargetTradesInWindow: 2, autoTuneMinTradesBeforeTighten: 2 },
+  skip_trades_max_filter: { ...DEFAULT_PROFILE_CONFIG, tf: 5, signalCounterThreshold: 5, signalCounterMin: 5, signalCounterMax: Number.MAX_SAFE_INTEGER, priceUpThrPct: 4.5, oiUpThrPct: 280, oiCandleThrPct: 20, confirmMinContinuationPct: 1.2, confirmWindowBars: 1, impulseMaxAgeBars: 1, maxSecondsIntoCandle: 5, maxActiveSymbols: 1, maxSpreadBps: 6, maxTickStalenessMs: 500, minNotionalUSDT: 100, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTuneTargetTradesInWindow: 0, autoTuneMinTradesBeforeTighten: 0 }
 };
 
 const DEFAULT_PROFILES_FILE: ProfilesFile = {

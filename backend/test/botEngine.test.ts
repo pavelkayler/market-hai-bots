@@ -2441,4 +2441,36 @@ describe('BotEngine applyConfigPatch', () => {
     expect(updated).toBeNull();
     expect(engine.getState().config).toEqual(before);
   });
+
+  it('accepts new autotune patch fields and normalizes integer bounds', () => {
+    const engine = new BotEngine({ emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.start({ ...defaultConfig, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' });
+
+    const updated = engine.applyConfigPatch({
+      confirmMinContinuationPct: 0.6,
+      confirmWindowBars: 3.9,
+      impulseMaxAgeBars: 4.2,
+      maxSecondsIntoCandle: 52.7,
+      maxSpreadBps: 40,
+      maxTickStalenessMs: 3100.9
+    });
+
+    expect(updated?.confirmMinContinuationPct).toBe(0.6);
+    expect(updated?.confirmWindowBars).toBe(3);
+    expect(updated?.impulseMaxAgeBars).toBe(4);
+    expect(updated?.maxSecondsIntoCandle).toBe(52);
+    expect(updated?.maxSpreadBps).toBe(40);
+    expect(updated?.maxTickStalenessMs).toBe(3100);
+  });
+
+  it('rejects invalid negative new autotune fields', () => {
+    const engine = new BotEngine({ emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.start({ ...defaultConfig, autoTuneEnabled: true, autoTuneScope: 'GLOBAL' });
+
+    const before = engine.getState().config!;
+    const updated = engine.applyConfigPatch({ confirmWindowBars: -1, maxSecondsIntoCandle: -5 });
+
+    expect(updated).toBeNull();
+    expect(engine.getState().config).toEqual(before);
+  });
 });

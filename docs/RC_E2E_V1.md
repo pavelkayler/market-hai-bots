@@ -131,6 +131,7 @@ This is the release-candidate runbook for a full operator validation pass. It is
 ### Expected outcome
 - Closed trade includes realized PnL, fees, slippage, and close reason.
 - If Auto-Tune applied: `AUTO_TUNE_APPLIED` appears in run events/journal and `/api/autotune/history`.
+- Verify Auto-Tune changed at least 3 distinct parameters in a short paper session OR prove via deterministic unit test (`backend/test/autoTunePlanner.test.ts`) showing multi-parameter selection in starvation/negative-PnL branches.
 
 ### If failing, check…
 - `GET /api/bot/stats`

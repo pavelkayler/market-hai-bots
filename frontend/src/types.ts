@@ -42,6 +42,10 @@ export type BotSettings = {
   minNotionalUSDT: number;
   autoTuneEnabled: boolean;
   autoTuneScope: AutoTuneScope;
+  autoTunePlannerMode?: 'DETERMINISTIC' | 'RANDOM_EXPLORE';
+  autoTuneWindowHours?: number;
+  autoTuneTargetTradesInWindow?: number;
+  autoTuneMinTradesBeforeTighten?: number;
   paperEntrySlippageBps?: number;
   paperExitSlippageBps?: number;
   paperPartialFillPct?: number;
@@ -473,6 +477,11 @@ export function isDoctorReport(value: unknown): value is DoctorReport {
 export type AutoTuneRuntimeState = {
   enabled: boolean;
   scope: AutoTuneScope;
+  closesSeen?: number;
+  plannerMode?: 'DETERMINISTIC' | 'RANDOM_EXPLORE';
+  autoTuneWindowHours?: number;
+  autoTuneTargetTradesInWindow?: number;
+  autoTuneMinTradesBeforeTighten?: number;
   lastApplied: { ts: number; parameter: string; before: number; after: number; reason: string } | null;
 };
 

@@ -152,7 +152,7 @@ Kill response includes deterministic close/cancel outcome fields:
 ## Task 51 additive API
 - `GET /api/runs?limit=N` lists latest run folders.
 - `GET /api/runs/:id/download` downloads a single run as zip.
-- `GET /api/autotune/state` returns persistent Auto-Tune state (`enabled`, `scope`, `lastApplied`, history tail).
+- `GET /api/autotune/state` returns persistent Auto-Tune state (`enabled`, `scope`, `lastApplied`, `closesSeen`) plus additive planner/policy surface (`plannerMode`, `autoTuneWindowHours`, `autoTuneTargetTradesInWindow`, `autoTuneMinTradesBeforeTighten`).
 - `GET /api/runs/:id/events?limit=200&types=SYSTEM` returns best-effort parsed run event tail (most-recent-first).
 - `GET /api/autotune/history?limit=100` returns latest applied auto-tune changes for operator transparency.
 - `symbol:update` WS payload now additively includes:

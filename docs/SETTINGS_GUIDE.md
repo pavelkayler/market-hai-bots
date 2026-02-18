@@ -172,7 +172,7 @@ Spread (`spreadBpsAtEntry`, `spreadBpsAtExit`) and slippage (`slippageUSDT`, `sl
 - aggressive: `aggressive_1m`, `aggressive_3m`, `aggressive_5m`
 - balanced: `balanced_1m`, `balanced_3m`, `balanced_5m`
 - conservative: `conservative_1m`, `conservative_3m`, `conservative_5m`
-- minimal-trading safety preset: `skip_most_trades`
+- minimal-trading safety preset: `skip_trades_max_filter`
 
 All shipped presets have `autoTuneEnabled=true` by default.
 
@@ -187,7 +187,7 @@ Starter profiles are auto-seeded when missing (without overwriting existing prof
 - `aggressive_1m`, `aggressive_3m`, `aggressive_5m`
 - `balanced_1m`, `balanced_3m`, `balanced_5m`
 - `conservative_1m`, `conservative_3m`, `conservative_5m`
-- `skip_most_trades`
+- `skip_trades_max_filter`
 
 
 ## Signal gating semantics (canonical)
@@ -202,50 +202,21 @@ Starter profiles are auto-seeded when missing (without overwriting existing prof
   - `longPriority`: chooses LONG.
   - Diagnostics surface selected side and no-entry reasons in `symbol:update.topReasons` / journal fields.
 
-## Operator presets
+## Factory presets usage
 
-- `fast_test_1m`: speed-biased supervised checks over short sessions.
-- `overnight_1m_safe`: safety-biased unattended paper/demo run with tighter guardrails.
-- `smoke_min_1m`: very permissive lifecycle validation preset to trigger quickly; **not for profitability**.
-
-### smoke_min_1m values
-
-| Setting | Value |
-| --- | --- |
-| mode | `paper` |
-| direction | `both` |
-| tf | `1` |
-| signalCounterThreshold | `1` |
-| priceUpThrPct | `0.2` |
-| oiUpThrPct | `0.2` |
-| oiCandleThrPct | `0` |
-| marginUSDT | `25` |
-| leverage | `5` |
-| tpRoiPct | `2` |
-| slRoiPct | `2` |
-| entryOffsetPct | `0.01` |
-| maxActiveSymbols | `20` |
-| dailyLossLimitUSDT | `0` |
-| maxConsecutiveLosses | `0` |
-| trendTfMinutes | `5` |
-| trendLookbackBars | `10` |
-| trendMinMovePct | `0` |
-| confirmWindowBars | `1` |
-| confirmMinContinuationPct | `0` |
-| impulseMaxAgeBars | `1` |
-| requireOiTwoCandles | `false` |
-| minNotionalUSDT | `0` |
-| maxSpreadBps | `9999` |
-| maxTickStalenessMs | `60000` |
-| Universe defaults (UI) `minTurnover` / `minVolPct` | `1000000` / `1` |
+Use shipped factory presets only:
+- aggressive_1m/3m/5m (RANDOM_EXPLORE Auto-Tune)
+- balanced_1m/3m/5m (DETERMINISTIC Auto-Tune)
+- conservative_1m/3m/5m (DETERMINISTIC Auto-Tune)
+- skip_trades_max_filter (strict near-zero cadence test preset)
 
 ## Recommended presets (paper testing ready)
 
-- `fast_test_1m` (speed-biased smoke run; use for 1–2h supervised checks):
+- `aggressive_1m` (speed-biased smoke run; use for 1–2h supervised checks):
   - More permissive gating to produce trade cycles quickly.
   - Guardrails remain ON (`maxConsecutiveLosses`, `dailyLossLimitUSDT`, spread + staleness caps).
   - `signalCounterThreshold=2`, `entryOffsetPct=0.01`, `oiCandleThrPct>=0`.
-- `overnight_1m_safe` (safety-biased unattended run):
+- `conservative_3m` (safety-biased unattended run):
   - Stricter confirmation and slower trend context (`trendTfMinutes=15`, smaller `maxActiveSymbols`).
   - Conservative liquidity gates (`maxSpreadBps`, `maxTickStalenessMs`) and non-zero loss guardrails.
   - `signalCounterThreshold>=2`, `entryOffsetPct=0.01`, `oiCandleThrPct>=0`.
@@ -303,7 +274,7 @@ Troubleshoot in this order:
 ## Operator QA checklist (Task 26)
 
 1. Build universe with `minTurnover`/`minVolPct`.
-2. Start `fast_test_1m`, verify `ARMED -> ENTRY_PENDING -> POSITION_OPEN` cycles (replay/live).
+2. Start `aggressive_1m`, verify `ARMED -> ENTRY_PENDING -> POSITION_OPEN` cycles (replay/live).
 3. Confirm net vs gross in close audit fields (`grossPnlUSDT`, `feeTotalUSDT`, `netPnlUSDT`).
 4. Confirm top no-entry reasons include current value + threshold.
 5. Verify trend mismatch blocks entries.
@@ -373,8 +344,8 @@ If an invariant is violated, v1 safe fallback is applied: symbol is logged and r
 
 ## Operational presets
 
-- `fast_test_1m`: 1–2 hour smoke preset with faster signal cadence and conservative guardrails. Use for short operator validation only (not unattended long sessions).
-- `overnight_1m_safe`: slower higher-quality preset for unattended overnight monitoring with tighter spread/staleness controls and stricter confirmation.
+- `aggressive_1m`: 1–2 hour smoke preset with faster signal cadence and conservative guardrails. Use for short operator validation only (not unattended long sessions).
+- `conservative_3m`: slower higher-quality preset for unattended overnight monitoring with tighter spread/staleness controls and stricter confirmation.
 
 These presets are seeded by backend startup only if missing, so user edits are preserved across upgrades.
 
@@ -411,11 +382,12 @@ Notes:
 ### Auto-Tune v1 (history-aware, bounded, single-change)
 - Recent-window policy: planner uses last 24h runs (testable via `nowMs`) and enforces trade-frequency safeguards.
 - If recent trades are below target, planner prefers loosening (not tightening). Tightening is allowed only after minimum recent trades are reached.
-- Tunable params: `priceUpThrPct`, `oiUpThrPct`, `oiCandleThrPct`, `signalCounterThreshold`, `minNotionalUSDT`.
-- Bounds/step: `priceUpThrPct` [0.1..5, 0.05], `oiUpThrPct` [10..300, 5], `oiCandleThrPct` [0..25, 0.2], `signalCounterThreshold` [1..8, 1], `minNotionalUSDT` [1..100, 1].
-- Optional planner mode: `autoTunePlannerMode` = `DETERMINISTIC` (default) or `RANDOM_EXPLORE`.
+- Tunable params: `priceUpThrPct`, `oiUpThrPct`, `oiCandleThrPct`, `signalCounterThreshold`, `minNotionalUSDT`, `confirmMinContinuationPct`, `confirmWindowBars`, `impulseMaxAgeBars`, `maxSecondsIntoCandle`, `maxSpreadBps`, `maxTickStalenessMs`.
+- Bounds follow `normalizeBotConfig`-safe ranges and `% means %` convention.
+- Planner mode: `autoTunePlannerMode` = `DETERMINISTIC` (default) or deterministic-seeded `RANDOM_EXPLORE` (replayable when seed inputs match).
+- Policy knobs (per profile): `autoTuneWindowHours` (default 24), `autoTuneTargetTradesInWindow` (default 6), `autoTuneMinTradesBeforeTighten` (default 4).
 - Auto-Tune evaluates on position close and applies **at most one change** per evaluation.
-- GLOBAL scope: only config patch changes (bounded fields: `priceUpThrPct`, `oiUpThrPct`, `minNotionalUSDT`).
+- GLOBAL scope: only config patch changes across bounded gating fields (thresholds, counters, continuation/impulse timing gates, spread/staleness gates, and `minNotionalUSDT`).
 - UNIVERSE_ONLY scope: only one exclusion candidate per evaluation (worst negative symbol from recent run summaries; no live-universe hot mutation during current run).
 - Persistence:
   - Runtime snapshot persistence is always done via engine config patching.

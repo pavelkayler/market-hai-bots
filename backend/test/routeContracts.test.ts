@@ -67,6 +67,19 @@ describe('route contract stability', () => {
     app = buildIsolatedServer();
   });
 
+
+  it('/api/autotune/state includes additive planner and policy fields', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/autotune/state' });
+    expect(response.statusCode).toBe(200);
+
+    const body = response.json() as { ok?: unknown; state?: Record<string, unknown> };
+    expect(body.ok).toBe(true);
+    expect(body.state).toBeTruthy();
+    expect(typeof body.state?.enabled).toBe('boolean');
+    expect(typeof body.state?.scope).toBe('string');
+    expect(typeof body.state?.closesSeen).toBe('number');
+  });
+
   it('/api/bot/state includes numeric 0-safe fields', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(response.statusCode).toBe(200);

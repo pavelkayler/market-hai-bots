@@ -14,12 +14,12 @@ const customConfig: BotConfig = {
   tpRoiPct: 1.5, slRoiPct: 0.8, entryOffsetPct: 0.01, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0,
   trendTfMinutes: 5, trendLookbackBars: 20, trendMinMovePct: 0.2, confirmWindowBars: 2, confirmMinContinuationPct: 0.1,
   impulseMaxAgeBars: 2, requireOiTwoCandles: false, maxSecondsIntoCandle: 45, minSpreadBps: 0, maxSpreadBps: 35,
-  maxTickStalenessMs: 2500, minNotionalUSDT: 5, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTunePlannerMode: 'DETERMINISTIC'
+  maxTickStalenessMs: 2500, minNotionalUSDT: 5, autoTuneEnabled: true, autoTuneScope: 'GLOBAL', autoTunePlannerMode: 'DETERMINISTIC', autoTuneWindowHours: 24, autoTuneTargetTradesInWindow: 6, autoTuneMinTradesBeforeTighten: 4
 };
 
 const shippedPresets = [
   'aggressive_1m', 'aggressive_3m', 'aggressive_5m', 'balanced_1m', 'balanced_3m', 'balanced_5m',
-  'conservative_1m', 'conservative_3m', 'conservative_5m', 'skip_most_trades'
+  'conservative_1m', 'conservative_3m', 'conservative_5m', 'skip_trades_max_filter'
 ];
 
 describe('ProfileService', () => {
@@ -35,6 +35,9 @@ describe('ProfileService', () => {
         expect(profile?.autoTuneEnabled).toBe(true);
       }
       expect(await service.get('fast_test_1m')).toBeNull();
+      expect(await service.get('skip_most_trades')).toBeNull();
+      expect((await service.get('aggressive_1m'))?.autoTunePlannerMode).toBe('RANDOM_EXPLORE');
+      expect((await service.get('balanced_3m'))?.autoTunePlannerMode).toBe('DETERMINISTIC');
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
