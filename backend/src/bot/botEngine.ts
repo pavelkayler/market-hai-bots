@@ -224,6 +224,7 @@ export type SymbolRuntimeState = {
   fundingRate?: number | null;
   nextFundingTimeMs?: number | null;
   tradingAllowed?: "OK" | "BLACKOUT" | "COOLDOWN" | "MISSING";
+  blackoutReason?: string | null;
   fundingBlackoutUntilMs?: number | null;
   blackoutActionInFlight?: boolean;
   lastBlackoutActionAtMs?: number | null;
@@ -1606,10 +1607,20 @@ export class BotEngine {
   }
 
   private syncFundingState(symbolState: SymbolRuntimeState, marketState: MarketState, nowMs: number): void {
+    const hasFundingRate = marketState.fundingRate !== undefined;
+    const hasNextFunding = marketState.nextFundingTimeMs !== undefined;
+    if (!hasFundingRate && !hasNextFunding) {
+      symbolState.tradingAllowed = symbolState.tradingAllowed ?? 'OK';
+      symbolState.blackoutReason = symbolState.blackoutReason ?? null;
+      return;
+    }
+
     symbolState.fundingRate = marketState.fundingRate ?? null;
     symbolState.nextFundingTimeMs = marketState.nextFundingTimeMs ?? null;
+    symbolState.blackoutReason = null;
     if (!Number.isFinite(symbolState.fundingRate ?? NaN)) {
       symbolState.tradingAllowed = "MISSING";
+      symbolState.blackoutReason = 'funding rate missing';
       return;
     }
     const nextFunding = symbolState.nextFundingTimeMs;
@@ -1617,9 +1628,15 @@ export class BotEngine {
       symbolState.tradingAllowed = "OK";
       return;
     }
+    if (nextFunding < nowMs - 5 * 60_000) {
+      symbolState.tradingAllowed = 'MISSING';
+      symbolState.blackoutReason = 'next funding stale';
+      return;
+    }
     const timeToFunding = nextFunding - nowMs;
     if (timeToFunding < 30 * 60_000 && timeToFunding >= 0) {
       symbolState.tradingAllowed = "BLACKOUT";
+      symbolState.blackoutReason = 'funding blackout window';
       const throttleMs = 10_000;
       const canAct = !symbolState.blackoutActionInFlight
         && (!symbolState.lastBlackoutActionAtMs || nowMs - symbolState.lastBlackoutActionAtMs >= throttleMs);
@@ -1634,6 +1651,7 @@ export class BotEngine {
     }
     if (nowMs < nextFunding + 10 * 60_000) {
       symbolState.tradingAllowed = "COOLDOWN";
+      symbolState.blackoutReason = 'funding cooldown active';
       return;
     }
     symbolState.tradingAllowed = "OK";
@@ -1653,8 +1671,15 @@ export class BotEngine {
     try {
       symbolState.lastCancelAttemptAtMs = this.now();
       await this.deps.demoTradeClient?.cancelOrder({ symbol: symbolState.symbol });
-      symbolState.lastCloseAttemptAtMs = this.now();
-      await this.deps.demoTradeClient?.closePositionMarket({ symbol: symbolState.symbol, side: symbolState.position?.side === "LONG" ? "Sell" : "Buy", qty: String(symbolState.position?.qty ?? 0) });
+      if (symbolState.position && symbolState.position.qty > 0) {
+        symbolState.lastCloseAttemptAtMs = this.now();
+        await this.deps.demoTradeClient?.closePositionMarket({
+          symbol: symbolState.symbol,
+          side: symbolState.position.side === "LONG" ? "Sell" : "Buy",
+          qty: String(symbolState.position.qty),
+          positionIdx: symbolState.position.side === 'LONG' ? 1 : 2
+        });
+      }
     } catch {}
   }
 
@@ -1981,6 +2006,7 @@ export class BotEngine {
       fundingRate: null,
       nextFundingTimeMs: null,
       tradingAllowed: "MISSING",
+      blackoutReason: null,
       fundingBlackoutUntilMs: null,
       blackoutActionInFlight: false,
       lastBlackoutActionAtMs: null,

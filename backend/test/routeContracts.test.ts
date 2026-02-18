@@ -67,20 +67,38 @@ describe('route contract stability', () => {
     app = buildIsolatedServer();
   });
 
-  it('/api/bot/state includes numeric 0-safe fields', async () => {
+  it('/api/bot/state returns frozen v2 contract with 0-safe values', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(response.statusCode).toBe(200);
 
-    const body = response.json() as Record<string, unknown>;
-    for (const field of ['queueDepth', 'activeOrders', 'openPositions', 'journalAgeMs', 'symbolUpdatesPerSec', 'uptimeMs']) {
-      expect(body).toHaveProperty(field);
-      expect(typeof body[field]).toBe('number');
-      expect(Number.isFinite(body[field] as number)).toBe(true);
+    const body = response.json() as {
+      bot: { phase: string; running: boolean; startedAt: number | null; stoppedAt: number | null; lastError: string | null };
+      config: Record<string, unknown>;
+      universe: { ready: boolean; symbolsCount: number; excludedCount: number };
+      activity: Record<string, unknown>;
+      symbols: Array<Record<string, unknown>>;
+    };
+
+    expect(body.bot.phase).toBe('STOPPED');
+    expect(body.bot.running).toBe(false);
+    expect(body.bot.startedAt).toBeNull();
+    expect(body.bot.lastError).toBeNull();
+
+    for (const field of ['tfMinutes', 'priceUpThrPct', 'oiUpThrPct', 'minTriggerCount', 'maxTriggerCount']) {
+      expect(typeof body.config[field]).toBe('number');
+      expect(Number.isFinite(body.config[field] as number)).toBe(true);
     }
 
-    expect(body.queueDepth).toBe(0);
-    expect(body.activeOrders).toBe(0);
-    expect(body.openPositions).toBe(0);
+    for (const field of ['queueDepth', 'activeOrders', 'openPositions', 'journalAgeMs', 'symbolUpdatesPerSec']) {
+      expect(typeof body.activity[field]).toBe('number');
+      expect(Number.isFinite(body.activity[field] as number)).toBe(true);
+    }
+
+    expect(body.universe.ready).toBe(false);
+    expect(body.universe.symbolsCount).toBe(0);
+    expect(body.universe.excludedCount).toBe(0);
+    expect(Array.isArray(body.symbols)).toBe(true);
+    expect(body.symbols).toHaveLength(0);
   });
 
 

@@ -40,8 +40,10 @@ describe('demoTradeClient position selection', () => {
     const client = new TestClient({ apiKey: 'k', apiSecret: 's' });
     await client.createLimitOrderWithTpSl({ symbol: 'BTCUSDT', side: 'Buy', qty: '1', price: '1', orderLinkId: 'x', takeProfit: '2', stopLoss: '0.5' });
     await client.closePositionMarket({ symbol: 'BTCUSDT', side: 'Sell', qty: '1' });
+    await client.closePositionMarket({ symbol: 'BTCUSDT', side: 'Buy', qty: '1' });
 
     expect(client.bodies[0]).toContain('"positionIdx":1');
     expect(client.bodies[1]).toContain('"positionIdx":1');
+    expect(client.bodies[2]).toContain('"positionIdx":2');
   });
 });

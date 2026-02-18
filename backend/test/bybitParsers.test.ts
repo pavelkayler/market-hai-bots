@@ -32,6 +32,23 @@ describe('Bybit parsers', () => {
 
 
 
+
+  it('normalizes nextFundingTime in seconds to epoch ms', () => {
+    const event = parseWsTickerEvent({
+      topic: 'tickers.BTCUSDT',
+      ts: 1739942400123,
+      data: {
+        symbol: 'BTCUSDT',
+        markPrice: '65000',
+        openInterestValue: '1000000',
+        fundingRate: '0.0001',
+        nextFundingTime: '1739946000'
+      }
+    });
+
+    expect(event?.nextFundingTimeMs).toBe(1739946000000);
+  });
+
   it('returns null for ws ticker event when markPrice is not numeric', () => {
     const fixture = readFixture('ws-ticker-btcusdt.json') as {
       data: { markPrice: string };

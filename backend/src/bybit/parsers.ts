@@ -59,6 +59,15 @@ const parseFiniteNumber = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const normalizeEpochMs = (value: unknown): number | null => {
+  const parsed = parseFiniteNumber(value);
+  if (parsed === null) {
+    return null;
+  }
+
+  return parsed < 1_000_000_000_000 ? Math.trunc(parsed * 1000) : Math.trunc(parsed);
+};
+
 type BybitListResponse = {
   result?: {
     list?: unknown[];
@@ -107,7 +116,7 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
   const lastPrice = parseFiniteNumber(data.lastPrice);
   const openInterestValue = parseFiniteNumber(data.openInterestValue);
   const fundingRate = parseFiniteNumber((data as { fundingRate?: unknown }).fundingRate);
-  const nextFundingTimeMs = parseFiniteNumber((data as { nextFundingTime?: unknown }).nextFundingTime);
+  const nextFundingTimeMs = normalizeEpochMs((data as { nextFundingTime?: unknown }).nextFundingTime);
   const ts = parseFiniteNumber(packet.ts);
 
   if (markPrice === null || openInterestValue === null || ts === null) {
