@@ -48,7 +48,7 @@
 
 ## Imported limitations from existing docs
 - Demo close detection based on polling heuristic (`docs/TASKS.md`, `docs/RELEASE_NOTES_v1.md`).
-- Paper fee assumptions pending explicit authoritative confirmation (`docs/TASKS.md`).
+- Paper fee/slippage/spread accounting model aligned with `docs/SETTINGS_GUIDE.md` and covered by `backend/test/pnlMath.test.ts` + `backend/test/botEngine.test.ts` (RESOLVED for current paper model).
 - Replay quality depends on recorded data density (`docs/RELEASE_NOTES_v1.md`).
 
 ## How to verify
@@ -61,3 +61,5 @@
    - `rg -n "getRunPayload|writeStats|catch \{" backend/src/services/runRecorderService.ts`
    - `rg -n "rotateIfNeeded|catch" backend/src/services/journalService.ts`
 3. Проверить replay error mapping вручную с несуществующим файлом.
+
+- Entry without price/qty is now blocked by explicit validation in paper fill and demo payload paths; residual risk only for upstream exchange anomalies outside local validation.

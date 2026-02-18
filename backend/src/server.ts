@@ -64,6 +64,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   let killInProgress = false;
   let killCompletedAt: number | null = null;
   let killWarning: string | null = null;
+  let lastJournalTs = 0;
   let currentRunProfileNameUsed: string | null = null;
   const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
@@ -134,14 +135,16 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const mode = botEngine.getState().config?.mode ?? 'paper';
 
     try {
+      const ts = Date.now();
       await journalService.append({
-        ts: Date.now(),
+        ts,
         mode,
         symbol: 'SYSTEM',
         event,
         side: null,
         data
       });
+      lastJournalTs = ts;
     } catch (error) {
       app.log.warn({ err: error, event }, 'Failed to append ops journal event');
     }
@@ -166,6 +169,44 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   const buildBroadcastBotState = () => {
     const state = botEngine.getState();
+    const perf = getPerfMetrics();
+    const now = Date.now();
+    const symbols = botEngine.getRuntimeSymbols();
+    const openOrders = symbols
+      .map((symbol) => {
+        const runtime = botEngine.getSymbolState(symbol);
+        if (!runtime?.pendingOrder) {
+          return null;
+        }
+
+        return {
+          symbol,
+          side: runtime.pendingOrder.side,
+          qty: runtime.pendingOrder.qty,
+          limitPrice: runtime.pendingOrder.limitPrice,
+          status: runtime.fsmState,
+          orderId: runtime.pendingOrder.orderId ?? null,
+          orderLinkId: runtime.pendingOrder.orderLinkId ?? null
+        };
+      })
+      .filter((value): value is NonNullable<typeof value> => value !== null);
+    const positions = symbols
+      .map((symbol) => {
+        const runtime = botEngine.getSymbolState(symbol);
+        if (!runtime?.position) {
+          return null;
+        }
+
+        return {
+          symbol,
+          side: runtime.position.side,
+          size: runtime.position.qty,
+          avgPrice: runtime.position.entryPrice,
+          unrealizedPnl: runtime.position.lastPnlUSDT ?? 0
+        };
+      })
+      .filter((value): value is NonNullable<typeof value> => value !== null);
+
     return {
       running: state.running,
       paused: state.paused,
@@ -174,9 +215,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       mode: state.config?.mode ?? null,
       direction: state.config?.direction ?? null,
       tf: state.config?.tf ?? null,
-      queueDepth: state.queueDepth,
-      activeOrders: state.activeOrders,
-      openPositions: state.openPositions,
+      queueDepth: Number.isFinite(state.queueDepth) ? state.queueDepth : 0,
+      activeOrders: Number.isFinite(state.activeOrders) ? state.activeOrders : 0,
+      openPositions: Number.isFinite(state.openPositions) ? state.openPositions : 0,
+      symbolUpdatesPerSec: Number.isFinite(perf.evalsPerSec) ? Number(perf.evalsPerSec.toFixed(2)) : 0,
+      journalAgeMs: lastJournalTs > 0 ? Math.max(0, now - lastJournalTs) : 0,
+      openOrders,
+      positions,
       startedAt: state.startedAt,
       uptimeMs: state.uptimeMs,
       killInProgress,
@@ -220,8 +265,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       const mode = botEngine.getState().config?.mode;
       if (mode) {
         void runRecorder.appendEvent({ ts: Date.now(), type: 'signal:new', payload });
+        const ts = Date.now();
+        lastJournalTs = ts;
         void journalService.append({
-          ts: Date.now(),
+          ts,
           mode,
           symbol: payload.symbol,
           event: 'SIGNAL',
@@ -253,8 +300,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         EXPIRED: 'ORDER_EXPIRED'
       };
 
+      const ts = Date.now();
+      lastJournalTs = ts;
       void journalService.append({
-        ts: Date.now(),
+        ts,
         mode,
         symbol: payload.symbol,
         event: eventByStatus[payload.status],
@@ -279,8 +328,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       }
 
       void runRecorder.appendEvent({ ts: Date.now(), type: 'position:update', payload });
+      const ts = Date.now();
+      lastJournalTs = ts;
       void journalService.append({
-        ts: Date.now(),
+        ts,
         mode,
         symbol: payload.symbol,
         event: payload.status === 'OPEN' ? 'POSITION_OPENED' : 'POSITION_CLOSED',

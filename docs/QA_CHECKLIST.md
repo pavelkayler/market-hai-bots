@@ -162,3 +162,18 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 - [ ] Verify SHORT_DIVERGENCE uses OI-up candle gate (`oiCandleDeltaPct >= oiCandleThrPct`).
 - [ ] Verify SHORT_CONTINUATION uses OI-down candle gate (`oiCandleDeltaPct <= -oiCandleThrPct`).
 - [ ] Verify `requireOiTwoCandles=true` is sign-aware by `entryReason` (LONG_CONTINUATION/SHORT_DIVERGENCE: up; SHORT_CONTINUATION: down).
+
+
+
+## J) Execution accounting validation (paper + demo)
+1. Run paper mode until at least 1 closed trade.
+   - Expected trade/journal fields are non-empty and finite: `entryPrice`, `exitPrice`, `qty`, `closeReason`, `feesUSDT`, `realizedNetPnlUSDT`.
+   - Expected: `entryPrice` is never `null`/`NaN`.
+2. Validate net PnL math against fields:
+   - `grossPnlUSDT - feesUSDT - slippageUSDT == realizedNetPnlUSDT` (within rounding tolerance).
+3. Run demo mode with one open/close cycle.
+   - Expected: invalid orders (bad qty/price) are refused and journaled; local state is unchanged.
+   - Expected: close state is cleared only after exchange confirmation (position size becomes zero).
+4. Query `/api/bot/state`.
+   - Expected: numeric fields always present as numbers (`queueDepth`, `activeOrders`, `openPositions`, `symbolUpdatesPerSec`, `journalAgeMs`).
+   - Expected: `openOrders`/`positions` mapping is present (possibly empty arrays).

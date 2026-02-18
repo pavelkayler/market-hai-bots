@@ -1564,6 +1564,44 @@ describe('BotEngine snapshot + pause/resume', () => {
   });
 });
 
+
+describe('BotEngine payload validation', () => {
+  it('rejects demo order payload that cannot be rounded to qtyStep', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const client = new FakeDemoTradeClient();
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      demoTradeClient: client
+    });
+
+    engine.setUniverseEntries([
+      {
+        symbol: 'BTCUSDT',
+        turnover24h: 11000000,
+        highPrice24h: 110,
+        lowPrice24h: 100,
+        vol24hPct: 10,
+        forcedActive: false,
+        qtyStep: 0.1,
+        minOrderQty: 10,
+        maxOrderQty: null
+      }
+    ]);
+    engine.start({ ...defaultConfig, mode: 'demo', marginUSDT: 5, leverage: 1, signalCounterThreshold: 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, ts: now });
+
+    const symbol = engine.getSymbolState('BTCUSDT');
+    expect(symbol?.fsmState).toBe('IDLE');
+    expect(client.createCalls).toHaveLength(0);
+  });
+});
+
 describe('BotEngine per-symbol stats and candle OI', () => {
   it('aggregates per-symbol stats and side breakdown on close', () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
@@ -1893,7 +1931,7 @@ describe('BotEngine hardening regressions', () => {
     });
 
     engine.setUniverseSymbols(['BTCUSDT']);
-    engine.start({ ...defaultConfig, signalCounterThreshold: 1 });
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, paperPartialFillPct: Number.NaN as unknown as number });
     const mutable = engine as unknown as {
       recordClosedTrade: (symbol: string, side: 'LONG' | 'SHORT', gross: number, fees: number, net: number, reason: string) => void;
     };

@@ -7,6 +7,7 @@ import type { RuntimeSnapshot, RuntimeSnapshotSymbol, SnapshotStore } from './sn
 import type { UniverseEntry } from '../types/universe.js';
 import { normalizeQty } from '../utils/qty.js';
 import { percentToFraction } from '../utils/percent.js';
+import { computePnlBreakdown } from '../utils/pnlMath.js';
 
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
@@ -139,13 +140,16 @@ export type NoEntryReason = {
     | 'GUARDRAIL_PAUSED'
     | 'SPREAD_TOO_WIDE'
     | 'NO_BIDASK'
-    | 'TICK_STALE';
+    | 'TICK_STALE'
+    | 'INVALID_ENTRY_PAYLOAD'
+    | 'INVALID_DEMO_ORDER_PAYLOAD';
   message: string;
   value?: number;
   threshold?: number;
 };
 
 export type EntryReason = 'LONG_CONTINUATION' | 'SHORT_CONTINUATION' | 'SHORT_DIVERGENCE';
+export type TradeCloseReason = 'TP' | 'SL' | 'KILL' | 'MANUAL';
 
 export type SymbolBaseline = {
   basePrice: number;
@@ -1172,17 +1176,27 @@ export class BotEngine {
     }
 
     const exitPrice = marketState.markPrice;
-    const grossPnl = position.side === 'LONG' ? (exitPrice - position.entryPrice) * position.qty : (position.entryPrice - exitPrice) * position.qty;
     const entryFeeRate = PAPER_FEES.makerFeeRate;
     const exitFeeRate = PAPER_FEES.takerFeeRate;
-    const entryFeeUSDT = entryFeeRate * position.qty * position.entryPrice;
-    const exitFeeUSDT = exitFeeRate * position.qty * exitPrice;
-    const feeTotalUSDT = entryFeeUSDT + exitFeeUSDT;
-    const netPnlUSDT = grossPnl - feeTotalUSDT;
+    const {
+      grossPnlUSDT: grossPnl,
+      entryFeeUSDT,
+      exitFeeUSDT,
+      feeTotalUSDT,
+      netPnlUSDT
+    } = computePnlBreakdown({
+      side: position.side,
+      qty: position.qty,
+      entryPrice: position.entryPrice,
+      exitPrice,
+      entryFeeRate,
+      exitFeeRate,
+      slippageUSDT: null
+    });
 
     const closedPosition: PaperPosition = {
       ...position,
-      closeReason: 'KILL_SWITCH',
+      closeReason: 'KILL',
       exitPrice,
       realizedGrossPnlUSDT: grossPnl,
       grossPnlUSDT: grossPnl,
@@ -1210,7 +1224,7 @@ export class BotEngine {
       position: closedPosition,
       exitPrice,
       pnlUSDT: netPnlUSDT,
-      closeReason: 'KILL_SWITCH',
+      closeReason: 'KILL',
       realizedGrossPnlUSDT: grossPnl,
       feesUSDT: feeTotalUSDT,
       realizedNetPnlUSDT: netPnlUSDT,
@@ -1219,7 +1233,7 @@ export class BotEngine {
       entryFeeRate,
       exitFeeRate
     });
-    this.recordClosedTrade(symbolState.symbol, position.side, grossPnl, feeTotalUSDT, netPnlUSDT, 'KILL_SWITCH', entryFeeUSDT, exitFeeUSDT, position.openedTs, null, position.spreadBpsAtEntry ?? null, marketState.spreadBps ?? null);
+    this.recordClosedTrade(symbolState.symbol, position.side, grossPnl, feeTotalUSDT, netPnlUSDT, 'KILL', entryFeeUSDT, exitFeeUSDT, position.openedTs, null, position.spreadBpsAtEntry ?? null, marketState.spreadBps ?? null);
   }
 
   async pollDemoOrders(allMarketStates: Record<string, MarketState>): Promise<void> {
@@ -1811,6 +1825,26 @@ export class BotEngine {
       sentToExchange: this.state.config.mode === 'paper'
     };
 
+    if (!Number.isFinite(pendingOrder.limitPrice) || pendingOrder.limitPrice <= 0 || !Number.isFinite(pendingOrder.qty) || pendingOrder.qty <= 0) {
+      this.recordNoEntryReason(symbolState, {
+        code: 'INVALID_ENTRY_PAYLOAD',
+        message: 'Refused to open entry with invalid price/qty.'
+      });
+      this.deps.emitLog?.(`Skipped ${symbolState.symbol}: invalid entry payload (price=${pendingOrder.limitPrice}, qty=${pendingOrder.qty}).`);
+      this.resetToIdle(symbolState);
+      return;
+    }
+
+    if (this.state.config.mode === 'demo' && !this.isValidDemoOrderPayload(symbolState.symbol, pendingOrder)) {
+      this.recordNoEntryReason(symbolState, {
+        code: 'INVALID_DEMO_ORDER_PAYLOAD',
+        message: 'Refused demo entry: invalid order payload.'
+      });
+      this.deps.emitLog?.(`Skipped ${symbolState.symbol}: invalid demo order payload (limit=${pendingOrder.limitPrice}, qty=${pendingOrder.qty}).`);
+      this.resetToIdle(symbolState);
+      return;
+    }
+
     symbolState.pendingOrder = pendingOrder;
     symbolState.fsmState = 'ENTRY_PENDING';
     symbolState.holdStartTs = null;
@@ -1867,6 +1901,29 @@ export class BotEngine {
         this.persistSnapshot();
       }
     });
+  }
+
+
+  private isValidDemoOrderPayload(symbol: string, pendingOrder: PaperPendingOrder): boolean {
+    if (!symbol || !symbol.endsWith('USDT')) {
+      return false;
+    }
+
+    if (!Number.isFinite(pendingOrder.limitPrice) || pendingOrder.limitPrice <= 0) {
+      return false;
+    }
+
+    if (!Number.isFinite(pendingOrder.qty) || pendingOrder.qty <= 0) {
+      return false;
+    }
+
+    const lotSize = this.lotSizeBySymbol.get(symbol);
+    if (!lotSize || lotSize.qtyStep === null || lotSize.minOrderQty === null) {
+      return true;
+    }
+
+    const normalizedQty = normalizeQty(pendingOrder.qty, lotSize.qtyStep, lotSize.minOrderQty, lotSize.maxOrderQty);
+    return normalizedQty !== null && normalizedQty > 0;
   }
 
   private async processDemoEntryPending(symbolState: SymbolRuntimeState, marketState: MarketState, openOrders: DemoOpenOrder[]): Promise<void> {
@@ -1962,6 +2019,7 @@ export class BotEngine {
       position: closedPosition,
       exitPrice: marketState.markPrice,
       pnlUSDT: 0,
+      closeReason: 'MANUAL',
       entry: {
         markAtSignal: closedPosition.markAtSignal,
         entryLimit: closedPosition.entryLimit,
@@ -1990,7 +2048,7 @@ export class BotEngine {
       0,
       0,
       0,
-      'DEMO_CLOSE',
+      'MANUAL',
       undefined,
       undefined,
       closedPosition.openedTs,
@@ -2056,6 +2114,20 @@ export class BotEngine {
     const entrySlippageBpsApplied = this.state.config.paperEntrySlippageBps ?? DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS;
     const entryPrice = side === 'LONG' ? filledOrder.limitPrice * (1 + entrySlippageFraction) : filledOrder.limitPrice * (1 - entrySlippageFraction);
 
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(filledQty) || filledQty <= 0 || (side !== 'LONG' && side !== 'SHORT')) {
+      this.recordNoEntryReason(symbolState, {
+        code: 'INVALID_ENTRY_PAYLOAD',
+        message: 'Paper fill rejected: invalid entryPrice/qty/side.'
+      });
+      this.deps.emitLog?.(`Skipped ${symbolState.symbol}: paper fill rejected due to invalid entry payload.`);
+      symbolState.pendingOrder = null;
+      symbolState.fsmState = 'IDLE';
+      this.resetBaseline(symbolState, marketState);
+      this.updateSummaryCounts();
+      this.persistSnapshot();
+      return;
+    }
+
     const position: PaperPosition = {
       symbol: symbolState.symbol,
       side,
@@ -2098,22 +2170,32 @@ export class BotEngine {
       return;
     }
 
-    const closeReason = slHit ? 'SL' : 'TP';
+    const closeReason: TradeCloseReason = slHit ? 'SL' : 'TP';
     const rawExitPrice = slHit ? position.slPrice : position.tpPrice;
     const exitSlippageFraction = (this.state.config?.paperExitSlippageBps ?? DEFAULT_PAPER_EXIT_SLIPPAGE_BPS) / 10_000;
     const exitSlippageBpsApplied = this.state.config?.paperExitSlippageBps ?? DEFAULT_PAPER_EXIT_SLIPPAGE_BPS;
     const exitPrice = position.side === 'LONG' ? rawExitPrice * (1 - exitSlippageFraction) : rawExitPrice * (1 + exitSlippageFraction);
-    const grossPnl = position.side === 'LONG' ? (exitPrice - position.entryPrice) * position.qty : (position.entryPrice - exitPrice) * position.qty;
     const slippageAbsPerUnitEntry = Math.abs(position.entryPrice - (position.entryLimit ?? position.entryPrice));
     const slippageAbsPerUnitExit = Math.abs(exitPrice - rawExitPrice);
     const slippageUSDT = (slippageAbsPerUnitEntry + slippageAbsPerUnitExit) * position.qty;
     // PAPER fee model: entry limit fills are treated as maker; TP/SL closes are taker for conservative expectancy.
     const entryFeeRate = PAPER_FEES.makerFeeRate;
     const exitFeeRate = PAPER_FEES.takerFeeRate;
-    const entryFeeUSDT = entryFeeRate * position.qty * position.entryPrice;
-    const exitFeeUSDT = exitFeeRate * position.qty * exitPrice;
-    const feeTotalUSDT = entryFeeUSDT + exitFeeUSDT;
-    const netPnlUSDT = grossPnl - feeTotalUSDT - slippageUSDT;
+    const {
+      grossPnlUSDT: grossPnl,
+      entryFeeUSDT,
+      exitFeeUSDT,
+      feeTotalUSDT,
+      netPnlUSDT
+    } = computePnlBreakdown({
+      side: position.side,
+      qty: position.qty,
+      entryPrice: position.entryPrice,
+      exitPrice,
+      entryFeeRate,
+      exitFeeRate,
+      slippageUSDT
+    });
 
     const closedPosition: PaperPosition = {
       ...position,
@@ -2321,7 +2403,7 @@ export class BotEngine {
     grossPnlUSDT: number,
     feesUSDT: number,
     netPnlUSDT: number,
-    reason: string,
+    reason: TradeCloseReason,
     entryFeeUSDT?: number,
     exitFeeUSDT?: number,
     positionOpenedTs?: number,
