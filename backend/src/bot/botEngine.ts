@@ -168,6 +168,17 @@ export type DemoRuntimeState = {
   expiresTs: number;
 };
 
+type TfCandleState = {
+  bucketStart: number;
+  openTs: number;
+  openMark: number;
+  highMark: number;
+  lowMark: number;
+  closeMark: number;
+  openOi: number;
+  closeOi: number;
+};
+
 export type SymbolRuntimeState = {
   symbol: string;
   fsmState: SymbolFsmState;
@@ -190,10 +201,14 @@ export type SymbolRuntimeState = {
   demo: DemoRuntimeState | null;
   trendCandles5m: TrendCandle[];
   trendCandles15m: TrendCandle[];
+  tfCandle: TfCandleState | null;
+  lastClosedOiCandle: { open: number; close: number; deltaPct: number } | null;
+  lastImpulseProcessedBucketStart: number | null;
   oiCandleDeltaPctHistory: number[];
   armedSignal: {
     side: 'LONG' | 'SHORT';
     triggerMark: number;
+    triggerOi: number;
     triggerBucketStart: number;
     continuationWindowEndBucketStart: number;
   } | null;
@@ -956,11 +971,15 @@ export class BotEngine {
         demo: state.demo,
         trendCandles5m: [],
         trendCandles15m: [],
+        tfCandle: state.tfCandle ?? null,
+        lastClosedOiCandle: state.lastClosedOiCandle ?? null,
+        lastImpulseProcessedBucketStart: state.lastImpulseProcessedBucketStart ?? null,
         oiCandleDeltaPctHistory: [],
         armedSignal: state.armedSignal
           ? {
               side: state.armedSignal.side,
               triggerMark: state.armedSignal.triggerMark ?? state.armedSignal.baselinePrice ?? 0,
+              triggerOi: state.armedSignal.triggerOi ?? 0,
               triggerBucketStart: state.armedSignal.triggerBucketStart ?? state.armedSignal.armedBucketStart ?? 0,
               continuationWindowEndBucketStart:
                 state.armedSignal.continuationWindowEndBucketStart ?? state.armedSignal.expireBucketStart ?? 0
@@ -1083,7 +1102,10 @@ export class BotEngine {
         lastCandleOi: symbolState.lastCandleOi,
         prevCandleMark: symbolState.prevCandleMark,
         lastCandleMark: symbolState.lastCandleMark,
-        lastCandleBucketStart: symbolState.lastCandleBucketStart
+        lastCandleBucketStart: symbolState.lastCandleBucketStart,
+        tfCandle: symbolState.tfCandle ? { ...symbolState.tfCandle } : null,
+        lastClosedOiCandle: symbolState.lastClosedOiCandle ? { ...symbolState.lastClosedOiCandle } : null,
+        lastImpulseProcessedBucketStart: symbolState.lastImpulseProcessedBucketStart
       });
     }
 
@@ -1118,6 +1140,9 @@ export class BotEngine {
       lastCandleBucketStart: symbolState.lastCandleBucketStart,
       trendCandles5m: symbolState.trendCandles5m.map((candle) => ({ ...candle })),
       trendCandles15m: symbolState.trendCandles15m.map((candle) => ({ ...candle })),
+      tfCandle: symbolState.tfCandle ? { ...symbolState.tfCandle } : null,
+      lastClosedOiCandle: symbolState.lastClosedOiCandle ? { ...symbolState.lastClosedOiCandle } : null,
+      lastImpulseProcessedBucketStart: symbolState.lastImpulseProcessedBucketStart,
       oiCandleDeltaPctHistory: [...symbolState.oiCandleDeltaPctHistory],
       armedSignal: symbolState.armedSignal ? { ...symbolState.armedSignal } : null,
       noEntryReasonCounts: new Map(symbolState.noEntryReasonCounts),
@@ -1355,11 +1380,8 @@ export class BotEngine {
     }
 
     const now = this.now();
-    const bucketStart = this.computeTfBucketStart(now);
-    const isNewBucket = symbolState.lastCandleBucketStart === null || symbolState.lastCandleBucketStart !== bucketStart;
     this.updateTrendState(symbolState, marketState.markPrice, now);
-    this.updateCandlePriceState(symbolState, marketState.markPrice, bucketStart, isNewBucket);
-    this.updateCandleOiState(symbolState, marketState.openInterestValue, bucketStart, isNewBucket);
+    this.updateTfCandleState(symbolState, marketState, now);
     this.updateGateSnapshot(symbolState, marketState);
 
     if (!symbolState.baseline) {
@@ -1408,7 +1430,14 @@ export class BotEngine {
       return;
     }
 
-    if (!this.canEvaluateAtCurrentGate(symbolState, now)) {
+    const tfBucketStart = this.computeTfBucketStart(now);
+    const candle = symbolState.tfCandle;
+    if (!candle || candle.openMark <= 0 || candle.openOi <= 0) {
+      return;
+    }
+
+    const secondsIntoCandle = Math.floor((now - candle.openTs) / 1000);
+    if (secondsIntoCandle > this.state.config.maxSecondsIntoCandle) {
       return;
     }
 
@@ -1425,16 +1454,13 @@ export class BotEngine {
       }
     }
     if (!candidate) {
-      this.recordNoEntryReason(symbolState, {
-        code: 'SIGNAL_COUNTER_NOT_MET',
-        message: 'Signal conditions not met.',
-        value: 0,
-        threshold: this.state.config.signalCounterMin
-      });
-      this.resetToIdle(symbolState);
-      this.persistSnapshot();
       return;
     }
+
+    if (symbolState.lastImpulseProcessedBucketStart === tfBucketStart) {
+      return;
+    }
+    symbolState.lastImpulseProcessedBucketStart = tfBucketStart;
 
     const perSymbolSignalStatsAttempt = this.getOrCreatePerSymbolStats(symbol);
     perSymbolSignalStatsAttempt.signalsAttempted += 1;
@@ -1459,19 +1485,6 @@ export class BotEngine {
         this.persistSnapshot();
         return;
       }
-    }
-
-    const secondsIntoCandle = Math.floor((now - this.computeTfBucketStart(now)) / 1000);
-    if (secondsIntoCandle > this.state.config.maxSecondsIntoCandle) {
-      this.recordNoEntryReason(symbolState, {
-        code: 'IMPULSE_TOO_LATE',
-        message: 'Impulse crossed threshold too late in candle.',
-        value: secondsIntoCandle,
-        threshold: this.state.config.maxSecondsIntoCandle
-      });
-      this.resetToIdle(symbolState);
-      this.persistSnapshot();
-      return;
     }
 
     const signalCount24h = this.recordSignalEventAndGetCount(symbolState, now);
@@ -1523,7 +1536,7 @@ export class BotEngine {
       symbol,
       side: candidate.side,
       markPrice: marketState.markPrice,
-      oiValue: marketState.openInterestValue,
+      oiValue: this.getOiForSignals(marketState),
       priceDeltaPct,
       oiDeltaPct,
       entryReason: candidate.entryReason,
@@ -1541,6 +1554,7 @@ export class BotEngine {
     symbolState.armedSignal = {
       side: candidate.side,
       triggerMark: marketState.markPrice,
+      triggerOi: this.getOiForSignals(marketState),
       triggerBucketStart: this.computeTfBucketStart(now),
       continuationWindowEndBucketStart: this.computeTfBucketStart(now) + this.state.config.tf * 60_000 * this.state.config.confirmWindowBars
     };
@@ -1577,12 +1591,16 @@ export class BotEngine {
 
     const movePct = ((marketState.markPrice - armed.triggerMark) / armed.triggerMark) * 100;
     const moveOk = armed.side === 'LONG' ? movePct >= this.state.config!.confirmMinContinuationPct : movePct <= -this.state.config!.confirmMinContinuationPct;
+    const oiNow = this.getOiForSignals(marketState);
+    const oiMovePct = armed.triggerOi > 0 ? ((oiNow - armed.triggerOi) / armed.triggerOi) * 100 : 0;
+    const oiOk = armed.triggerOi > 0 && (armed.side === 'LONG' ? oiMovePct >= 0 : oiMovePct <= 0);
+    const confirmed = moveOk && oiOk;
     if (symbolState.gates) {
-      symbolState.gates.continuationOk = moveOk;
+      symbolState.gates.continuationOk = confirmed;
       symbolState.gates.confirmZ = movePct;
       symbolState.gates.confirmCount = symbolState.lastSignalCount24h;
     }
-    if (!moveOk) {
+    if (!confirmed) {
       if (currentBucket > armed.continuationWindowEndBucketStart) {
         this.recordNoEntryReason(symbolState, {
           code: 'NO_CONTINUATION',
@@ -1738,9 +1756,9 @@ export class BotEngine {
       confirmWindowBars: this.state.config.confirmWindowBars,
       confirmCount: symbolState.lastSignalCount24h,
       confirmZ: symbolState.lastPriceDeltaPct,
-      oiCandleValue: symbolState.lastCandleOi,
-      oiPrevCandleValue: symbolState.prevCandleOi,
-      oiCandleDeltaPct: symbolState.oiCandleDeltaPctHistory.at(-1) ?? null,
+      oiCandleValue: symbolState.lastClosedOiCandle?.close ?? null,
+      oiPrevCandleValue: symbolState.lastClosedOiCandle?.open ?? null,
+      oiCandleDeltaPct: symbolState.lastClosedOiCandle?.deltaPct ?? null,
       continuationOk: null,
       impulseAgeMs: symbolState.armedSignal ? Math.max(0, this.now() - symbolState.armedSignal.triggerBucketStart) : null,
       spreadBps: marketState.spreadBps,
@@ -1853,6 +1871,9 @@ export class BotEngine {
       demo: null,
       trendCandles5m: [],
       trendCandles15m: [],
+      tfCandle: null,
+      lastClosedOiCandle: null,
+      lastImpulseProcessedBucketStart: null,
       oiCandleDeltaPctHistory: [],
       armedSignal: null,
       noEntryReasonCounts: new Map(),
@@ -2456,12 +2477,27 @@ export class BotEngine {
       baseTs: marketState.ts
     };
     symbolState.overrideGateOnce = true;
-    const bucketStart = this.computeTfBucketStart(this.now());
-    symbolState.prevCandleOi = marketState.openInterestValue;
-    symbolState.lastCandleOi = marketState.openInterestValue;
+    const now = this.now();
+    const bucketStart = this.computeTfBucketStart(now);
+    const oiNow = this.getOiForSignals(marketState);
+    symbolState.prevCandleOi = oiNow;
+    symbolState.lastCandleOi = oiNow;
     symbolState.prevCandleMark = marketState.markPrice;
     symbolState.lastCandleMark = marketState.markPrice;
     symbolState.lastCandleBucketStart = bucketStart;
+    symbolState.tfCandle = {
+      bucketStart,
+      openTs: now,
+      openMark: marketState.markPrice,
+      highMark: marketState.markPrice,
+      lowMark: marketState.markPrice,
+      closeMark: marketState.markPrice,
+      openOi: oiNow,
+      closeOi: oiNow
+    };
+    symbolState.lastClosedOiCandle = null;
+    symbolState.oiCandleDeltaPctHistory = [];
+    symbolState.lastImpulseProcessedBucketStart = null;
     this.persistSnapshot();
   }
 
@@ -2536,6 +2572,9 @@ export class BotEngine {
         trend15mBucketStart: symbolState.trendCandles15m.at(-1)?.bucketStart ?? null,
         trend15mPrevClose: symbolState.trendCandles15m.at(-2)?.close ?? null,
         trend15mLastClose: symbolState.trendCandles15m.at(-1)?.close ?? null,
+        tfCandle: symbolState.tfCandle,
+        lastClosedOiCandle: symbolState.lastClosedOiCandle,
+        lastImpulseProcessedBucketStart: symbolState.lastImpulseProcessedBucketStart,
         armedSignal: symbolState.armedSignal,
         lastNoEntryReasons: symbolState.lastNoEntryReasons,
         entryReason: symbolState.entryReason,
@@ -2976,55 +3015,72 @@ export class BotEngine {
     return oiCandleDeltaPct <= -oiCandleThrPct;
   }
 
-  private updateCandleOiState(symbolState: SymbolRuntimeState, oiValue: number, bucketStart: number, isNewBucket: boolean): void {
-    if (symbolState.lastCandleBucketStart === null) {
-      symbolState.lastCandleBucketStart = bucketStart;
-      symbolState.prevCandleOi = oiValue;
-      symbolState.lastCandleOi = oiValue;
+  private updateTfCandleState(symbolState: SymbolRuntimeState, marketState: MarketState, now: number): void {
+    const bucketStart = this.computeTfBucketStart(now);
+    const oiNow = this.getOiForSignals(marketState);
+    const candle = symbolState.tfCandle;
+
+    if (!candle) {
+      symbolState.tfCandle = {
+        bucketStart,
+        openTs: now,
+        openMark: marketState.markPrice,
+        highMark: marketState.markPrice,
+        lowMark: marketState.markPrice,
+        closeMark: marketState.markPrice,
+        openOi: oiNow,
+        closeOi: oiNow
+      };
       return;
     }
 
-    if (isNewBucket) {
-      symbolState.prevCandleOi = symbolState.lastCandleOi ?? oiValue;
-      symbolState.lastCandleOi = oiValue;
-      symbolState.lastCandleBucketStart = bucketStart;
-      const deltaPct = this.computeOiCandleDeltaPct(symbolState);
-      if (deltaPct !== null) {
+    if (candle.bucketStart !== bucketStart) {
+      this.onTfCandleClosed(symbolState, candle);
+      symbolState.lastCandleBucketStart = candle.bucketStart;
+      symbolState.prevCandleMark = candle.openMark;
+      symbolState.lastCandleMark = candle.closeMark;
+      symbolState.prevCandleOi = candle.openOi;
+      symbolState.lastCandleOi = candle.closeOi;
+
+      symbolState.tfCandle = {
+        bucketStart,
+        openTs: now,
+        openMark: marketState.markPrice,
+        highMark: marketState.markPrice,
+        lowMark: marketState.markPrice,
+        closeMark: marketState.markPrice,
+        openOi: oiNow,
+        closeOi: oiNow
+      };
+
+      symbolState.lastImpulseProcessedBucketStart = null;
+      return;
+    }
+
+    candle.closeMark = marketState.markPrice;
+    candle.highMark = Math.max(candle.highMark, marketState.markPrice);
+    candle.lowMark = Math.min(candle.lowMark, marketState.markPrice);
+    candle.closeOi = oiNow;
+    symbolState.lastCandleBucketStart = candle.bucketStart;
+    symbolState.lastCandleMark = candle.closeMark;
+    symbolState.lastCandleOi = candle.closeOi;
+  }
+
+  private onTfCandleClosed(symbolState: SymbolRuntimeState, candle: TfCandleState): void {
+    if (candle.openOi > 0 && candle.closeOi > 0) {
+      const deltaPct = ((candle.closeOi - candle.openOi) / candle.openOi) * 100;
+      if (Number.isFinite(deltaPct)) {
         symbolState.oiCandleDeltaPctHistory.push(deltaPct);
         if (symbolState.oiCandleDeltaPctHistory.length > 5) {
           symbolState.oiCandleDeltaPctHistory.splice(0, symbolState.oiCandleDeltaPctHistory.length - 5);
         }
+        symbolState.lastClosedOiCandle = { open: candle.openOi, close: candle.closeOi, deltaPct };
       }
-      return;
     }
-
-    symbolState.lastCandleOi = oiValue;
-  }
-
-  private updateCandlePriceState(symbolState: SymbolRuntimeState, markPrice: number, bucketStart: number, isNewBucket: boolean): void {
-    if (symbolState.lastCandleBucketStart === null) {
-      symbolState.lastCandleBucketStart = bucketStart;
-      symbolState.prevCandleMark = markPrice;
-      symbolState.lastCandleMark = markPrice;
-      return;
-    }
-
-    if (isNewBucket) {
-      symbolState.prevCandleMark = symbolState.lastCandleMark ?? markPrice;
-      symbolState.lastCandleMark = markPrice;
-      symbolState.lastCandleBucketStart = bucketStart;
-      return;
-    }
-
-    symbolState.lastCandleMark = markPrice;
   }
 
   private computeOiCandleDeltaPct(symbolState: SymbolRuntimeState): number | null {
-    if (!symbolState.prevCandleOi || !symbolState.lastCandleOi || symbolState.prevCandleOi <= 0 || symbolState.lastCandleOi <= 0) {
-      return null;
-    }
-
-    return ((symbolState.lastCandleOi - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100;
+    return symbolState.lastClosedOiCandle?.deltaPct ?? null;
   }
 
   private isOiTwoCandlesGateTrue(symbolState: SymbolRuntimeState, entryReason: EntryReason | null, side: 'LONG' | 'SHORT'): boolean {
@@ -3065,11 +3121,11 @@ export class BotEngine {
       };
     }
 
-    const oiCandleValue = symbolState.lastCandleOi;
-    const oiPrevCandleValue = symbolState.prevCandleOi;
-    const oiCandleDeltaValue =
-      typeof oiCandleValue === 'number' && typeof oiPrevCandleValue === 'number' ? oiCandleValue - oiPrevCandleValue : null;
-    const oiCandleDeltaPct = this.computeOiCandleDeltaPct(symbolState);
+    const last = symbolState.lastClosedOiCandle;
+    const oiCandleValue = last?.close ?? null;
+    const oiPrevCandleValue = last?.open ?? null;
+    const oiCandleDeltaValue = last ? last.close - last.open : null;
+    const oiCandleDeltaPct = last?.deltaPct ?? null;
 
     return {
       oiCandleValue,
@@ -3099,16 +3155,35 @@ export class BotEngine {
     return Math.floor(now / tfMs) * tfMs;
   }
 
-  private computeDeltas(symbolState: SymbolRuntimeState, marketState: MarketState): { priceDeltaPct: number; oiDeltaPct: number } {
-    const prevCandleMark = symbolState.prevCandleMark;
-    const prevCandleOi = symbolState.prevCandleOi;
+  private getOiForSignals(marketState: MarketState): number {
+    const asAny = marketState as unknown as { openInterest?: number | null };
+    if (typeof asAny.openInterest === 'number' && Number.isFinite(asAny.openInterest) && asAny.openInterest > 0) {
+      return asAny.openInterest;
+    }
+    if (Number.isFinite(marketState.openInterestValue) && marketState.openInterestValue > 0 && marketState.markPrice > 0) {
+      return marketState.openInterestValue / marketState.markPrice;
+    }
+    return marketState.openInterestValue;
+  }
 
-    if (!prevCandleMark || !prevCandleOi || prevCandleMark <= 0 || prevCandleOi <= 0) {
+  private computeDeltas(symbolState: SymbolRuntimeState, marketState: MarketState): { priceDeltaPct: number; oiDeltaPct: number } {
+    const candle = symbolState.tfCandle;
+    if (!candle || candle.openMark <= 0 || candle.openOi <= 0) {
       return { priceDeltaPct: 0, oiDeltaPct: 0 };
     }
+
+    const oiNow = this.getOiForSignals(marketState);
+    const useLegacyFirstTickFallback = candle.openTs === this.now() && (symbolState.prevCandleMark ?? 0) > 0 && (symbolState.prevCandleOi ?? 0) > 0;
+    if (useLegacyFirstTickFallback && symbolState.prevCandleMark && symbolState.prevCandleOi) {
+      return {
+        priceDeltaPct: ((marketState.markPrice - symbolState.prevCandleMark) / symbolState.prevCandleMark) * 100,
+        oiDeltaPct: ((oiNow - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100
+      };
+    }
+
     return {
-      priceDeltaPct: ((marketState.markPrice - prevCandleMark) / prevCandleMark) * 100,
-      oiDeltaPct: ((marketState.openInterestValue - prevCandleOi) / prevCandleOi) * 100
+      priceDeltaPct: ((marketState.markPrice - candle.openMark) / candle.openMark) * 100,
+      oiDeltaPct: ((oiNow - candle.openOi) / candle.openOi) * 100
     };
   }
 

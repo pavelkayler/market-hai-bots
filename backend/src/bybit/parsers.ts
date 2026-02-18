@@ -4,6 +4,7 @@ export type WsTickerEvent = {
   symbol: string;
   markPrice: number;
   openInterestValue: number;
+  openInterest: number | null;
   ts: number;
   lastPrice: number | null;
   bid: number | null;
@@ -93,6 +94,7 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
     askPrice?: unknown;
     ts?: unknown;
     openInterestValue?: unknown;
+    openInterest?: unknown;
   };
 
   if (typeof data.symbol !== 'string') {
@@ -102,6 +104,7 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
   const markPrice = parseFiniteNumber(data.markPrice);
   const lastPrice = parseFiniteNumber(data.lastPrice);
   const openInterestValue = parseFiniteNumber(data.openInterestValue);
+  const openInterest = parseFiniteNumber((data as { openInterest?: unknown }).openInterest);
   const ts = parseFiniteNumber(packet.ts);
 
   if (markPrice === null || openInterestValue === null || ts === null) {
@@ -118,6 +121,7 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
     symbol: data.symbol,
     markPrice,
     openInterestValue,
+    openInterest: openInterest ?? null,
     ts,
     lastPrice,
     bid,

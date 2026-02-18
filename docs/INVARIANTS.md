@@ -1,13 +1,13 @@
 # INVARIANTS — must never be violated (Codex rules)
 
 1. Mark price everywhere.
-2. OI metric is openInterestValue.
+2. OI metric for signals prefers contracts `openInterest` when available; fallback is `openInterestValue / markPrice` (and legacy `openInterestValue` as last fallback).
 3. Universe filters: turnover24h>=10,000,000 and vol24hRangePct=(high-low)/low*100 >= minVolPct.
 4. Universe is manual (create/refresh).
 5. Refresh preserves active symbols (pending/open position).
-6. Triggers are candle-to-candle: percent deltas compare current mark/OI to the previous TF candle (UTC bucket, tf=1/3/5).
+6. Impulse deltas are computed from the OPEN of the current TF candle (UTC bucket, tf=1/3/5) and evaluated intra-candle during early seconds, once per TF bucket.
 7. Direction modes long/short/both; in both SHORT priority.
-8. Entry confirmation is counter-based (`signalCounterThreshold`) with continuation/guardrail gates (legacy `holdSeconds` may exist in old profiles but is not the primary v1 gate).
+8. Entry confirmation is counter-based (`signalCounterThreshold`) with continuation + OI-not-against-side confirmation and guardrail gates (legacy `holdSeconds` may exist in old profiles but is not the primary v1 gate).
 9. Signal counter dedupe invariant: no more than one qualifying signal increment per symbol per TF candle bucket (UTC).
 10. One active order/position per symbol.
 11. Auto-cancel entry after 1 hour.

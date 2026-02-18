@@ -15,7 +15,7 @@ After reset: evaluation may start immediately (tf override).
 IDLE, HOLDING_LONG, HOLDING_SHORT, ENTRY_PENDING, POSITION_OPEN
 
 ## Transitions
-- IDLE -> HOLDING_* when eligible (tf boundary or override) and condition true
+- IDLE -> HOLDING_* when eligible (intra-candle early-seconds impulse check, once per TF bucket) and condition true
 - HOLDING_* -> IDLE if condition breaks
 - HOLDING_* -> ENTRY_PENDING when `signalCount24h >= signalCounterThreshold` (rolling 24h, deduped per TF UTC bucket).
 - ENTRY_PENDING -> POSITION_OPEN when filled

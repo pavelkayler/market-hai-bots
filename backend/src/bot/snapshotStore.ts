@@ -27,12 +27,25 @@ export type RuntimeSnapshotSymbol = {
   trend15mBucketStart?: number | null;
   trend15mPrevClose?: number | null;
   trend15mLastClose?: number | null;
+  tfCandle?: {
+    bucketStart: number;
+    openTs: number;
+    openMark: number;
+    highMark: number;
+    lowMark: number;
+    closeMark: number;
+    openOi: number;
+    closeOi: number;
+  } | null;
+  lastClosedOiCandle?: { open: number; close: number; deltaPct: number } | null;
+  lastImpulseProcessedBucketStart?: number | null;
   armedSignal?: {
     side: 'LONG' | 'SHORT';
     baselinePrice?: number;
     armedBucketStart?: number;
     expireBucketStart?: number;
     triggerMark?: number;
+    triggerOi?: number;
     triggerBucketStart?: number;
     continuationWindowEndBucketStart?: number;
   } | null;
