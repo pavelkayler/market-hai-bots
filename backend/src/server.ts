@@ -13,6 +13,7 @@ import { FileSnapshotStore } from './bot/snapshotStore.js';
 import { DemoTradeClient, type IDemoTradeClient } from './bybit/demoTradeClient.js';
 import { MarketHub } from './market/marketHub.js';
 import type { TickerStream } from './market/tickerStream.js';
+import { FundingSnapshotService, classifyFundingSnapshot } from './market/fundingSnapshotService.js';
 import { ReplayService, type ReplaySpeed } from './replay/replayService.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
 import { JournalService, type JournalEntry } from './services/journalService.js';
@@ -85,6 +86,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
   const marketClient = options.marketClient ?? new BybitMarketClient();
+  const fundingSnapshotService = new FundingSnapshotService();
+  let fundingUniverseSymbols: string[] = [];
   const storagePaths = resolveStoragePaths({
     universePath: options.universeFilePath,
     runtimePath: options.runtimeSnapshotFilePath,
@@ -114,6 +117,37 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const dataDirPath = path.resolve(process.cwd(), 'data');
   const autoTuneService = new AutoTuneService();
   void autoTuneService.init();
+  fundingSnapshotService.init({
+    bybitClient: marketClient,
+    universeProvider: {
+      getSymbols: () => fundingUniverseSymbols
+    },
+    logger: app.log
+  });
+
+  const setTrackedUniverseSymbols = (symbols: string[]): void => {
+    fundingUniverseSymbols = [...symbols];
+    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    fundingSnapshotService.scheduleUniverseRefresh();
+  };
+
+  const withFundingSnapshot = <T extends object>(symbol: string, base: T, nowMs: number): T & {
+    fundingRate: number | null;
+    nextFundingTimeMs: number | null;
+    fundingFetchedAtMs: number | null;
+    fundingAgeMs: number | null;
+    fundingStatus: 'OK' | 'MISSING' | 'STALE';
+  } => {
+    const funding = classifyFundingSnapshot(fundingSnapshotService.get(symbol), nowMs);
+    return {
+      ...base,
+      fundingRate: funding.fundingRate,
+      nextFundingTimeMs: funding.nextFundingTimeMs,
+      fundingFetchedAtMs: funding.fundingFetchedAtMs,
+      fundingAgeMs: funding.fundingAgeMs,
+      fundingStatus: funding.fundingStatus
+    };
+  };
 
   const isDemoConfigured = (): boolean => {
     const apiKey = (process.env.DEMO_API_KEY ?? '').trim();
@@ -223,16 +257,20 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           return null;
         }
         const market = marketHub.getState(symbol);
-        const nextFunding = runtime.nextFundingTimeMs ?? market?.nextFundingTimeMs ?? null;
+        const marketWithFunding = market ? withFundingSnapshot(symbol, market, now) : null;
+        const nextFunding = runtime.nextFundingTimeMs ?? marketWithFunding?.nextFundingTimeMs ?? null;
         const timeToFundingMs = nextFunding ? nextFunding - now : null;
+        const fundingInfo = withFundingSnapshot(symbol, { fundingRate: null, nextFundingTimeMs: null }, now);
         return {
           symbol,
           signalCount24h: runtime.lastSignalCount24h ?? 0,
           minTriggerCount: state.config?.minTriggerCount ?? state.config?.signalCounterMin ?? 2,
           maxTriggerCount: state.config?.maxTriggerCount ?? state.config?.signalCounterMax ?? 3,
           lastSignalAt: runtime.lastSignalAtMs ?? (runtime.signalEvents24h?.length ? runtime.signalEvents24h[runtime.signalEvents24h.length - 1] : undefined),
-          fundingRate: runtime.fundingRate ?? market?.fundingRate ?? null,
+          fundingRate: runtime.fundingRate ?? marketWithFunding?.fundingRate ?? null,
           nextFundingTimeMs: nextFunding,
+          fundingAgeMs: fundingInfo.fundingAgeMs,
+          fundingStatus: fundingInfo.fundingStatus,
           timeToFundingMs,
           tradingAllowed: runtime.tradingAllowed ?? 'MISSING',
           priceDeltaPct: runtime.lastPriceDeltaPct ?? null,
@@ -311,7 +349,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       symbols: symbols.map((symbol) => {
         const runtime = botEngine.getSymbolState(symbol);
         const market = marketHub.getState(symbol);
-        const nextFundingTimeMs = runtime?.nextFundingTimeMs ?? market?.nextFundingTimeMs ?? null;
+        const marketWithFunding = market ? withFundingSnapshot(symbol, market, now) : null;
+        const fundingInfo = withFundingSnapshot(symbol, { fundingRate: null, nextFundingTimeMs: null }, now);
+        const nextFundingTimeMs = runtime?.nextFundingTimeMs ?? marketWithFunding?.nextFundingTimeMs ?? null;
         const timeToFundingMs = nextFundingTimeMs === null ? null : Math.max(0, nextFundingTimeMs - now);
 
         return {
@@ -321,8 +361,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
             typeof market?.openInterestValue === 'number' && Number.isFinite(market.openInterestValue) ? market.openInterestValue : 0,
           priceDeltaPct: typeof runtime?.lastPriceDeltaPct === 'number' && Number.isFinite(runtime.lastPriceDeltaPct) ? runtime.lastPriceDeltaPct : 0,
           oiDeltaPct: typeof runtime?.lastOiDeltaPct === 'number' && Number.isFinite(runtime.lastOiDeltaPct) ? runtime.lastOiDeltaPct : 0,
-          fundingRate: runtime?.fundingRate ?? market?.fundingRate ?? null,
+          fundingRate: runtime?.fundingRate ?? marketWithFunding?.fundingRate ?? null,
           nextFundingTimeMs,
+          fundingFetchedAtMs: fundingInfo.fundingFetchedAtMs,
+          fundingAgeMs: fundingInfo.fundingAgeMs,
+          fundingStatus: fundingInfo.fundingStatus,
           timeToFundingMs,
           tradability: runtime?.tradingAllowed ?? 'MISSING',
           blackoutReason: runtime?.blackoutReason ?? null,
@@ -587,7 +630,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     rotatePerfWindow(Date.now());
     const startedAt = Date.now();
     evalRunCount += 1;
-    botEngine.onMarketUpdate(symbol, state);
+    botEngine.onMarketUpdate(symbol, withFundingSnapshot(symbol, state, Date.now()));
     tickHandlerTotalMs += Math.max(0, Date.now() - startedAt);
     tickHandlerCount += 1;
     const symbolState = botEngine.getSymbolState(symbol);
@@ -899,7 +942,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     await universeService.clear();
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
-    symbolUpdateBroadcaster.setTrackedSymbols([]);
+    setTrackedUniverseSymbols([]);
     symbolUpdateBroadcaster.reset();
     rotatePerfWindow(Date.now());
     botEngine.clearPersistedRuntime();
@@ -1059,7 +1102,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(effectiveEntries);
-    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    setTrackedUniverseSymbols(symbols);
     const response = {
       ok: true,
       createdAt: result.state.createdAt,
@@ -1119,7 +1162,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(effectiveEntries);
-    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    setTrackedUniverseSymbols(symbols);
 
     const response = {
       ok: true,
@@ -1177,7 +1220,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(effectiveEntries);
-    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    setTrackedUniverseSymbols(symbols);
     return { ok: true, schemaVersion: persisted.state.schemaVersion, symbols: persisted.state.symbols, excluded: persisted.state.symbols, updatedAt: persisted.state.updatedAt, warnings: warnings.length ? warnings : undefined };
   });
 
@@ -1203,7 +1246,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const symbols = effectiveEntries.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(effectiveEntries);
-    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    setTrackedUniverseSymbols(symbols);
     return { ok: true, schemaVersion: persisted.state.schemaVersion, symbols: persisted.state.symbols, excluded: persisted.state.symbols, updatedAt: persisted.state.updatedAt, warnings: warnings.length ? warnings : undefined };
   });
 
@@ -1222,7 +1265,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const symbols = universe.symbols.map((entry) => entry.symbol);
     await marketHub.setUniverseSymbols(symbols);
     botEngine.setUniverseEntries(universe.symbols);
-    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    setTrackedUniverseSymbols(symbols);
     return { ok: true, schemaVersion: persisted.state.schemaVersion, symbols: persisted.state.symbols, excluded: persisted.state.symbols, updatedAt: persisted.state.updatedAt, warnings: persisted.warnings.length ? persisted.warnings : undefined };
   });
 
@@ -1265,7 +1308,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
     botEngine.clearSnapshotState();
-    symbolUpdateBroadcaster.setTrackedSymbols([]);
+    setTrackedUniverseSymbols([]);
     symbolUpdateBroadcaster.reset();
     rotatePerfWindow(Date.now());
     return { ok: true };
@@ -1308,6 +1351,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const symbols = Array.from(new Set([...universeSymbols, ...runtimeSymbols]));
 
     await marketHub.start();
+    fundingSnapshotService.start();
     await marketHub.setUniverseSymbols(symbols);
     if (universe?.ready) {
       botEngine.setUniverseEntries(universeEntries);
@@ -1318,13 +1362,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     } else {
       botEngine.setUniverseSymbols(symbols);
     }
-    symbolUpdateBroadcaster.setTrackedSymbols(symbols);
+    setTrackedUniverseSymbols(symbols);
   });
 
   app.addHook('onClose', async () => {
     clearInterval(demoPoller);
     await replayService.stopRecording();
     await replayService.stopReplay();
+    fundingSnapshotService.stop();
     await marketHub.stop();
   });
 
@@ -1332,3 +1377,4 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   return app;
 }
+

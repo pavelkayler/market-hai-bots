@@ -107,6 +107,8 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
         fundingRate: row.fundingRate,
         nextFundingTimeMs: row.nextFundingTimeMs,
         timeToFundingMs: row.timeToFundingMs,
+        fundingAgeMs: row.fundingAgeMs ?? null,
+        fundingStatus: row.fundingStatus ?? (row.fundingRate == null ? 'MISSING' : 'OK'),
         tradability: row.tradability,
         signalCount24h: row.signalCount24h,
         lastSignalAtMs: row.lastSignalAtMs,
@@ -126,6 +128,8 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
         fundingRate: diag.fundingRate ?? null,
         nextFundingTimeMs: diag.nextFundingTimeMs ?? null,
         timeToFundingMs: diag.timeToFundingMs ?? null,
+        fundingAgeMs: diag.fundingAgeMs ?? null,
+        fundingStatus: diag.fundingStatus ?? (diag.fundingRate == null ? 'MISSING' : 'OK'),
         tradability: diag.tradingAllowed ?? 'MISSING',
         signalCount24h: diag.signalCount24h ?? 0,
         lastSignalAtMs: diag.lastSignalAt ?? null,
@@ -264,6 +268,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
         <Tab eventKey="active-symbols" title="Active symbols">
           <Card className="mt-3"><Card.Body>
             <Card.Title>Active symbols</Card.Title>
+            <div className="small text-muted mb-2">Funding snapshots refresh every 10 minutes (batch, best-effort).</div>
             <Table size="sm" striped responsive>
               <thead><tr><th>Symbol</th><th>Mark</th><th>OIV</th><th>ΔPrice%</th><th>ΔOIV%</th><th>Funding</th><th>Next funding (ETA)</th><th>Tradability</th><th>SignalCount</th><th>LastSignal</th></tr></thead>
               <tbody>
@@ -275,7 +280,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
                     <td className="font-monospace">{row.priceDeltaPct.toFixed(3)}</td>
                     <td className="font-monospace">{row.oiDeltaPct.toFixed(3)}</td>
                     <td className="font-monospace">{row.fundingRate == null ? <Badge bg="danger">MISSING</Badge> : row.fundingRate}</td>
-                    <td className="font-monospace">{row.nextFundingTimeMs ? `${new Date(row.nextFundingTimeMs).toLocaleString()} (${toHuman(row.timeToFundingMs)})` : '—'}</td>
+                    <td className="font-monospace">{row.nextFundingTimeMs ? `${new Date(row.nextFundingTimeMs).toLocaleString()} (${toHuman(row.timeToFundingMs)})` : '—'}{row.fundingStatus === 'STALE' ? ' · stale' : ''}</td>
                     <td><Badge bg={row.tradability === 'OK' ? 'success' : row.tradability === 'MISSING' ? 'danger' : 'warning'}>{row.tradability}</Badge></td>
                     <td className="font-monospace">{row.signalCount24h}</td>
                     <td className="font-monospace">{row.lastSignalAtMs ? new Date(row.lastSignalAtMs).toLocaleTimeString() : '—'}</td>

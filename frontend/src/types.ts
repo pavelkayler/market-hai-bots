@@ -69,6 +69,9 @@ export type BotStateSymbol = {
   fundingRate: number | null;
   nextFundingTimeMs: number | null;
   timeToFundingMs: number | null;
+  fundingFetchedAtMs?: number | null;
+  fundingAgeMs?: number | null;
+  fundingStatus?: 'OK' | 'MISSING' | 'STALE';
   tradability: 'OK' | 'BLACKOUT' | 'COOLDOWN' | 'MISSING';
   blackoutReason?: string | null;
   signalCount24h: number;
@@ -132,6 +135,8 @@ export type BotState = {
     fundingRate?: number | null;
     nextFundingTimeMs?: number | null;
     timeToFundingMs?: number | null;
+    fundingAgeMs?: number | null;
+    fundingStatus?: 'OK' | 'MISSING' | 'STALE';
     tradingAllowed?: 'OK' | 'BLACKOUT' | 'COOLDOWN' | 'MISSING';
   }>;
 };
