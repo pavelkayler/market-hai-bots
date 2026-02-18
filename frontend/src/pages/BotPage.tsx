@@ -81,8 +81,8 @@ function toPerSymbolRows(stats: BotStats | null): PerSymbolResultsRow[] {
     longs: row.longTrades,
     shorts: row.shortTrades,
     pnlUSDT: Number.isFinite(row.pnlUSDT) ? row.pnlUSDT : null,
-    avgWinUSDT: null,
-    avgLossUSDT: null,
+    avgWinUSDT: row.avgWinUSDT ?? null,
+    avgLossUSDT: row.avgLossUSDT ?? null,
     lastTradeAt: row.lastClosedTs ?? null
   }));
 }
@@ -311,7 +311,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
               <Button size="sm" variant="outline-warning" onClick={() => void onStop()} disabled={!cachedBotState.running && !cachedBotState.paused}>Stop</Button>
               <Button size="sm" variant="outline-secondary" onClick={() => void onPause()} disabled={!cachedBotState.running || cachedBotState.paused}>Pause</Button>
               <Button size="sm" variant="danger" onClick={() => void onKill()} disabled={!canKill}>KILL</Button>
-              <Button size="sm" variant="outline-dark" onClick={() => void onReset()} disabled={!isStopped && !cachedBotState.paused}>Reset</Button>
+              <Button size="sm" variant="outline-dark" onClick={() => void onReset()} disabled={!isStopped}>Reset</Button>
               <Button size="sm" variant="outline-primary" onClick={() => void onRefreshNow()}>Refresh</Button>
             </div>
             <div className="small text-muted mt-2">Stop cancels open orders only · Pause keeps open orders · KILL cancels+flattens · Reset = KILL + universe clear.</div>

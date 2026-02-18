@@ -346,6 +346,8 @@ type BotPerSymbolAccumulator = {
   wins: number;
   losses: number;
   pnlUSDT: number;
+  winPnlUSDT: number;
+  lossPnlUSDT: number;
   longTrades: number;
   longWins: number;
   longLosses: number;
@@ -390,6 +392,8 @@ export type BotPerSymbolStats = {
   confirmedBySide: { long: number; short: number };
   confirmedByEntryReason: Record<EntryReason, number>;
   avgHoldMs?: number | null;
+  avgWinUSDT?: number | null;
+  avgLossUSDT?: number | null;
   lastClosedTs?: number | null;
   lastClosedPnlUSDT?: number | null;
 };
@@ -783,6 +787,8 @@ export class BotEngine {
       losses: bucket.losses,
       winratePct: bucket.trades > 0 ? (bucket.wins / bucket.trades) * 100 : 0,
       pnlUSDT: bucket.pnlUSDT,
+      avgWinUSDT: bucket.wins > 0 ? bucket.winPnlUSDT / bucket.wins : null,
+      avgLossUSDT: bucket.losses > 0 ? bucket.lossPnlUSDT / bucket.losses : null,
       longTrades: bucket.longTrades,
       longWins: bucket.longWins,
       longLosses: bucket.longLosses,
@@ -1081,6 +1087,8 @@ export class BotEngine {
           wins: entry.wins,
           losses: entry.losses,
           pnlUSDT: entry.pnlUSDT,
+          winPnlUSDT: (entry.wins ?? 0) * (entry.avgWinUSDT ?? 0),
+          lossPnlUSDT: (entry.losses ?? 0) * (entry.avgLossUSDT ?? 0),
           longTrades: entry.longTrades,
           longWins: entry.longWins,
           longLosses: entry.longLosses,
@@ -2869,8 +2877,10 @@ export class BotEngine {
     perSymbol.closedTradesWithHold += 1;
     if (netPnlUSDT > 0) {
       perSymbol.wins += 1;
+      perSymbol.winPnlUSDT += netPnlUSDT;
     } else if (netPnlUSDT < 0) {
       perSymbol.losses += 1;
+      perSymbol.lossPnlUSDT += netPnlUSDT;
     }
 
     if (side === 'LONG') {
@@ -2922,6 +2932,8 @@ export class BotEngine {
       wins: 0,
       losses: 0,
       pnlUSDT: 0,
+      winPnlUSDT: 0,
+      lossPnlUSDT: 0,
       longTrades: 0,
       longWins: 0,
       longLosses: 0,
