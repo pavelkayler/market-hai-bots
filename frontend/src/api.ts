@@ -1,4 +1,4 @@
-import type { AutoTuneApplied, AutoTuneRuntimeState, BotSettings, BotState, BotStats, DoctorResponse, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, RunEvent, RunSummary, UniverseState } from './types';
+import type { AutoTuneApplied, AutoTuneRuntimeState, BotSettings, BotState, BotStats, DoctorReport, DoctorResponseLegacy, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, RunEvent, RunSummary, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -232,7 +232,7 @@ export async function exportPack(): Promise<{ blob: Blob; fileName: string; incl
   return { blob: await response.blob(), fileName, includedFiles };
 }
 
-export async function getDoctor(): Promise<DoctorResponse> {
+export async function getDoctor(): Promise<DoctorReport | DoctorResponseLegacy> {
   return request('/api/doctor');
 }
 

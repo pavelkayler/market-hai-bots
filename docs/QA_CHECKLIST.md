@@ -4,6 +4,7 @@ Use this for operator validation. Percent convention is always **`3 = 3%`**.
 
 Pre-run quick gate:
 - Run `npm run rc:doctor` and verify there are no `FAIL` checks before long sessions.
+- HomePage does not crash when doctor payload is DoctorReport and when backend is down.
 
 
 ## Expected operator UI strings (must match)
