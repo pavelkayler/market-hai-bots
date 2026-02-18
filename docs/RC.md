@@ -61,3 +61,12 @@ This project is now **v2 refactor complete** for the operator contract in this d
   - exits 0
   - prints doctor summary
   - validates `/api/bot/state` required keys and numeric activity values
+
+## UI layout checks (current v2)
+
+- Home page is minimal status-only: REST badge, WS badge, and a single WS status message banner.
+- Bot page has exactly four operator tabs:
+  - Dashboard (status summary + Lifecycle controls Start/Stop/Kill/Reset, with Reset STOP-only)
+  - Settings (Universe panel first, Settings panel below)
+  - Active symbols (existing funding-safe table)
+  - Per-symbol results (sortable table with Symbol/Trades/Wins/Losses/Winrate/Longs/Shorts minimum columns)

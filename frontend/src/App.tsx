@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Badge, Container, Nav, Navbar } from 'react-bootstrap';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
 
-import { API_BASE, ApiRequestError, WS_URL, getBotState, getHealth, getUniverse, pauseBot, resumeBot, stopBot } from './api';
+import { API_BASE, WS_URL, getBotState, getHealth, getUniverse } from './api';
 import type { BotState, QueueUpdatePayload, SymbolUpdatePayload, SymbolsUpdatePayload, UniverseState, WsConnectionState, WsEnvelope } from './types';
 import { BotPage } from './pages/BotPage';
 import { HomePage } from './pages/HomePage';
@@ -52,7 +52,6 @@ export function App() {
   const [symbolMap, setSymbolMap] = useState<Record<string, SymbolUpdatePayload>>({});
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [symbolUpdatesPerSecond, setSymbolUpdatesPerSecond] = useState(0);
-  const [homeActionError, setHomeActionError] = useState('');
   const reconnectTimer = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const symbolUpdatesInWindowRef = useRef(0);
@@ -287,41 +286,6 @@ export function App() {
     [restHealthy, wsState.ready, wsState.status]
   );
 
-  const handleHomePause = async () => {
-    setHomeActionError('');
-    try {
-      await pauseBot();
-      await syncRest();
-    } catch (err) {
-      setHomeActionError((err as Error).message);
-    }
-  };
-
-  const handleHomeResume = async () => {
-    setHomeActionError('');
-    try {
-      await resumeBot();
-      await syncRest();
-    } catch (err) {
-      const apiError = err as ApiRequestError;
-      if (apiError.code === 'NO_SNAPSHOT') {
-        setHomeActionError('Snapshot not found. Start a new session or wait for a snapshot to be saved.');
-        return;
-      }
-      setHomeActionError(apiError.message);
-    }
-  };
-
-  const handleHomeStop = async () => {
-    setHomeActionError('');
-    try {
-      await stopBot();
-      await syncRest();
-    } catch (err) {
-      setHomeActionError((err as Error).message);
-    }
-  };
-
   return (
     <>
       <Navbar bg="dark" variant="dark" expand="sm" className="mb-3">
@@ -345,7 +309,6 @@ export function App() {
         <Alert variant="secondary" className="py-2">
           Backend: {API_BASE}
         </Alert>
-        {homeActionError ? <Alert variant="danger">{homeActionError}</Alert> : null}
         <Routes>
           <Route
             path="/"
@@ -353,10 +316,6 @@ export function App() {
               <HomePage
                 restHealthy={restHealthy}
                 wsState={wsState}
-                botState={botState}
-                onPause={() => void handleHomePause()}
-                onResume={() => void handleHomeResume()}
-                onStop={() => void handleHomeStop()}
               />
             }
           />
@@ -365,11 +324,8 @@ export function App() {
             element={
               <BotPage
                 botState={botState}
-                setBotState={setBotState}
                 universeState={universeState}
-                setUniverseState={setUniverseState}
                 symbolMap={symbolMap}
-                setSymbolMap={setSymbolMap}
                 logs={logs}
                 syncRest={syncRest}
                 symbolUpdatesPerSecond={symbolUpdatesPerSecond}
