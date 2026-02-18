@@ -54,10 +54,12 @@ This is the release-candidate runbook for a full operator validation pass. It is
 
 ### Actions
 1. Run: `npm run rc:doctor`
-2. Run non-destructive RC snapshot: `npm run rc:e2e`
+2. Run: `npm run rc:audit`
+3. Run non-destructive RC snapshot: `npm run rc:e2e`
 
 ### Expected outcome
 - `rc:doctor` exits `0` (no `FAIL` checks).
+- `rc:audit` exits `0` (no vulnerabilities at `moderate` or higher).
 - `rc:e2e` exits `0`, prints doctor checks, bot state invariants, recent runs, and manual step pointers.
 - `WARN` is advisory; `FAIL` is blocking.
 
@@ -65,6 +67,7 @@ This is the release-candidate runbook for a full operator validation pass. It is
 - `GET /api/doctor`
 - `GET /api/bot/state`
 - Backend logs around doctor check failures.
+- `npm --prefix backend run audit:moderate` output and any accepted exceptions documented in `docs/KNOWN_RISKS_AND_TODOS.md`.
 
 ---
 

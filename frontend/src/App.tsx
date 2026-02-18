@@ -3,7 +3,7 @@ import { Alert, Badge, Container, Nav, Navbar } from 'react-bootstrap';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
 
 import { API_BASE, ApiRequestError, WS_URL, getBotState, getHealth, getUniverse, pauseBot, resumeBot, stopBot } from './api';
-import type { BotState, QueueUpdatePayload, SymbolUpdatePayload, SymbolsUpdatePayload, UniverseState, WsEnvelope } from './types';
+import type { BotState, QueueUpdatePayload, SymbolUpdatePayload, SymbolsUpdatePayload, UniverseState, WsConnectionState, WsEnvelope } from './types';
 import { BotPage } from './pages/BotPage';
 import { HomePage } from './pages/HomePage';
 
@@ -22,8 +22,15 @@ function pushLog(current: LogLine[], entry: LogLine): LogLine[] {
 }
 
 export function App() {
+  const defaultWsState: WsConnectionState = {
+    ready: false,
+    status: 'DISCONNECTED',
+    lastError: null,
+    connectedAt: null,
+    lastMessageAt: null
+  };
   const [restHealthy, setRestHealthy] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
+  const [wsState, setWsState] = useState<WsConnectionState>(defaultWsState);
   const [botState, setBotState] = useState<BotState>({
     running: false,
     paused: false,
@@ -115,11 +122,33 @@ export function App() {
         reconnectTimer.current = null;
       }
 
-      const ws = new WebSocket(WS_URL);
+      setWsState((prev) => ({ ...prev, ready: false, status: 'CONNECTING' }));
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(WS_URL);
+      } catch (error) {
+        const message = (error as Error).message;
+        setWsState((prev) => ({
+          ...prev,
+          ready: false,
+          status: 'ERROR',
+          lastError: message
+        }));
+        appendLog(`WS connect error: ${message}`);
+        scheduleReconnect();
+        return;
+      }
       wsRef.current = ws;
 
       ws.onopen = () => {
-        setWsConnected(true);
+        setWsState((prev) => ({
+          ...prev,
+          ready: true,
+          status: 'CONNECTED',
+          lastError: null,
+          connectedAt: Date.now()
+        }));
         appendLog('WS connected');
         void syncRest();
       };
@@ -129,17 +158,36 @@ export function App() {
           wsRef.current = null;
         }
 
-        setWsConnected(false);
+        setWsState((prev) => ({
+          ...prev,
+          ready: false,
+          status: prev.status === 'ERROR' ? 'ERROR' : 'DISCONNECTED'
+        }));
         appendLog('WS disconnected');
         scheduleReconnect();
       };
 
-      ws.onerror = () => {
+      ws.onerror = (event) => {
+        const message = event instanceof ErrorEvent ? event.message || 'WebSocket error' : 'WebSocket error';
+        setWsState((prev) => ({
+          ...prev,
+          ready: false,
+          status: 'ERROR',
+          lastError: message
+        }));
+        appendLog(`WS error: ${message}`);
         ws.close();
       };
 
       ws.onmessage = (event) => {
-        const message = JSON.parse(event.data) as WsEnvelope;
+        let message: WsEnvelope;
+        try {
+          message = JSON.parse(event.data) as WsEnvelope;
+        } catch {
+          appendLog('WS message parse error');
+          return;
+        }
+        setWsState((prev) => ({ ...prev, lastMessageAt: Date.now() }));
 
         if (message.type === 'state') {
           const payload = message.payload as Partial<BotState>;
@@ -230,10 +278,12 @@ export function App() {
         <Badge bg={restHealthy ? 'success' : 'danger'} className="me-2">
           REST {restHealthy ? 'up' : 'down'}
         </Badge>
-        <Badge bg={wsConnected ? 'success' : 'danger'}>WS {wsConnected ? 'connected' : 'disconnected'}</Badge>
+        <Badge bg={wsState.ready ? 'success' : wsState.status === 'CONNECTING' ? 'warning' : 'danger'}>
+          WS {wsState.status.toLowerCase()}
+        </Badge>
       </>
     ),
-    [restHealthy, wsConnected]
+    [restHealthy, wsState.ready, wsState.status]
   );
 
   const handleHomePause = async () => {
@@ -298,7 +348,7 @@ export function App() {
             element={
               <HomePage
                 restHealthy={restHealthy}
-                wsConnected={wsConnected}
+                wsState={wsState}
                 botState={botState}
                 onPause={() => void handleHomePause()}
                 onResume={() => void handleHomeResume()}

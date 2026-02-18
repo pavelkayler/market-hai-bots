@@ -3,19 +3,20 @@ import { Alert, Badge, Button, Card, ListGroup } from 'react-bootstrap';
 import { Link } from 'react-router-dom';
 
 import { getBotStats, getDoctor } from '../api';
-import type { BotState, BotStats, DoctorResponse } from '../types';
+import type { BotState, BotStats, DoctorResponse, WsConnectionState } from '../types';
 import { formatDuration } from '../utils/time';
 
 type Props = {
   restHealthy: boolean;
-  wsConnected: boolean;
+  wsState?: WsConnectionState | null;
   botState: BotState;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
 };
 
-export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume, onStop }: Props) {
+export function HomePage({ restHealthy, wsState, botState, onPause, onResume, onStop }: Props) {
+  const { ready = false, status = 'DISCONNECTED', lastError = null } = wsState ?? {};
   const [doctor, setDoctor] = useState<DoctorResponse | null>(null);
   const [doctorError, setDoctorError] = useState('');
   const [doctorLoading, setDoctorLoading] = useState(false);
@@ -125,8 +126,19 @@ export function HomePage({ restHealthy, wsConnected, botState, onPause, onResume
             REST: <Badge bg={restHealthy ? 'success' : 'danger'}>{restHealthy ? 'Connected' : 'Disconnected'}</Badge>
           </p>
           <p>
-            WS: <Badge bg={wsConnected ? 'success' : 'danger'}>{wsConnected ? 'Connected' : 'Disconnected'}</Badge>
+            WS: <Badge bg={ready ? 'success' : status === 'CONNECTING' ? 'warning' : 'danger'}>{status}</Badge>
           </p>
+          {status === 'CONNECTING' ? (
+            <Alert variant="info" className="py-2">
+              WS connecting…
+            </Alert>
+          ) : null}
+          {status === 'DISCONNECTED' || status === 'ERROR' ? (
+            <Alert variant="warning" className="py-2">
+              <div><strong>WS disconnected.</strong> Start backend at localhost:8080.</div>
+              {lastError ? <div className="small text-muted mt-1">Last error: {lastError}</div> : null}
+            </Alert>
+          ) : null}
           <ListGroup className="mb-3">
             <ListGroup.Item>Running: {String(botState.running)}</ListGroup.Item>
             <ListGroup.Item>Paused: {String(botState.paused)}</ListGroup.Item>
