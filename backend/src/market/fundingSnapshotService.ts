@@ -23,7 +23,7 @@ type UniverseProvider = {
 };
 
 type FundingSnapshotInitOptions = {
-  bybitClient: Pick<IBybitMarketClient, 'getTickersLinear'>;
+  bybitClient: Pick<IBybitMarketClient, 'getTickerLinear'>;
   universeProvider: UniverseProvider;
   logger: FastifyBaseLogger;
 };
@@ -57,7 +57,7 @@ export const normalizeEpochToMs = (value: unknown): number | null => {
 
 export class FundingSnapshotService {
   private readonly cache = new Map<string, FundingSnapshotEntry>();
-  private bybitClient: Pick<IBybitMarketClient, 'getTickersLinear'> | null = null;
+  private bybitClient: Pick<IBybitMarketClient, 'getTickerLinear'> | null = null;
   private universeProvider: UniverseProvider | null = null;
   private logger: FastifyBaseLogger | null = null;
   private running = false;
@@ -68,6 +68,7 @@ export class FundingSnapshotService {
   private lastError: string | undefined;
   private refreshCount = 0;
   private nextScheduledAtMs: number | null = null;
+  private readonly refreshConcurrency = 12;
 
   init(options: FundingSnapshotInitOptions): void {
     this.bybitClient = options.bybitClient;
@@ -132,32 +133,40 @@ export class FundingSnapshotService {
     const logger = this.logger;
     this.refreshInFlight = (async () => {
       try {
-        const tickersBySymbol = await this.bybitClient!.getTickersLinear();
         const nowMs = Date.now();
         let updated = 0;
+        const failures: string[] = [];
 
-        for (const symbol of symbols) {
-          const ticker = tickersBySymbol.get(symbol) as (Record<string, unknown> & { fundingRate?: unknown; nextFundingTime?: unknown }) | undefined;
-          if (!ticker) {
-            continue;
+        await this.mapWithConcurrency(symbols, this.refreshConcurrency, async (symbol) => {
+          try {
+            const ticker = await this.bybitClient!.getTickerLinear(symbol);
+            if (!ticker) {
+              failures.push(symbol);
+              return;
+            }
+
+            const fundingRate = parseFiniteNumber(ticker.fundingRate);
+            const nextFundingTimeMs = normalizeEpochToMs(ticker.nextFundingTime);
+
+            this.cache.set(symbol, {
+              fundingRate,
+              nextFundingTimeMs,
+              fetchedAtMs: nowMs,
+              source: 'REST_TICKERS'
+            });
+            updated += 1;
+          } catch {
+            failures.push(symbol);
           }
-
-          const fundingRate = parseFiniteNumber(ticker.fundingRate);
-          const nextFundingTimeMs = normalizeEpochToMs(ticker.nextFundingTime);
-
-          this.cache.set(symbol, {
-            fundingRate,
-            nextFundingTimeMs,
-            fetchedAtMs: nowMs,
-            source: 'REST_TICKERS'
-          });
-          updated += 1;
-        }
+        });
 
         this.lastRefreshAtMs = nowMs;
         this.lastError = undefined;
         this.refreshCount += 1;
-        logger?.info({ reason, symbolsRequested: symbols.length, symbolsUpdated: updated }, 'funding snapshot refresh completed');
+        logger?.info(
+          { reason, symbolsRequested: symbols.length, symbolsUpdated: updated, symbolsFailed: failures.length },
+          'funding snapshot refresh completed'
+        );
       } catch (error) {
         const message = (error as Error).message ?? 'unknown funding refresh error';
         this.lastError = message;
@@ -189,6 +198,25 @@ export class FundingSnapshotService {
       refreshCount: this.refreshCount,
       nextScheduledAtMs: this.nextScheduledAtMs
     };
+  }
+
+  private async mapWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<void>): Promise<void> {
+    if (items.length === 0) {
+      return;
+    }
+
+    const normalizedConcurrency = Math.max(1, Math.floor(concurrency));
+    let cursor = 0;
+
+    const runners = Array.from({ length: Math.min(normalizedConcurrency, items.length) }, async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        await worker(items[index], index);
+      }
+    });
+
+    await Promise.all(runners);
   }
 }
 

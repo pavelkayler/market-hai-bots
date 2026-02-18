@@ -22,6 +22,10 @@ class FixtureMarketClient implements IBybitMarketClient {
   async getTickersLinear(): Promise<Map<string, TickerLinear>> {
     return this.tickers;
   }
+
+  async getTickerLinear(symbol: string): Promise<TickerLinear | null> {
+    return this.tickers.get(symbol) ?? null;
+  }
 }
 
 const logger = {

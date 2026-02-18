@@ -33,7 +33,12 @@ describe('ProfileService', () => {
       for (const name of shippedPresets) {
         const profile = await service.get(name);
         expect(profile?.autoTuneEnabled).toBe(true);
+        expect(profile?.dailyLossLimitUSDT).toBe(0);
+        expect(profile?.maxConsecutiveLosses).toBe(0);
       }
+      const defaultProfile = await service.get('default');
+      expect(defaultProfile?.dailyLossLimitUSDT).toBe(0);
+      expect(defaultProfile?.maxConsecutiveLosses).toBe(0);
       expect(await service.get('fast_test_1m')).toBeNull();
       expect(await service.get('skip_most_trades')).toBeNull();
       expect((await service.get('aggressive_1m'))?.autoTunePlannerMode).toBe('RANDOM_EXPLORE');
