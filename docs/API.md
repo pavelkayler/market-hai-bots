@@ -120,5 +120,43 @@ Kill response includes deterministic close/cancel outcome fields:
 - `GET /api/runs?limit=N` lists latest run folders.
 - `GET /api/runs/:id/download` downloads a single run as zip.
 - `GET /api/autotune/state` returns persistent Auto-Tune state (`enabled`, `scope`, `lastApplied`, history tail).
+- `GET /api/runs/:id/events?limit=200&types=SYSTEM` returns best-effort parsed run event tail (most-recent-first).
+- `GET /api/autotune/history?limit=100` returns latest applied auto-tune changes for operator transparency.
 - `symbol:update` WS payload now additively includes:
   - `signalCounterMin`, `signalCounterMax`, `signalCounterEligible`.
+
+
+### `GET /api/runs/:id/events`
+Best-effort run event tail reader from `data/runs/<id>/events.ndjson`.
+- Query: `limit` (default 200), `types` (comma-separated, optional).
+- Missing file or malformed lines do **not** fail request.
+- Response shape:
+```json
+{
+  "ok": true,
+  "runId": "2026-01-01T00-00-00.000Z",
+  "events": [
+    { "ts": 1735689600000, "type": "SYSTEM", "event": "BOT_STOP" }
+  ],
+  "warnings": ["events.ndjson line parse failed"]
+}
+```
+
+### `GET /api/autotune/history`
+Read-only operator view of applied auto-tune changes recorded by Auto-Tune service.
+- Query: `limit` (default 100).
+- Response shape:
+```json
+{
+  "ok": true,
+  "items": [
+    {
+      "ts": 1735689600000,
+      "parameter": "signalCounterThreshold",
+      "before": 2,
+      "after": 3,
+      "reason": "Recent run under-trading"
+    }
+  ]
+}
+```

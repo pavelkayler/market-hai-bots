@@ -438,3 +438,39 @@ export type AutoTuneRuntimeState = {
   scope: AutoTuneScope;
   lastApplied: { ts: number; parameter: string; before: number; after: number; reason: string } | null;
 };
+
+export type RunSummary = {
+  id: string;
+  startedAt: number;
+  endedAt: number | null;
+  mode?: string | null;
+  tf?: number | null;
+  direction?: string | null;
+  hasStats: boolean;
+  stats?: {
+    totalTrades: number;
+    winratePct: number;
+    pnlUSDT: number;
+    totalFeesUSDT?: number;
+    totalSlippageUSDT?: number;
+  };
+  tradedSymbols?: string[];
+  warnings?: string[];
+};
+
+export type RunEvent = {
+  ts?: number;
+  type?: string;
+  event?: string;
+  payload?: Record<string, unknown>;
+  data?: Record<string, unknown>;
+};
+
+export type AutoTuneApplied = {
+  ts: number;
+  parameter: string;
+  before: number;
+  after: number;
+  reason: string;
+  scope?: 'GLOBAL' | 'UNIVERSE_ONLY';
+};

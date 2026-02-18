@@ -10,6 +10,7 @@ type AutoTuneChange = {
   after: number;
   reason: string;
   bounds: { min: number; max: number };
+  scope?: AutoTuneScope;
 };
 
 export type AutoTuneState = {
@@ -31,25 +32,37 @@ const DEFAULT_STATE: AutoTuneState = {
 export class AutoTuneService {
   private state: AutoTuneState = { ...DEFAULT_STATE };
   private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor(private readonly filePath = path.resolve(process.cwd(), 'data/autotune/state.json')) {}
 
   async init(): Promise<void> {
     if (this.initialized) return;
-    this.initialized = true;
-    try {
-      const raw = await readFile(this.filePath, 'utf-8');
-      const parsed = JSON.parse(raw) as Partial<AutoTuneState>;
-      this.state = {
-        enabled: !!parsed.enabled,
-        scope: parsed.scope === 'UNIVERSE_ONLY' ? 'UNIVERSE_ONLY' : 'GLOBAL',
-        lastApplied: parsed.lastApplied ?? null,
-        history: Array.isArray(parsed.history) ? parsed.history.slice(-200) as AutoTuneChange[] : [],
-        closesSeen: typeof parsed.closesSeen === 'number' ? parsed.closesSeen : 0
-      };
-    } catch {
-      await this.persist();
+    if (this.initPromise) {
+      await this.initPromise;
+      return;
     }
+
+    this.initPromise = (async () => {
+      try {
+        const raw = await readFile(this.filePath, 'utf-8');
+        const parsed = JSON.parse(raw) as Partial<AutoTuneState>;
+        this.state = {
+          enabled: !!parsed.enabled,
+          scope: parsed.scope === 'UNIVERSE_ONLY' ? 'UNIVERSE_ONLY' : 'GLOBAL',
+          lastApplied: parsed.lastApplied ?? null,
+          history: Array.isArray(parsed.history) ? parsed.history.slice(-200) as AutoTuneChange[] : [],
+          closesSeen: typeof parsed.closesSeen === 'number' ? parsed.closesSeen : 0
+        };
+      } catch {
+        await this.persist();
+      } finally {
+        this.initialized = true;
+        this.initPromise = null;
+      }
+    })();
+
+    await this.initPromise;
   }
 
   getState(): AutoTuneState {
@@ -63,7 +76,7 @@ export class AutoTuneService {
   }
 
   async noteApplied(change: Omit<AutoTuneChange, 'ts'>): Promise<AutoTuneChange> {
-    const full: AutoTuneChange = { ...change, ts: Date.now() };
+    const full: AutoTuneChange = { ...change, ts: Date.now(), scope: change.scope ?? this.state.scope };
     this.state.lastApplied = full;
     this.state.history = [...this.state.history, full].slice(-200);
     this.state.closesSeen += 1;

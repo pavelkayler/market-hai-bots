@@ -74,10 +74,22 @@ Expected:
 ## 8) Bot page tabs (operator navigation)
 - Dashboard: unified runtime + performance panel, controls, phase monitor, orders, positions.
 - Settings: Universe panel (full-width) then Settings panel (full-width).
+- Runs: recent run summaries with per-run SYSTEM events tail and zip download.
 - Journal: journal table + limit/refresh/clear/download controls.
 - Log: last logs view.
 - Per-symbol performance: stats table + STOP-only exclude toggles.
 - Entry reasons: top no-entry reasons + confirmed entry reason stats.
+
+
+
+## 9) Runs (history + details)
+1. Open **Runs** tab.
+2. Click **Refresh** to load latest summaries (`GET /api/runs/summary?limit=50`).
+3. Use **Details** on a row to open SYSTEM events tail (`GET /api/runs/:id/events?limit=200&types=SYSTEM`).
+   - Shows BOT_START/RESUME/STOP/KILL, AUTO_TUNE_APPLIED, GUARDRAIL_PAUSED when present.
+   - Missing or malformed events file is handled best-effort with warnings.
+4. Use **Download** to export run artifacts (`GET /api/runs/:id/download`).
+   - Zip contains `meta.json`, `events.ndjson`, and `stats.json` when available/valid.
 
 ## Failure modes and responses
 - `UNIVERSE_NOT_READY`: recreate universe; check upstream diagnostics.

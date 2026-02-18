@@ -1,4 +1,4 @@
-import type { AutoTuneRuntimeState, BotSettings, BotState, BotStats, DoctorResponse, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, UniverseState } from './types';
+import type { AutoTuneApplied, AutoTuneRuntimeState, BotSettings, BotState, BotStats, DoctorResponse, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, RunEvent, RunSummary, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -282,4 +282,18 @@ export async function uploadProfiles(rawJson: unknown): Promise<{ ok: boolean }>
 
 export async function getAutoTuneState(): Promise<{ ok: true; state: AutoTuneRuntimeState }> {
   return request('/api/autotune/state');
+}
+
+
+export async function getRunsSummary(limit: number): Promise<{ ok: true; runs: RunSummary[] }> {
+  return request(`/api/runs/summary?limit=${limit}`);
+}
+
+export async function getRunEvents(runId: string, limit: number, types: string[] = ['SYSTEM']): Promise<{ ok: true; runId: string; events: RunEvent[]; warnings?: string[] }> {
+  const encodedTypes = encodeURIComponent(types.join(','));
+  return request(`/api/runs/${encodeURIComponent(runId)}/events?limit=${limit}&types=${encodedTypes}`);
+}
+
+export async function getAutoTuneHistory(limit: number): Promise<{ ok: true; items: AutoTuneApplied[] }> {
+  return request(`/api/autotune/history?limit=${limit}`);
 }
