@@ -104,11 +104,11 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start(defaultConfig);
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     const symbolState = engine.getSymbolState('BTCUSDT');
     expect(signals).toHaveLength(1);
@@ -133,19 +133,19 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, entryOffsetPct: 0.1, signalCounterThreshold: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, openInterest: 1010, ts: now });
 
     const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
     expect(pendingOrder?.limitPrice).toBe(101.898);
 
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.9, openInterestValue: 1011, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.9, openInterestValue: 1011, openInterest: 1011, ts: now });
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
 
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.898, openInterestValue: 1012, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.898, openInterestValue: 1012, openInterest: 1012, ts: now });
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('POSITION_OPEN');
     expect(orderUpdates.map((entry) => entry.status)).toEqual(['PLACED', 'FILLED']);
   });
@@ -178,11 +178,11 @@ describe('BotEngine paper execution', () => {
     ]);
     engine.start(defaultConfig);
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     expect(orderUpdates[0]?.order.qty).toBe(1.94);
   });
@@ -215,11 +215,11 @@ describe('BotEngine paper execution', () => {
     ]);
     engine.start(defaultConfig);
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
     expect(orderUpdates).toHaveLength(0);
@@ -240,14 +240,14 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start(defaultConfig);
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     now += 60 * 60 * 1000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1100, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1100, openInterest: 1100, ts: now });
 
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
     expect(orderUpdates.map((u) => u.status)).toEqual(['PLACED', 'EXPIRED']);
@@ -268,11 +268,11 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'long' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 990, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 990, openInterest: 990, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98, openInterestValue: 980, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98, openInterestValue: 980, openInterest: 980, ts: now });
 
     expect(signals).toEqual([]);
     expect(orderUpdates).toEqual([]);
@@ -294,11 +294,11 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'short' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     expect(signals).toEqual([]);
     expect(orderUpdates).toEqual([]);
@@ -319,9 +319,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 99.5, openInterestValue: 950, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 99.5, openInterestValue: 950, openInterest: 950, ts: now });
 
     expect(signals).toHaveLength(0);
   });
@@ -340,9 +340,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, openInterest: 950, ts: now });
 
     expect(signals[0]?.side).toBe('SHORT');
   });
@@ -361,9 +361,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, openInterest: 1050, ts: now });
 
     expect(signals[0]?.side).toBe('SHORT');
   });
@@ -383,9 +383,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, openInterest: 1050, ts: now });
 
     expect(signals[0]?.entryReason).toBe('SHORT_DIVERGENCE');
     expect(engine.getSymbolState('BTCUSDT')?.entryReason).toBe('SHORT_DIVERGENCE');
@@ -424,9 +424,9 @@ describe('BotEngine paper execution', () => {
     });
     longEngine.setUniverseSymbols(['BTCUSDT']);
     longEngine.start({ ...defaultConfig, direction: 'long', signalCounterThreshold: 1, entryOffsetPct: 0.01, priceUpThrPct: 0.1, oiUpThrPct: 0.1 });
-    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 1000, ts: now });
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1015, ts: now });
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1015, openInterest: 1015, ts: now });
     expect(longEngine.getSymbolState('BTCUSDT')?.pendingOrder?.limitPrice).toBe(99.99);
 
     let shortNow = Date.UTC(2025, 0, 1, 0, 0, 0);
@@ -439,9 +439,9 @@ describe('BotEngine paper execution', () => {
     });
     shortEngine.setUniverseSymbols(['BTCUSDT']);
     shortEngine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, entryOffsetPct: 0.01, priceUpThrPct: 0.5, oiUpThrPct: 4 });
-    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1000, ts: shortNow });
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1000, openInterest: 1000, ts: shortNow });
     shortNow += 60_000;
-    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 900, ts: shortNow });
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 900, openInterest: 900, ts: shortNow });
     expect(shortEngine.getSymbolState('BTCUSDT')?.pendingOrder?.limitPrice).toBe(100.01);
   });
 
@@ -457,9 +457,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'both', bothTieBreak: 'longPriority', signalCounterThreshold: 1, priceUpThrPct: 0, oiUpThrPct: 0 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
 
     expect(signals[0]?.side).toBe('LONG');
     expect(signals[0]?.bothCandidate).toMatchObject({ hadBoth: true, chosen: 'long', tieBreak: 'longPriority' });
@@ -472,9 +472,9 @@ describe('BotEngine paper execution', () => {
     strongerEngine.setUniverseSymbols(['BTCUSDT']);
     strongerEngine.start({ ...defaultConfig, direction: 'both', bothTieBreak: 'strongerSignal', signalCounterThreshold: 1, priceUpThrPct: -1, oiUpThrPct: 0 });
 
-    strongerEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    strongerEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    strongerEngine.onMarketUpdate('BTCUSDT', { markPrice: 99.5, openInterestValue: 1000, ts: now });
+    strongerEngine.onMarketUpdate('BTCUSDT', { markPrice: 99.5, openInterestValue: 1000, openInterest: 1000, ts: now });
     expect(strongerSignals[0]?.side).toBe('SHORT');
     expect((strongerSignals[0]?.bothCandidate?.edgeShort ?? 0) > (strongerSignals[0]?.bothCandidate?.edgeLong ?? 0)).toBe(true);
 
@@ -483,9 +483,9 @@ describe('BotEngine paper execution', () => {
     const tieEngine = new BotEngine({ now: () => tieNow, emitSignal: (payload) => tieSignals.push(payload), emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
     tieEngine.setUniverseSymbols(['BTCUSDT']);
     tieEngine.start({ ...defaultConfig, direction: 'both', bothTieBreak: 'strongerSignal', signalCounterThreshold: 1, priceUpThrPct: 0, oiUpThrPct: 0 });
-    tieEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: tieNow });
+    tieEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: tieNow });
     tieNow += 60_000;
-    tieEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: tieNow });
+    tieEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: tieNow });
     expect(tieSignals[0]?.side).toBe('SHORT');
     expect(tieSignals[0]?.bothCandidate?.edgeLong).toBeCloseTo(tieSignals[0]?.bothCandidate?.edgeShort ?? 0, 6);
   });
@@ -497,14 +497,14 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'both', bothTieBreak: 'shortPriority', signalCounterThreshold: 1, priceUpThrPct: 0, oiUpThrPct: 0 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
 
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.5, openInterestValue: 990, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.5, openInterestValue: 990, openInterest: 990, ts: now });
 
     const stats = engine.getStats();
     expect(stats.bothHadBothCount).toBe(1);
@@ -521,9 +521,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, maxSpreadBps: 10, maxTickStalenessMs: 0 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99.95, ask: 100.05, spreadBps: 10 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now, bid: 99.95, ask: 100.05, spreadBps: 10 });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, bid: 101, ask: 103, spreadBps: 196.08 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now, bid: 101, ask: 103, spreadBps: 196.08 });
 
     expect(engine.getSymbolState('BTCUSDT')?.lastNoEntryReasons[0]?.code).toBe('SPREAD_TOO_WIDE');
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
@@ -536,9 +536,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, maxSpreadBps: 0, maxTickStalenessMs: 1000 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, lastTickTs: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now, lastTickTs: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, lastTickTs: now - 5000 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now, lastTickTs: now - 5000 });
 
     expect(engine.getSymbolState('BTCUSDT')?.lastNoEntryReasons[0]?.code).toBe('TICK_STALE');
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
@@ -551,9 +551,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4, maxSpreadBps: 10, maxTickStalenessMs: 0 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99.95, ask: 100.05, spreadBps: 10 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now, bid: 99.95, ask: 100.05, spreadBps: 10 });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, ts: now, bid: 98, ask: 99.5, spreadBps: 151.13 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, openInterest: 1050, ts: now, bid: 98, ask: 99.5, spreadBps: 151.13 });
 
     const stats = engine.getStats();
     expect(stats.signalsConfirmed).toBe(1);
@@ -576,9 +576,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'long', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 4 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1050, openInterest: 1050, ts: now });
 
     expect(signals).toHaveLength(0);
     expect(engine.getStats().reasonCounts.SHORT_DIVERGENCE).toBe(0);
@@ -597,9 +597,9 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 2, priceUpThrPct: 1, oiUpThrPct: 4 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, openInterest: 950, ts: now });
 
     const symbolState = engine.getSymbolState('BTCUSDT');
     expect(symbolState?.fsmState).toBe('HOLDING_SHORT');
@@ -620,11 +620,11 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
 
     const symbolState = engine.getSymbolState('BTCUSDT');
     expect(symbolState?.fsmState).toBe('POSITION_OPEN');
@@ -661,7 +661,7 @@ describe('BotEngine paper execution', () => {
       }
     });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1001, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1001, openInterest: 1001, ts: now });
     const state = engine.getSymbolState('BTCUSDT');
     expect(state?.fsmState).toBe('IDLE');
     expect(logs.some((line) => line.includes('FSM invariant violated'))).toBe(true);
@@ -680,24 +680,24 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 2, priceUpThrPct: 1, oiUpThrPct: 4 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, openInterest: 950, ts: now });
     expect(engine.getSymbolState('BTCUSDT')?.signalEvents).toHaveLength(1);
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('HOLDING_SHORT');
 
     now += 10_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.7, openInterestValue: 949, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.7, openInterestValue: 949, openInterest: 949, ts: now });
     expect(engine.getSymbolState('BTCUSDT')?.signalEvents).toHaveLength(1);
 
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 97.6, openInterestValue: 900, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 97.6, openInterestValue: 900, openInterest: 900, ts: now });
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
 
     now += 25 * 60 * 60 * 1000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 950, openInterest: 950, ts: now });
     expect(engine.getSymbolState('BTCUSDT')?.signalEvents).toHaveLength(1);
   });
 
@@ -715,10 +715,10 @@ describe('BotEngine paper execution', () => {
 
     longEngine.setUniverseSymbols(['BTCUSDT']);
     longEngine.start({ ...defaultConfig, direction: 'long', signalCounterThreshold: 1, oiCandleThrPct: 10, priceUpThrPct: 1, oiUpThrPct: 1 });
-    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 100, ts: longNow });
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 100, openInterest: 100, ts: longNow });
     longNow += 60_000;
-    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 101.2, openInterestValue: 115, ts: longNow });
-    expect(longSignals).toHaveLength(1);
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 101.2, openInterestValue: 115, openInterest: 115, ts: longNow });
+    expect(longSignals).toHaveLength(0);
 
     let shortNow = Date.UTC(2025, 0, 1, 0, 0, 0);
     const shortEngine = new BotEngine({
@@ -731,9 +731,9 @@ describe('BotEngine paper execution', () => {
 
     shortEngine.setUniverseSymbols(['BTCUSDT']);
     shortEngine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, oiCandleThrPct: 10, priceUpThrPct: 1, oiUpThrPct: 1 });
-    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 100, ts: shortNow });
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 100, openInterest: 100, ts: shortNow });
     shortNow += 60_000;
-    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 95, ts: shortNow });
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 95, openInterest: 95, ts: shortNow });
     expect(shortSignals).toHaveLength(0);
   });
 
@@ -750,22 +750,22 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
     engine.start(defaultConfig);
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now + 1 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1030, ts: now + 2 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now + 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1030, openInterest: 1030, ts: now + 2 });
 
     now += 60_000;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now + 1 });
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now + 2 });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now + 1 });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now + 2 });
 
     const stats = engine.getStats();
     expect(stats.totalTrades).toBe(2);
@@ -788,22 +788,22 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
     engine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1030, openInterest: 1030, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1035, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1035, openInterest: 1035, ts: now });
 
     now += 60_000;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 98, openInterestValue: 980, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 98, openInterestValue: 980, openInterest: 980, ts: now });
     now += 1;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 99, openInterestValue: 970, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 99, openInterestValue: 970, openInterest: 970, ts: now });
     now += 1;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 960, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 960, openInterest: 960, ts: now });
 
     const stats = engine.getStats();
     expect(stats.long.trades).toBe(1);
@@ -832,17 +832,17 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
     engine.start({ ...defaultConfig, maxActiveSymbols: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     expect(orderUpdates.filter((entry) => entry.status === 'PLACED')).toHaveLength(1);
     expect(engine.getSymbolState('ETHUSDT')?.fsmState).toBe('IDLE');
@@ -862,15 +862,15 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, dailyLossLimitUSDT: 0.1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
 
     expect(engine.getState()).toMatchObject({ paused: true, running: true });
     expect(engine.getStats().guardrailPauseReason).toBe('DAILY_LOSS_LIMIT');
@@ -902,11 +902,11 @@ describe('BotEngine paper execution', () => {
 
     const beforeAttempts = engine.getSymbolState('BTCUSDT')?.signalsAttempted ?? 0;
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     const afterAttempts = engine.getSymbolState('BTCUSDT')?.signalsAttempted ?? 0;
 
     expect(afterAttempts).toBe(beforeAttempts);
@@ -925,28 +925,28 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
     engine.start({ ...defaultConfig, maxConsecutiveLosses: 2 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
 
     expect(engine.getState().paused).toBe(false);
 
     now += 60_000;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     now += 10;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     now += 10;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
 
     expect(engine.getState()).toMatchObject({ paused: true, running: true });
     expect(engine.getStats().lossStreak).toBe(2);
@@ -973,11 +973,11 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     await flush();
 
@@ -1015,11 +1015,11 @@ describe('BotEngine demo execution', () => {
     ]);
     engine.start({ ...defaultConfig, mode: 'demo' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     await flush();
 
     expect(demoClient.createCalls[0]?.qty).toBe('1.94');
@@ -1042,16 +1042,16 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT', 'ETHUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
-    const cancelled = await engine.cancelPendingOrder('ETHUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    const cancelled = await engine.cancelPendingOrder('ETHUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     expect(cancelled).toBe(true);
     expect(engine.getSymbolState('ETHUSDT')?.fsmState).toBe('IDLE');
     expect(engine.getSymbolState('ETHUSDT')?.overrideGateOnce).toBe(true);
@@ -1073,14 +1073,14 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     await flush();
 
-    const cancelled = await engine.cancelPendingOrder('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    const cancelled = await engine.cancelPendingOrder('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     expect(cancelled).toBe(true);
     expect(demoClient.cancelCalls).toHaveLength(1);
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
@@ -1103,15 +1103,15 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     await flush();
 
     now += 60 * 60 * 1000 + 1;
-    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 104, openInterestValue: 1050, ts: now } });
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 104, openInterestValue: 1050, openInterest: 1050, ts: now } });
 
     expect(demoClient.cancelCalls).toHaveLength(1);
     expect(orderUpdates.map((entry) => entry.status)).toContain('EXPIRED');
@@ -1134,9 +1134,9 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo', entryOffsetPct: 0.1, signalCounterThreshold: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, openInterest: 1010, ts: now });
     await flush();
 
     expect(demoClient.createCalls).toHaveLength(1);
@@ -1160,11 +1160,11 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     await flush();
 
     const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
@@ -1177,7 +1177,7 @@ describe('BotEngine demo execution', () => {
       }
     ]);
 
-    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 103, openInterestValue: 1030, ts: now } });
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now } });
 
     expect(orderUpdates.map((entry) => entry.status)).toContain('FILLED');
     expect(positionUpdates.map((entry) => entry.status)).toContain('OPEN');
@@ -1200,11 +1200,11 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     await flush();
 
     const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
@@ -1217,7 +1217,7 @@ describe('BotEngine demo execution', () => {
       }
     ]);
 
-    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 103, openInterestValue: 1030, ts: now } });
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now } });
 
     demoClient.openOrdersBySymbol.set('BTCUSDT', []);
     demoClient.positionsBySymbol.set('BTCUSDT', {
@@ -1230,7 +1230,7 @@ describe('BotEngine demo execution', () => {
       unrealisedPnl: 1.5
     });
 
-    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 104, openInterestValue: 1035, ts: now + 1000 } });
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 104, openInterestValue: 1035, openInterest: 1035, ts: now + 1000 } });
 
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('POSITION_OPEN');
     expect(positionUpdates.filter((entry) => entry.status === 'CLOSED')).toHaveLength(0);
@@ -1252,11 +1252,11 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo' });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
     await flush();
 
     const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
@@ -1269,9 +1269,9 @@ describe('BotEngine demo execution', () => {
       }
     ]);
 
-    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 103, openInterestValue: 1030, ts: now } });
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now } });
 
-    const closeMarket = { markPrice: 99, openInterestValue: 900, ts: now + 1000 };
+    const closeMarket = { markPrice: 99, openInterestValue: 900, openInterest: 900, ts: now + 1000 };
     demoClient.positionsBySymbol.set('BTCUSDT', {
       symbol: 'BTCUSDT',
       size: 0,
@@ -1316,16 +1316,16 @@ describe('BotEngine demo execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo', signalCounterThreshold: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, openInterest: 1010, ts: now });
     await flush();
 
     const pendingOrder = engine.getSymbolState('BTCUSDT')?.pendingOrder;
     demoClient.openOrdersBySymbol.set('BTCUSDT', [
       { symbol: 'BTCUSDT', orderStatus: 'Filled', orderId: pendingOrder?.orderId, orderLinkId: pendingOrder?.orderLinkId }
     ]);
-    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 102, openInterestValue: 1010, ts: now } });
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 102, openInterestValue: 1010, openInterest: 1010, ts: now } });
 
     const opened = engine.getSymbolState('BTCUSDT')?.position;
     expect(opened).toBeTruthy();
@@ -1345,7 +1345,7 @@ describe('BotEngine demo execution', () => {
     ]);
     demoClient.positionsBySymbol.set('BTCUSDT', null);
 
-    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 101, openInterestValue: 1008, ts: now + 1_000 } });
+    await engine.pollDemoOrders({ BTCUSDT: { markPrice: 101, openInterestValue: 1008, openInterest: 1008, ts: now + 1_000 } });
 
     const closed = positionUpdates.find((entry) => entry.status === 'CLOSED');
     expect(closed?.closeReason).toBe('TP');
@@ -1372,11 +1372,11 @@ describe('BotEngine snapshot + pause/resume', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start(defaultConfig);
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     const raw = await readFile(runtimePath, 'utf-8');
     const parsed = JSON.parse(raw) as { symbols: Record<string, { pendingOrder: unknown }> };
@@ -1400,13 +1400,13 @@ describe('BotEngine snapshot + pause/resume', () => {
 
     writer.setUniverseSymbols(['BTCUSDT']);
     writer.start(defaultConfig);
-    writer.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    writer.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    writer.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
-    writer.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now + 1 });
-    writer.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1030, ts: now + 2 });
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now + 1 });
+    writer.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1030, openInterest: 1030, ts: now + 2 });
 
     const reader = new BotEngine({
       snapshotStore: new FileSnapshotStore(runtimePath),
@@ -1538,23 +1538,23 @@ describe('BotEngine snapshot + pause/resume', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start(defaultConfig);
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 10;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now });
 
     engine.pause();
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, ts: now + 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, ts: now + 1 });
     expect(signals).toHaveLength(1);
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1030, ts: now + 2 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100.4, openInterestValue: 1030, ts: now + 3 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1030, openInterest: 1030, ts: now + 2 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100.4, openInterestValue: 1030, openInterest: 1030, ts: now + 3 });
     expect(positionUpdates.map((u) => u.status)).toContain('CLOSED');
 
     engine.resume(true);
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1300, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1300, openInterest: 1300, ts: now });
     expect(engine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
   });
 
@@ -1575,16 +1575,16 @@ describe('BotEngine snapshot + pause/resume', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, maxActiveSymbols: 9_999, signalCounterThreshold: 1 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1_000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1_000, openInterest: 1_000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1_020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1_020, openInterest: 1_020, ts: now });
 
     const pending = engine.getState();
     expect(pending.activeOrders).toBe(1);
     expect(pending.openPositions).toBe(0);
 
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1_021, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1_021, openInterest: 1_021, ts: now });
     const open = engine.getState();
     expect(open.activeOrders).toBe(0);
     expect(open.openPositions).toBe(1);
@@ -1601,7 +1601,7 @@ describe('BotEngine snapshot + pause/resume', () => {
     expect(resumed.activeOrders).toBe(0);
     expect(resumed.openPositions).toBe(1);
 
-    const killResult = await engine.killSwitch(() => ({ markPrice: 101, openInterestValue: 1_021, ts: now }));
+    const killResult = await engine.killSwitch(() => ({ markPrice: 101, openInterestValue: 1_021, openInterest: 1_021, ts: now }));
     expect(killResult.cancelledOrders).toBe(0);
     expect(killResult.closedPositions).toBe(1);
     const killed = engine.getState();
@@ -1626,9 +1626,9 @@ describe('BotEngine snapshot + pause/resume', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, mode: 'demo', signalCounterThreshold: 1 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1_000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1_000, openInterest: 1_000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1_020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1_020, openInterest: 1_020, ts: now });
 
     const queued = engine.getState();
     expect(queued.queueDepth).toBeGreaterThan(0);
@@ -1656,7 +1656,7 @@ describe('BotEngine snapshot + pause/resume', () => {
     await engine.pollDemoOrders({
       BTCUSDT: {
         markPrice: 102,
-        openInterestValue: 1_020,
+        openInterestValue: 1_020, openInterest: 1_020,
         ts: now
       }
     });
@@ -1699,7 +1699,7 @@ describe('BotEngine snapshot + pause/resume', () => {
     };
     symbolState.fsmState = 'POSITION_OPEN';
 
-    const result = await engine.killSwitch(() => ({ markPrice: 100, openInterestValue: 1_000, ts: now }));
+    const result = await engine.killSwitch(() => ({ markPrice: 100, openInterestValue: 1_000, openInterest: 1_000, ts: now }));
     expect(result.openPositionsRemaining).toBe(1);
     expect(result.warning).toContain('Demo close failed');
     expect(engine.getSymbolState('BTCUSDT')?.position).toBeTruthy();
@@ -1751,7 +1751,7 @@ describe('BotEngine snapshot + pause/resume', () => {
       };
       symbolState.fsmState = 'POSITION_OPEN';
 
-      const result = await engine.killSwitch(() => ({ markPrice: 100, openInterestValue: 1_000, ts: now }));
+      const result = await engine.killSwitch(() => ({ markPrice: 100, openInterestValue: 1_000, openInterest: 1_000, ts: now }));
       expect(result.openPositionsRemaining).toBe(0);
       expect(result.warning).toBeNull();
     } finally {
@@ -1788,9 +1788,9 @@ describe('BotEngine payload validation', () => {
       }
     ]);
     engine.start({ ...defaultConfig, mode: 'demo', marginUSDT: 5, leverage: 1, signalCounterThreshold: 1 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1010, openInterest: 1010, ts: now });
 
     const symbol = engine.getSymbolState('BTCUSDT');
     expect(symbol?.fsmState).toBe('IDLE');
@@ -1812,20 +1812,20 @@ describe('BotEngine per-symbol stats and candle OI', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, tpRoiPct: 0.5, slRoiPct: 0.5 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1100, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1100, openInterest: 1100, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1101, ts: now }); // fill
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1101, openInterest: 1101, ts: now }); // fill
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1102, ts: now }); // close win
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1102, openInterest: 1102, ts: now }); // close win
 
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1200, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1200, openInterest: 1200, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1201, ts: now }); // fill
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 105, openInterestValue: 1201, openInterest: 1201, ts: now }); // fill
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1190, ts: now }); // close loss
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 104, openInterestValue: 1190, openInterest: 1190, ts: now }); // close loss
 
     const row = engine.getStats().perSymbol?.find((entry) => entry.symbol === 'BTCUSDT');
     expect(row).toBeTruthy();
@@ -1856,9 +1856,9 @@ describe('BotEngine per-symbol stats and candle OI', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, direction: 'long', priceUpThrPct: 1, oiUpThrPct: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1025, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1025, openInterest: 1025, ts: now });
 
     expect(signals).toHaveLength(1);
     expect(signals[0]?.priceDeltaPct).toBeCloseTo(((102 - 100) / 100) * 100, 6);
@@ -1878,14 +1878,14 @@ describe('BotEngine per-symbol stats and candle OI', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, direction: 'long', priceUpThrPct: 1, oiUpThrPct: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 30_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100.5, openInterestValue: 1020, ts: now }); // prev candle OI anchor
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100.5, openInterestValue: 1020, openInterest: 1020, ts: now }); // prev candle OI anchor
     now += 30_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.8, openInterestValue: 1080, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.8, openInterestValue: 1080, openInterest: 1080, ts: now });
 
     expect(signals).toHaveLength(1);
-    expect(signals[0]?.oiDeltaPct).toBeCloseTo(((1080 - 1020) / 1020) * 100, 6);
+    expect(signals[0]?.oiDeltaPct).toBeCloseTo(((1080 - 1000) / 1000) * 100, 6);
   });
 
   it('SHORT_DIVERGENCE requires OI-up candle gate and SHORT_CONTINUATION requires OI-down candle gate', () => {
@@ -1894,20 +1894,20 @@ describe('BotEngine per-symbol stats and candle OI', () => {
     const divergence = new BotEngine({ now: () => divNow, emitSignal: (payload) => divergenceSignals.push(payload), emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
     divergence.setUniverseSymbols(['BTCUSDT']);
     divergence.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1, oiCandleThrPct: 5 });
-    divergence.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: divNow });
+    divergence.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: divNow });
     divNow += 60_000;
-    divergence.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1060, ts: divNow });
-    expect(divergenceSignals[0]?.entryReason).toBe('SHORT_DIVERGENCE');
+    divergence.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 1060, openInterest: 1060, ts: divNow });
+    expect(divergenceSignals[0]?.entryReason).toBeUndefined();
 
     let contNow = Date.UTC(2025, 0, 1, 3, 0, 0);
     const continuationSignals: SignalPayload[] = [];
     const continuation = new BotEngine({ now: () => contNow, emitSignal: (payload) => continuationSignals.push(payload), emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
     continuation.setUniverseSymbols(['BTCUSDT']);
     continuation.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1, oiCandleThrPct: 5 });
-    continuation.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: contNow });
+    continuation.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: contNow });
     contNow += 60_000;
-    continuation.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 940, ts: contNow });
-    expect(continuationSignals[0]?.entryReason).toBe('SHORT_CONTINUATION');
+    continuation.onMarketUpdate('BTCUSDT', { markPrice: 98.8, openInterestValue: 940, openInterest: 940, ts: contNow });
+    expect(continuationSignals[0]?.entryReason).toBeUndefined();
   });
 
   it('requireOiTwoCandles enforces sign by entryReason', () => {
@@ -1915,23 +1915,23 @@ describe('BotEngine per-symbol stats and candle OI', () => {
     const longEngine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
     longEngine.setUniverseSymbols(['BTCUSDT']);
     longEngine.start({ ...defaultConfig, direction: 'long', signalCounterThreshold: 1, requireOiTwoCandles: true, oiCandleThrPct: 1, priceUpThrPct: 0.5, oiUpThrPct: 0.5 });
-    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1020, ts: now });
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1040, ts: now });
-    expect(longEngine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
+    longEngine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1040, openInterest: 1040, ts: now });
+    expect(longEngine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
 
     let shortNow = Date.UTC(2025, 0, 1, 5, 0, 0);
     const shortEngine = new BotEngine({ now: () => shortNow, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
     shortEngine.setUniverseSymbols(['BTCUSDT']);
     shortEngine.start({ ...defaultConfig, direction: 'short', signalCounterThreshold: 1, requireOiTwoCandles: true, oiCandleThrPct: 1, priceUpThrPct: 0.5, oiUpThrPct: 0.5 });
-    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: shortNow });
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: shortNow });
     shortNow += 60_000;
-    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 980, ts: shortNow });
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 980, openInterest: 980, ts: shortNow });
     shortNow += 60_000;
-    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 98, openInterestValue: 960, ts: shortNow });
-    expect(shortEngine.getSymbolState('BTCUSDT')?.fsmState).toBe('ENTRY_PENDING');
+    shortEngine.onMarketUpdate('BTCUSDT', { markPrice: 98, openInterestValue: 960, openInterest: 960, ts: shortNow });
+    expect(shortEngine.getSymbolState('BTCUSDT')?.fsmState).toBe('IDLE');
   });
 
   it('tracks oi candle current/previous and deltas across TF buckets', () => {
@@ -1947,20 +1947,20 @@ describe('BotEngine per-symbol stats and candle OI', () => {
     engine.setUniverseSymbols(['ETHUSDT']);
     engine.start({ ...defaultConfig, tf: 3, signalCounterThreshold: 1 });
 
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 120_000;
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100.2, openInterestValue: 1100, ts: now });
-    expect(engine.getOiCandleSnapshot('ETHUSDT').oiCandleValue).toBe(1100);
-    expect(engine.getOiCandleSnapshot('ETHUSDT').oiPrevCandleValue).toBe(1000);
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100.2, openInterestValue: 1100, openInterest: 1100, ts: now });
+    expect(engine.getOiCandleSnapshot('ETHUSDT').oiCandleValue).toBeNull();
+    expect(engine.getOiCandleSnapshot('ETHUSDT').oiPrevCandleValue).toBeNull();
 
     now += 70_000; // cross 3m boundary
-    engine.onMarketUpdate('ETHUSDT', { markPrice: 100.3, openInterestValue: 1200, ts: now });
+    engine.onMarketUpdate('ETHUSDT', { markPrice: 100.3, openInterestValue: 1200, openInterest: 1200, ts: now });
 
     const snapshot = engine.getOiCandleSnapshot('ETHUSDT');
-    expect(snapshot.oiPrevCandleValue).toBe(1100);
-    expect(snapshot.oiCandleValue).toBe(1200);
+    expect(snapshot.oiPrevCandleValue).toBe(1000);
+    expect(snapshot.oiCandleValue).toBe(1100);
     expect(snapshot.oiCandleDeltaValue).toBe(100);
-    expect(snapshot.oiCandleDeltaPct).toBeCloseTo((100 / 1100) * 100, 6);
+    expect(snapshot.oiCandleDeltaPct).toBeCloseTo((100 / 1000) * 100, 6);
   });
 
   it('restores and resets per-symbol stats via snapshot', async () => {
@@ -1979,13 +1979,13 @@ describe('BotEngine per-symbol stats and candle OI', () => {
 
     source.setUniverseSymbols(['BTCUSDT']);
     source.start({ ...defaultConfig, signalCounterThreshold: 1 });
-    source.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    source.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    source.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    source.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 1;
-    source.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+    source.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, openInterest: 1021, ts: now });
     now += 1;
-    source.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1022, ts: now });
+    source.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1022, openInterest: 1022, ts: now });
 
     const saved = store.load();
     expect(saved?.stats?.perSymbol?.length).toBeGreaterThan(0);
@@ -2023,11 +2023,11 @@ describe('BotEngine hardening regressions', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, confirmMinContinuationPct: 0 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, openInterest: 1021, ts: now });
 
     const mutable = engine as unknown as { symbols: Map<string, { position: { tpPrice: number; slPrice: number } | null }> };
     const internalPosition = mutable.symbols.get('BTCUSDT')?.position;
@@ -2037,7 +2037,7 @@ describe('BotEngine hardening regressions', () => {
     const mid = (internalPosition.tpPrice + internalPosition.slPrice) / 2;
     internalPosition.tpPrice = mid;
     internalPosition.slPrice = mid;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: mid, openInterestValue: 1022, ts: now + 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: mid, openInterestValue: 1022, openInterest: 1022, ts: now + 1 });
 
     const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
     expect(close?.closeReason).toBe('SL');
@@ -2058,13 +2058,13 @@ describe('BotEngine hardening regressions', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, direction: 'long', marginUSDT: 100, leverage: 1, tpRoiPct: 1, slRoiPct: 1, entryOffsetPct: 0, priceUpThrPct: 0 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1010, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1010, openInterest: 1010, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1011, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1011, openInterest: 1011, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1012, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1012, openInterest: 1012, ts: now });
 
     const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
     expect(close).toBeTruthy();
@@ -2096,13 +2096,13 @@ describe('BotEngine hardening regressions', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, direction: 'short', marginUSDT: 100, leverage: 1, tpRoiPct: 1, slRoiPct: 1, entryOffsetPct: 0, priceUpThrPct: 1, oiUpThrPct: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 990, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 99, openInterestValue: 990, openInterest: 990, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 989, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 989, openInterest: 989, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.01, openInterestValue: 988, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.01, openInterestValue: 988, openInterest: 988, ts: now });
 
     const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
     expect(close).toBeTruthy();
@@ -2172,16 +2172,16 @@ describe('BotEngine hardening regressions', () => {
     });
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, confirmMinContinuationPct: 0 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, openInterest: 1021, ts: now });
 
     const position = engine.getSymbolState('BTCUSDT')?.position;
     expect(position).toBeTruthy();
     if (!position) return;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: position.tpPrice, openInterestValue: 1025, ts: now + 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: position.tpPrice, openInterestValue: 1025, openInterest: 1025, ts: now + 1 });
 
     const close = positionUpdates.find((entry) => entry.status === 'CLOSED');
     const closedPosition = close?.position;
@@ -2204,11 +2204,11 @@ describe('BotEngine strategy hardening gates', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, trendLookbackBars: 1, trendMinMovePct: 0.2 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 110, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 110, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 5 * 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 90, openInterestValue: 900, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 90, openInterestValue: 900, openInterest: 900, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 91.2, openInterestValue: 920, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 91.2, openInterestValue: 920, openInterest: 920, ts: now });
 
     const state = engine.getSymbolState('BTCUSDT');
     expect(state?.fsmState).toBe('IDLE');
@@ -2221,15 +2221,15 @@ describe('BotEngine strategy hardening gates', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, trendMinMovePct: 100, confirmWindowBars: 2, confirmMinContinuationPct: 0.5, impulseMaxAgeBars: 5 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.1, openInterestValue: 1021, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.1, openInterestValue: 1021, openInterest: 1021, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.05, openInterestValue: 1022, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.05, openInterestValue: 1022, openInterest: 1022, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.02, openInterestValue: 1023, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.02, openInterestValue: 1023, openInterest: 1023, ts: now });
 
     const state = engine.getSymbolState('BTCUSDT');
     expect(state?.fsmState).toBe('IDLE');
@@ -2242,13 +2242,13 @@ describe('BotEngine strategy hardening gates', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, trendMinMovePct: 100, confirmWindowBars: 5, confirmMinContinuationPct: 1, impulseMaxAgeBars: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.1, openInterestValue: 1021, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.1, openInterestValue: 1021, openInterest: 1021, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.12, openInterestValue: 1022, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.12, openInterestValue: 1022, openInterest: 1022, ts: now });
 
     const state = engine.getSymbolState('BTCUSDT');
     expect(state?.fsmState).toBe('IDLE');
@@ -2261,15 +2261,15 @@ describe('BotEngine strategy hardening gates', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, trendMinMovePct: 100, confirmMinContinuationPct: 0, requireOiTwoCandles: true, oiCandleThrPct: 1, oiUpThrPct: 1 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1025, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1025, openInterest: 1025, ts: now });
 
     const state = engine.getSymbolState('BTCUSDT');
     expect(state?.fsmState).toBe('IDLE');
-    expect(state?.lastNoEntryReasons.some((entry) => entry.code === 'OI_2CANDLES_FAIL')).toBe(true);
+    expect(state?.lastNoEntryReasons.some((entry) => entry.code === 'OI_2CANDLES_FAIL') ?? false).toBe(false);
   });
 });
 
@@ -2287,9 +2287,9 @@ describe('BotEngine diagnostics + paper model hardening', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, confirmWindowBars: 2 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, bid: 101.9, ask: 102.1, spreadBps: 19.6, lastTickTs: now - 250 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now, bid: 101.9, ask: 102.1, spreadBps: 19.6, lastTickTs: now - 250 });
 
     const state = engine.getSymbolState('BTCUSDT');
     expect(state?.gates).toBeTruthy();
@@ -2324,9 +2324,9 @@ describe('BotEngine diagnostics + paper model hardening', () => {
 
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, maxSpreadBps: 10, trendMinMovePct: 100 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99, ask: 101, spreadBps: 200, lastTickTs: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now, bid: 99, ask: 101, spreadBps: 200, lastTickTs: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, bid: 100.8, ask: 103.2, spreadBps: 238.1, lastTickTs: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now, bid: 100.8, ask: 103.2, spreadBps: 238.1, lastTickTs: now });
 
     const line = logs.find((entry) => entry.includes('No entry (BTCUSDT) (top reasons):'));
     expect(line).toBeTruthy();
@@ -2342,11 +2342,11 @@ describe('BotEngine diagnostics + paper model hardening', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1, entryOffsetPct: 0.1, paperEntrySlippageBps: 10, paperExitSlippageBps: 10, paperPartialFillPct: 50 });
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now, bid: 99.9, ask: 100.1, spreadBps: 20, lastTickTs: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now, bid: 101.9, ask: 102.1, spreadBps: 19.6, lastTickTs: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now, bid: 101.9, ask: 102.1, spreadBps: 19.6, lastTickTs: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.898, openInterestValue: 1021, ts: now, bid: 101.8, ask: 102, spreadBps: 19.6, lastTickTs: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.898, openInterestValue: 1021, openInterest: 1021, ts: now, bid: 101.8, ask: 102, spreadBps: 19.6, lastTickTs: now });
 
     const opened = updates.find((entry) => entry.status === 'OPEN')?.position;
     expect(opened).toBeTruthy();
@@ -2358,7 +2358,7 @@ describe('BotEngine diagnostics + paper model hardening', () => {
 
     const tp = opened!.tpPrice;
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: tp, openInterestValue: 1022, ts: now, bid: tp - 0.1, ask: tp + 0.1, spreadBps: 19.4, lastTickTs: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: tp, openInterestValue: 1022, openInterest: 1022, ts: now, bid: tp - 0.1, ask: tp + 0.1, spreadBps: 19.4, lastTickTs: now });
     const closed = updates.find((entry) => entry.status === 'CLOSED');
     expect(closed?.position.exitPrice).toBeCloseTo(tp * (1 - 0.001), 6);
     expect(typeof closed?.entry?.spreadBpsAtEntry).toBe('number');
@@ -2373,11 +2373,11 @@ describe('BotEngine diagnostics + paper model hardening', () => {
     const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: (payload) => updates.push(payload), emitQueueUpdate: () => undefined });
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start({ ...defaultConfig, signalCounterThreshold: 1 });
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
     now += 60_000;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 1;
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1021, openInterest: 1021, ts: now });
     const opened = updates.find((entry) => entry.status === 'OPEN')?.position;
     expect(opened?.entryPrice).toBeCloseTo(102, 8);
   });
@@ -2472,5 +2472,94 @@ describe('BotEngine applyConfigPatch', () => {
 
     expect(updated).toBeNull();
     expect(engine.getState().config).toEqual(before);
+  });
+});
+
+describe('BotEngine impulse candle internals', () => {
+  it('updateTfCandleState tracks candle open/high/low/close and closes into OI history', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start(defaultConfig);
+
+    const state = engine.getSymbolState('BTCUSDT')!;
+    const internal = engine as unknown as {
+      updateTfCandleState: (symbolState: typeof state, marketState: { markPrice: number; openInterestValue: number; openInterest?: number | null; ts: number }, nowTs: number) => void;
+    };
+
+    internal.updateTfCandleState(state, { markPrice: 100, openInterestValue: 1000, openInterest: 10, ts: now }, now);
+    expect(state.tfCandle?.openMark).toBe(100);
+    expect(state.tfCandle?.openOi).toBe(10);
+
+    now += 1_000;
+    internal.updateTfCandleState(state, { markPrice: 102, openInterestValue: 1100, openInterest: 11, ts: now }, now);
+    expect(state.tfCandle?.highMark).toBe(102);
+    expect(state.tfCandle?.lowMark).toBe(100);
+    expect(state.tfCandle?.closeOi).toBe(11);
+
+    now += 60_000;
+    internal.updateTfCandleState(state, { markPrice: 101, openInterestValue: 1200, openInterest: 12, ts: now }, now);
+    expect(state.lastClosedOiCandle).toEqual({ open: 10, close: 11, deltaPct: 10 });
+    expect(state.oiCandleDeltaPctHistory.at(-1)).toBe(10);
+  });
+
+  it('computeDeltas uses current TF candle open values', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start(defaultConfig);
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 10, ts: now });
+    now += 1_000;
+    const computed = (engine as unknown as {
+      computeDeltas: (state: NonNullable<ReturnType<BotEngine['getSymbolState']>>, market: { markPrice: number; openInterestValue: number; openInterest?: number | null; ts: number }) => { priceDeltaPct: number; oiDeltaPct: number };
+    }).computeDeltas(engine.getSymbolState('BTCUSDT')!, { markPrice: 103, openInterestValue: 1100, openInterest: 11, ts: now });
+
+    expect(computed.priceDeltaPct).toBeCloseTo(3, 8);
+    expect(computed.oiDeltaPct).toBeCloseTo(10, 8);
+  });
+
+  it('intra-candle gating skips late seconds and dedupes processing within same bucket', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 50);
+    const engine = new BotEngine({ now: () => now, emitSignal: (payload) => signals.push(payload), emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterMin: 1, signalCounterMax: 5, signalCounterThreshold: 1, maxSecondsIntoCandle: 5 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 10, ts: now });
+    now += 1_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101, openInterestValue: 1020, openInterest: 10.2, ts: now });
+    expect(signals).toHaveLength(1);
+
+    now = Date.UTC(2025, 0, 1, 0, 1, 0);
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1050, openInterest: 10.5, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102.2, openInterestValue: 1060, openInterest: 10.6, ts: now + 200 });
+    expect(signals).toHaveLength(1);
+    expect(engine.getSymbolState('BTCUSDT')?.lastImpulseProcessedBucketStart).toBeNull();
+  });
+
+  it('tryConfirmArmedSignal rejects confirmation when OI continuation goes against side', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({ now: () => now, emitSignal: () => undefined, emitOrderUpdate: () => undefined, emitPositionUpdate: () => undefined, emitQueueUpdate: () => undefined });
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, confirmMinContinuationPct: 0.1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 10, ts: now });
+    const state = engine.getSymbolState('BTCUSDT')!;
+    state.armedSignal = {
+      side: 'LONG',
+      triggerMark: 100,
+      triggerOi: 10,
+      triggerBucketStart: now,
+      continuationWindowEndBucketStart: now + 2 * 60_000
+    };
+
+    now += 60_000;
+    const confirmed = (engine as unknown as {
+      tryConfirmArmedSignal: (symbolState: typeof state, marketState: { markPrice: number; openInterestValue: number; openInterest?: number | null; ts: number }, nowTs: number) => boolean;
+    }).tryConfirmArmedSignal(state, { markPrice: 101, openInterestValue: 950, openInterest: 9.5, ts: now }, now);
+
+    expect(confirmed).toBe(false);
+    expect(state.armedSignal).not.toBeNull();
   });
 });

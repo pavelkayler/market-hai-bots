@@ -155,9 +155,10 @@ Spread (`spreadBpsAtEntry`, `spreadBpsAtExit`) and slippage (`slippageUSDT`, `sl
   - `FLAT` allows both sides.
 - `confirmWindowBars`: continuation window after trigger (`1..5`).
 - `confirmMinContinuationPct`: required continuation from trigger mark.
+- OI continuation at confirm stage must not move against side (LONG OI >= trigger OI, SHORT OI <= trigger OI).
 - `impulseMaxAgeBars`: rejects stale impulses that survive too long without follow-through.
 - `requireOiTwoCandles`: sign-aware by entry reason: LONG_CONTINUATION and SHORT_DIVERGENCE require both OI candle deltas `>= oiCandleThrPct`; SHORT_CONTINUATION requires both `<= -oiCandleThrPct`.
-- `maxSecondsIntoCandle`: keeps very-late impulse triggers out (especially on 1m).
+- `maxSecondsIntoCandle`: impulse evaluation runs intra-candle and only during early seconds; late-in-candle impulses are skipped.
 - `minNotionalUSDT`: block tiny entries in paper/demo.
 - `maxSpreadBps`: max allowed spread in **bps** for new entries. Example: `35` means `0.35%` max spread.
 - `maxTickStalenessMs`: max age (ms) of latest ticker update before blocking new entries (`TICK_STALE`).
@@ -326,7 +327,7 @@ If an invariant is violated, v1 safe fallback is applied: symbol is logged and r
    - Stop and verify `running=false`.
 3. **Orders / Positions / Phase table**
    - Trigger a confirmed signal and verify `ENTRY_PENDING` appears with entry reason label.
-   - Verify signal-phase rows show previous-candle/current mark+OI deltas (not run baseline deltas).
+   - Verify signal-phase rows show current-TF-candle OPEN→now mark+OI deltas (not run baseline deltas).
    - Verify order-phase rows show side/limit/qty/expires/status (queued/sent).
    - Verify fill transitions to `POSITION_OPEN` with entry/tp/sl/qty.
    - Verify close returns symbol to `IDLE` and `lastClosed` includes net + fees fields.

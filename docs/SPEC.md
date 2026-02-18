@@ -23,7 +23,7 @@ On refresh: `universe = filteredNew ∪ activeSymbols`.
 
 ## Market data
 - Use **mark price everywhere** for calculations, paper fill, TP/SL.
-- OI metric is **openInterestValue** (USDT).
+- OI metric for signals prefers contracts **openInterest** when present; otherwise falls back to `openInterestValue / markPrice` (legacy fallback: raw `openInterestValue`).
 
 ## Direction modes
 `long | short | both`. In `both`: **SHORT priority** on conflict.
@@ -42,7 +42,7 @@ Short:
 - `priceDeltaPct < 0`
 - `oiDeltaPct < 0` (no magnitude threshold)
 
-Signal confirmation is counter-based: `signalCounterThreshold` (default 2) qualifying signals in a rolling 24h per symbol window.
+Signal confirmation is counter-based: `signalCounterThreshold` (default 2) qualifying signals in a rolling 24h per symbol window. Confirm stage also requires OI continuation not moving against side (LONG: OI non-negative move, SHORT: OI non-positive move).
 - Counter increments only on qualifying SIGNAL events.
 - Dedupe: max one increment per symbol per TF candle bucket (UTC).
 
@@ -55,7 +55,9 @@ User chooses `tf` ∈ {1,3,5}.
 - One active order or position per symbol.
 - Manual cancel in UI.
 - Auto-cancel entry after 1 hour if not filled.
-- After cancel/close: baseline state is reset to current mark & OI value for lifecycle compatibility (trigger calculations still use previous TF candle values).
+- After cancel/close: baseline state is reset to current mark & OI value for lifecycle compatibility.
+- Impulse deltas are computed from the OPEN of the current TF candle and evaluated intra-candle in early seconds (`maxSecondsIntoCandle`), not only at TF boundary.
+- Each symbol processes at most one impulse attempt per TF bucket.
 
 ## Execution
 Paper:
