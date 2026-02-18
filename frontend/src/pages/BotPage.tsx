@@ -1,24 +1,36 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
+import { Alert, Badge, Button, Card, Col, Form, Row, Tab, Table, Tabs } from 'react-bootstrap';
 
-import { clearUniverse, createUniverse, killBot, pauseBot, refreshUniverse, resetBotStats, resumeBot, startBot, stopBot } from '../api';
-import type { BotSettings, BotState, SymbolUpdatePayload, UniverseState } from '../types';
+import { clearUniverse, createUniverse, getBotStats, killBot, refreshUniverse, resetBotStats, startBot, stopBot } from '../api';
+import { useSort } from '../hooks/useSort';
+import type { BotSettings, BotState, BotStats, BotPerSymbolStats, SymbolUpdatePayload, UniverseState } from '../types';
 import { formatDuration } from '../utils/time';
 
 type LogLine = { ts: number; text: string };
 type Props = {
   botState: BotState;
-  setBotState: React.Dispatch<React.SetStateAction<BotState>>;
   universeState: UniverseState;
-  setUniverseState: React.Dispatch<React.SetStateAction<UniverseState>>;
   symbolMap: Record<string, SymbolUpdatePayload>;
-  setSymbolMap: React.Dispatch<React.SetStateAction<Record<string, SymbolUpdatePayload>>>;
   logs: LogLine[];
   syncRest: () => Promise<void>;
   symbolUpdatesPerSecond: number;
 };
 
 type MinimalSettings = Pick<BotSettings, 'tf' | 'priceUpThrPct' | 'oiUpThrPct' | 'signalCounterMin' | 'signalCounterMax'>;
+
+type PerSymbolResultsRow = {
+  symbol: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  winrate: number;
+  longs: number;
+  shorts: number;
+  pnlUSDT: number | null;
+  avgWinUSDT: number | null;
+  avgLossUSDT: number | null;
+  lastTradeAt: number | null;
+};
 
 const SETTINGS_KEY = 'bot.settings.v2';
 const defaultSettings: MinimalSettings = { tf: 1, priceUpThrPct: 0.5, oiUpThrPct: 3, signalCounterMin: 2, signalCounterMax: 3 };
@@ -41,16 +53,47 @@ const toHuman = (ms?: number | null) => {
   return `${min}m ${sec}s`;
 };
 
+function toPerSymbolRows(stats: BotStats | null): PerSymbolResultsRow[] {
+  const perSymbol = stats?.perSymbol ?? [];
+  return perSymbol.map((row: BotPerSymbolStats) => ({
+    symbol: row.symbol,
+    trades: row.trades,
+    wins: row.wins,
+    losses: row.losses,
+    winrate: Number.isFinite(row.winratePct) ? row.winratePct : row.trades > 0 ? (row.wins / row.trades) * 100 : 0,
+    longs: row.longTrades,
+    shorts: row.shortTrades,
+    pnlUSDT: Number.isFinite(row.pnlUSDT) ? row.pnlUSDT : null,
+    avgWinUSDT: null,
+    avgLossUSDT: null,
+    lastTradeAt: row.lastClosedTs ?? null
+  }));
+}
+
 export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUpdatesPerSecond }: Props) {
   const [settings, setSettings] = useState<MinimalSettings>(loadSettings());
   const [minVolPct, setMinVolPct] = useState(10);
   const [minTurnover, setMinTurnover] = useState(10_000_000);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [stats, setStats] = useState<BotStats | null>(null);
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
+
+  const refreshStats = async () => {
+    try {
+      const response = await getBotStats();
+      setStats(response.stats);
+    } catch {
+      // no-op
+    }
+  };
+
+  useEffect(() => {
+    void refreshStats();
+  }, []);
 
   const symbolRows = useMemo(() => {
     const contractSymbols = botState.symbols ?? [];
@@ -91,6 +134,13 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
     });
   }, [botState.symbols, botState.activeSymbolDiagnostics, symbolMap]);
 
+  const perSymbolRows = useMemo(() => toPerSymbolRows(stats), [stats]);
+  const { sortedRows: sortedPerSymbolRows, sortState, setSortKey } = useSort<PerSymbolResultsRow>(
+    perSymbolRows,
+    { key: 'symbol', dir: 'asc' },
+    { tableId: 'bot-per-symbol-results' }
+  );
+
   const onStart = async () => {
     setError('');
     setStatus('');
@@ -106,9 +156,57 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
       } as unknown as BotSettings);
       setStatus('Bot started');
       await syncRest();
+      await refreshStats();
     } catch (e) {
       setError((e as Error).message);
     }
+  };
+
+  const onStop = async () => {
+    setError('');
+    setStatus('');
+    try {
+      await stopBot();
+      setStatus('Bot stopped');
+      await syncRest();
+      await refreshStats();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const onKill = async () => {
+    setError('');
+    setStatus('');
+    try {
+      await killBot();
+      setStatus('Bot killed');
+      await syncRest();
+      await refreshStats();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const onReset = async () => {
+    setError('');
+    setStatus('');
+    try {
+      await resetBotStats();
+      setStatus('Stats reset');
+      await syncRest();
+      await refreshStats();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const isStopped = !botState.running;
+  const canKill = botState.running || botState.activeOrders > 0 || botState.openPositions > 0;
+
+  const renderSortMarker = (key: keyof PerSymbolResultsRow) => {
+    if (sortState?.key !== key) return null;
+    return sortState.dir === 'asc' ? ' ▲' : ' ▼';
   };
 
   return (
@@ -116,67 +214,124 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
       {status ? <Alert variant="success">{status}</Alert> : null}
       {error ? <Alert variant="danger">{error}</Alert> : null}
 
-      <Card><Card.Body>
-        <Row className="g-2">
-          <Col md={8}><strong>Lifecycle:</strong> {botState.running ? (botState.paused ? 'PAUSED' : 'RUNNING') : 'STOPPED'} · uptime {formatDuration(botState.uptimeMs)}</Col>
-          <Col md={4} className="text-md-end"><strong>Symbol updates/sec:</strong> {symbolUpdatesPerSecond}</Col>
-        </Row>
-        <div className="mt-2 d-flex gap-2 flex-wrap">
-          <Button size="sm" onClick={() => void onStart()} disabled={botState.running}>Start</Button>
-          <Button size="sm" variant="outline-secondary" onClick={() => void pauseBot().then(syncRest)}>Pause</Button>
-          <Button size="sm" variant="outline-secondary" onClick={() => void resumeBot().then(syncRest)}>Resume</Button>
-          <Button size="sm" variant="outline-warning" onClick={() => void stopBot().then(syncRest)}>Stop</Button>
-          <Button size="sm" variant="danger" onClick={() => void killBot().then(syncRest)}>KILL</Button>
-          <Button size="sm" variant="outline-dark" onClick={() => void resetBotStats().then(syncRest)}>Reset Stats</Button>
-        </div>
-      </Card.Body></Card>
+      <Tabs defaultActiveKey="dashboard" id="bot-tabs" className="mb-2">
+        <Tab eventKey="dashboard" title="Dashboard">
+          <Card className="mt-3"><Card.Body>
+            <Row className="g-2">
+              <Col md={8}><strong>Lifecycle:</strong> {botState.running ? (botState.paused ? 'PAUSED' : 'RUNNING') : 'STOPPED'} · uptime {formatDuration(botState.uptimeMs)}</Col>
+              <Col md={4} className="text-md-end"><strong>Symbol updates/sec:</strong> {symbolUpdatesPerSecond}</Col>
+            </Row>
+          </Card.Body></Card>
 
-      <Card><Card.Body>
-        <Card.Title>Universe</Card.Title>
-        <Row className="g-2 align-items-end">
-          <Col md={3}><Form.Label>Min Vol %</Form.Label><Form.Control type="number" value={minVolPct} onChange={(e) => setMinVolPct(Number(e.target.value))} /></Col>
-          <Col md={3}><Form.Label>Min Turnover</Form.Label><Form.Control type="number" value={minTurnover} onChange={(e) => setMinTurnover(Number(e.target.value))} /></Col>
-          <Col md="auto"><Button size="sm" onClick={() => void createUniverse(minVolPct, minTurnover).then(syncRest)}>Create</Button></Col>
-          <Col md="auto"><Button size="sm" variant="outline-primary" onClick={() => void refreshUniverse({ minVolPct, minTurnover }).then(syncRest)}>Refresh</Button></Col>
-          <Col md="auto"><Button size="sm" variant="outline-danger" onClick={() => void clearUniverse().then(syncRest)}>Clear</Button></Col>
-        </Row>
-        <div className="small mt-2">Ready: <Badge bg={universeState.ready ? 'success' : 'secondary'}>{String(universeState.ready)}</Badge> · Symbols: {universeState.symbols?.length ?? 0}</div>
-      </Card.Body></Card>
+          <Card className="mt-3"><Card.Body>
+            <Card.Title>Lifecycle</Card.Title>
+            <div className="d-flex gap-2 flex-wrap">
+              <Button size="sm" onClick={() => void onStart()} disabled={botState.running}>Start</Button>
+              <Button size="sm" variant="outline-warning" onClick={() => void onStop()} disabled={!botState.running}>Stop</Button>
+              <Button size="sm" variant="danger" onClick={() => void onKill()} disabled={!canKill}>Kill</Button>
+              <Button size="sm" variant="outline-dark" onClick={() => void onReset()} disabled={!isStopped}>Reset</Button>
+            </div>
+            <div className="small text-muted mt-2">Reset is STOP-only.</div>
+          </Card.Body></Card>
+        </Tab>
 
-      <Card><Card.Body>
-        <Card.Title>Settings (v2)</Card.Title>
-        <Row className="g-2">
-          <Col md={2}><Form.Label>TF</Form.Label><Form.Select value={settings.tf} onChange={(e) => setSettings((s) => ({ ...s, tf: Number(e.target.value) as MinimalSettings['tf'] }))}>{[1,3,5,10,15].map((v)=><option key={v} value={v}>{v}m</option>)}</Form.Select></Col>
-          <Col md={2}><Form.Label>priceUpThrPct</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => setSettings((s) => ({ ...s, priceUpThrPct: Number(e.target.value) }))} /></Col>
-          <Col md={2}><Form.Label>oiUpThrPct</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => setSettings((s) => ({ ...s, oiUpThrPct: Number(e.target.value) }))} /></Col>
-          <Col md={2}><Form.Label>minTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMin} onChange={(e) => setSettings((s) => ({ ...s, signalCounterMin: Number(e.target.value) }))} /></Col>
-          <Col md={2}><Form.Label>maxTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMax} onChange={(e) => setSettings((s) => ({ ...s, signalCounterMax: Number(e.target.value) }))} /></Col>
-        </Row>
-        <div className="small text-muted mt-2">Percent convention: 3 means 3%.</div>
-      </Card.Body></Card>
+        <Tab eventKey="settings" title="Settings">
+          <Card className="mt-3"><Card.Body>
+            <Card.Title>Universe</Card.Title>
+            <Row className="g-2 align-items-end">
+              <Col md={3}><Form.Label>Min Vol %</Form.Label><Form.Control type="number" value={minVolPct} onChange={(e) => setMinVolPct(Number(e.target.value))} /></Col>
+              <Col md={3}><Form.Label>Min Turnover</Form.Label><Form.Control type="number" value={minTurnover} onChange={(e) => setMinTurnover(Number(e.target.value))} /></Col>
+              <Col md="auto"><Button size="sm" onClick={() => void createUniverse(minVolPct, minTurnover).then(syncRest)}>Create</Button></Col>
+              <Col md="auto"><Button size="sm" variant="outline-primary" onClick={() => void refreshUniverse({ minVolPct, minTurnover }).then(syncRest)}>Refresh</Button></Col>
+              <Col md="auto"><Button size="sm" variant="outline-danger" onClick={() => void clearUniverse().then(syncRest)}>Clear</Button></Col>
+            </Row>
+            <div className="small mt-2">Ready: <Badge bg={universeState.ready ? 'success' : 'secondary'}>{String(universeState.ready)}</Badge> · Symbols: {universeState.symbols?.length ?? 0}</div>
+          </Card.Body></Card>
 
-      <Card><Card.Body>
-        <Card.Title>Active symbols</Card.Title>
-        <Table size="sm" striped responsive>
-          <thead><tr><th>Symbol</th><th>Mark</th><th>OIV</th><th>ΔPrice%</th><th>ΔOIV%</th><th>Funding</th><th>Next funding (ETA)</th><th>Tradability</th><th>SignalCount</th><th>LastSignal</th></tr></thead>
-          <tbody>
-            {symbolRows.map((row) => (
-              <tr key={row.symbol}>
-                <td>{row.symbol}</td>
-                <td className="font-monospace">{row.markPrice ?? '—'}</td>
-                <td className="font-monospace">{row.openInterestValue ?? '—'}</td>
-                <td className="font-monospace">{row.priceDeltaPct.toFixed(3)}</td>
-                <td className="font-monospace">{row.oiDeltaPct.toFixed(3)}</td>
-                <td className="font-monospace">{row.fundingRate == null ? <Badge bg="danger">MISSING</Badge> : row.fundingRate}</td>
-                <td className="font-monospace">{row.nextFundingTimeMs ? `${new Date(row.nextFundingTimeMs).toLocaleString()} (${toHuman(row.timeToFundingMs)})` : '—'}</td>
-                <td><Badge bg={row.tradability === 'OK' ? 'success' : row.tradability === 'MISSING' ? 'danger' : 'warning'}>{row.tradability}</Badge></td>
-                <td className="font-monospace">{row.signalCount24h}</td>
-                <td className="font-monospace">{row.lastSignalAtMs ? new Date(row.lastSignalAtMs).toLocaleTimeString() : '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </Table>
-      </Card.Body></Card>
+          <Card className="mt-3"><Card.Body>
+            <Card.Title>Settings (v2)</Card.Title>
+            <Row className="g-2">
+              <Col md={2}><Form.Label>TF</Form.Label><Form.Select value={settings.tf} onChange={(e) => setSettings((s) => ({ ...s, tf: Number(e.target.value) as MinimalSettings['tf'] }))}>{[1,3,5,10,15].map((v)=><option key={v} value={v}>{v}m</option>)}</Form.Select></Col>
+              <Col md={2}><Form.Label>priceUpThrPct</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => setSettings((s) => ({ ...s, priceUpThrPct: Number(e.target.value) }))} /></Col>
+              <Col md={2}><Form.Label>oiUpThrPct</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => setSettings((s) => ({ ...s, oiUpThrPct: Number(e.target.value) }))} /></Col>
+              <Col md={2}><Form.Label>minTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMin} onChange={(e) => setSettings((s) => ({ ...s, signalCounterMin: Number(e.target.value) }))} /></Col>
+              <Col md={2}><Form.Label>maxTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMax} onChange={(e) => setSettings((s) => ({ ...s, signalCounterMax: Number(e.target.value) }))} /></Col>
+            </Row>
+            <div className="small text-muted mt-2">Percent convention: 3 means 3%.</div>
+          </Card.Body></Card>
+        </Tab>
+
+        <Tab eventKey="active-symbols" title="Active symbols">
+          <Card className="mt-3"><Card.Body>
+            <Card.Title>Active symbols</Card.Title>
+            <Table size="sm" striped responsive>
+              <thead><tr><th>Symbol</th><th>Mark</th><th>OIV</th><th>ΔPrice%</th><th>ΔOIV%</th><th>Funding</th><th>Next funding (ETA)</th><th>Tradability</th><th>SignalCount</th><th>LastSignal</th></tr></thead>
+              <tbody>
+                {symbolRows.map((row) => (
+                  <tr key={row.symbol}>
+                    <td>{row.symbol}</td>
+                    <td className="font-monospace">{row.markPrice ?? '—'}</td>
+                    <td className="font-monospace">{row.openInterestValue ?? '—'}</td>
+                    <td className="font-monospace">{row.priceDeltaPct.toFixed(3)}</td>
+                    <td className="font-monospace">{row.oiDeltaPct.toFixed(3)}</td>
+                    <td className="font-monospace">{row.fundingRate == null ? <Badge bg="danger">MISSING</Badge> : row.fundingRate}</td>
+                    <td className="font-monospace">{row.nextFundingTimeMs ? `${new Date(row.nextFundingTimeMs).toLocaleString()} (${toHuman(row.timeToFundingMs)})` : '—'}</td>
+                    <td><Badge bg={row.tradability === 'OK' ? 'success' : row.tradability === 'MISSING' ? 'danger' : 'warning'}>{row.tradability}</Badge></td>
+                    <td className="font-monospace">{row.signalCount24h}</td>
+                    <td className="font-monospace">{row.lastSignalAtMs ? new Date(row.lastSignalAtMs).toLocaleTimeString() : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </Card.Body></Card>
+        </Tab>
+
+        <Tab eventKey="per-symbol-results" title="Per-symbol results">
+          <Card className="mt-3">
+            <Card.Header className="d-flex justify-content-between align-items-center">
+              <span>Per-symbol results</span>
+              <Button size="sm" onClick={() => void refreshStats()}>Refresh</Button>
+            </Card.Header>
+            <Card.Body>
+              <Table size="sm" striped responsive>
+                <thead>
+                  <tr>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('symbol')}>Symbol{renderSortMarker('symbol')}</Button></th>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('trades')}>Trades{renderSortMarker('trades')}</Button></th>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('wins')}>Wins{renderSortMarker('wins')}</Button></th>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('losses')}>Losses{renderSortMarker('losses')}</Button></th>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('winrate')}>Winrate{renderSortMarker('winrate')}</Button></th>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('longs')}>Longs{renderSortMarker('longs')}</Button></th>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('shorts')}>Shorts{renderSortMarker('shorts')}</Button></th>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('pnlUSDT')}>PnL{renderSortMarker('pnlUSDT')}</Button></th>
+                    <th>AvgWin</th>
+                    <th>AvgLoss</th>
+                    <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setSortKey('lastTradeAt')}>LastTradeAt{renderSortMarker('lastTradeAt')}</Button></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedPerSymbolRows.map((row) => (
+                    <tr key={row.symbol}>
+                      <td>{row.symbol}</td>
+                      <td className="font-monospace">{row.trades}</td>
+                      <td className="font-monospace">{row.wins}</td>
+                      <td className="font-monospace">{row.losses}</td>
+                      <td className="font-monospace">{row.winrate.toFixed(2)}%</td>
+                      <td className="font-monospace">{row.longs}</td>
+                      <td className="font-monospace">{row.shorts}</td>
+                      <td className="font-monospace">{row.pnlUSDT === null ? '—' : row.pnlUSDT.toFixed(2)}</td>
+                      <td className="font-monospace">{row.avgWinUSDT === null ? '—' : row.avgWinUSDT.toFixed(2)}</td>
+                      <td className="font-monospace">{row.avgLossUSDT === null ? '—' : row.avgLossUSDT.toFixed(2)}</td>
+                      <td className="font-monospace">{row.lastTradeAt ? new Date(row.lastTradeAt).toLocaleString() : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+              {sortedPerSymbolRows.length === 0 ? <div className="small text-muted">No per-symbol results yet.</div> : null}
+            </Card.Body>
+          </Card>
+        </Tab>
+      </Tabs>
     </div>
   );
 }
