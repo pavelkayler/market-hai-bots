@@ -6,6 +6,7 @@ import { API_BASE, ApiRequestError, WS_URL, getBotState, getHealth, getUniverse,
 import type { BotState, QueueUpdatePayload, SymbolUpdatePayload, SymbolsUpdatePayload, UniverseState, WsConnectionState, WsEnvelope } from './types';
 import { BotPage } from './pages/BotPage';
 import { HomePage } from './pages/HomePage';
+import { DoctorPage } from './pages/DoctorPage';
 
 type LogLine = {
   ts: number;
@@ -333,6 +334,9 @@ export function App() {
             <Nav.Link as={Link} to="/bot">
               Bot
             </Nav.Link>
+            <Nav.Link as={Link} to="/doctor">
+              Doctor
+            </Nav.Link>
           </Nav>
           <span>{connectionBadge}</span>
         </Container>
@@ -372,6 +376,7 @@ export function App() {
               />
             }
           />
+          <Route path="/doctor" element={<DoctorPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Container>

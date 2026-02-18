@@ -1,6 +1,3 @@
-import { access, mkdir, rm, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-
 import { UNIVERSE_CONTRACT_FILTER } from './universeContractFilter.js';
 
 type DoctorStatus = 'PASS' | 'WARN' | 'FAIL';
@@ -54,7 +51,6 @@ type DoctorServiceDeps = {
     lastError: string | null;
   };
   getUniverseState: () => Promise<UniverseStateLike | null>;
-  getDataDir: () => string;
   now?: () => number;
   getVersion?: () => Promise<{ commit?: string; node?: string }>;
 };
@@ -70,20 +66,6 @@ const phaseOf = (state: BotLifecycleState): 'STOPPED' | 'RUNNING' | 'PAUSED' => 
 const computeAgeMs = (state: MarketStateLike, nowMs: number): number => {
   const tickTs = typeof state.lastTickTs === 'number' && Number.isFinite(state.lastTickTs) ? state.lastTickTs : state.ts;
   return Math.max(0, nowMs - tickTs);
-};
-
-const checkWritableDir = async (targetDir: string, nowMs: number): Promise<{ ok: boolean; error?: string }> => {
-  const probeName = `.doctor-${nowMs}-${Math.random().toString(16).slice(2)}.tmp`;
-  const probePath = path.join(targetDir, probeName);
-
-  try {
-    await mkdir(targetDir, { recursive: true });
-    await writeFile(probePath, 'ok', 'utf-8');
-    await rm(probePath, { force: true });
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: (error as Error).message };
-  }
 };
 
 export class DoctorService {
@@ -110,13 +92,6 @@ export class DoctorService {
     } catch (error) {
       checks.push({ id: 'market_age_per_symbol', status: 'WARN', message: 'unable to evaluate market ages' });
       warnings.push(`market_age_per_symbol:${(error as Error).message}`);
-    }
-
-    try {
-      checks.push(await this.buildFilesystemWritableCheck(ts));
-    } catch (error) {
-      checks.push({ id: 'filesystem_writable', status: 'FAIL', message: 'filesystem writable check failed unexpectedly' });
-      warnings.push(`filesystem_writable:${(error as Error).message}`);
     }
 
     try {
@@ -223,33 +198,6 @@ export class DoctorService {
         scannedSymbols: symbols.length,
         worst
       }
-    };
-  }
-
-  private async buildFilesystemWritableCheck(nowMs: number): Promise<DoctorCheck> {
-    const dataDir = this.deps.getDataDir();
-
-    try {
-      await access(dataDir);
-    } catch {
-      // continue with mkdir/write probe
-    }
-
-    const probe = await checkWritableDir(dataDir, nowMs);
-    if (!probe.ok) {
-      return {
-        id: 'filesystem_writable',
-        status: 'FAIL',
-        message: 'data directory is not writable',
-        details: { dataDir, error: probe.error }
-      };
-    }
-
-    return {
-      id: 'filesystem_writable',
-      status: 'PASS',
-      message: 'data directory writable',
-      details: { dataDir }
     };
   }
 

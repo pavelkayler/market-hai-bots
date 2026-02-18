@@ -1,7 +1,7 @@
 export type BotMode = 'paper' | 'demo';
 export type BotDirection = 'long' | 'short' | 'both';
 export type BothTieBreak = 'shortPriority' | 'longPriority' | 'strongerSignal';
-export type BotTf = 1 | 3 | 5;
+export type BotTf = 1 | 3 | 5 | 10 | 15;
 export type StrategyMode = 'IMPULSE' | 'PUMP_DUMP_2ND_TRIGGER';
 export type AutoTuneScope = 'GLOBAL' | 'UNIVERSE_ONLY';
 export type EntryReason = 'LONG_CONTINUATION' | 'SHORT_CONTINUATION' | 'SHORT_DIVERGENCE';
@@ -97,9 +97,13 @@ export type BotState = {
   activeSymbolDiagnostics?: Array<{
     symbol: string;
     signalCount24h: number;
-    signalCounterThreshold: number;
-    signalConfirmed: boolean;
-    lastSignalAt?: number;
+    minTriggerCount?: number;
+    maxTriggerCount?: number;
+    lastSignalAt?: number | null;
+    fundingRate?: number | null;
+    nextFundingTimeMs?: number | null;
+    timeToFundingMs?: number | null;
+    tradingAllowed?: 'OK' | 'BLACKOUT' | 'COOLDOWN' | 'MISSING';
   }>;
 };
 

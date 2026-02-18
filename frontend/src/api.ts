@@ -1,4 +1,4 @@
-import type { AutoTuneApplied, AutoTuneRuntimeState, BotSettings, BotState, BotStats, DoctorReport, DoctorResponseLegacy, JournalEntry, ProfilesState, ReplaySpeed, ReplayState, RunEvent, RunSummary, UniverseState } from './types';
+import type { BotSettings, BotState, BotStats, DoctorReport, DoctorResponseLegacy, JournalEntry, ProfilesState, UniverseState } from './types';
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8080';
 
@@ -42,258 +42,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export async function getHealth(): Promise<{ ok: boolean }> {
-  return request('/health');
-}
+export async function getHealth(): Promise<{ ok: boolean }> { return request('/health'); }
+export async function getUniverse(): Promise<UniverseState> { return request('/api/universe'); }
+export async function createUniverse(minVolPct: number, minTurnover: number): Promise<unknown> { return request('/api/universe/create', { method: 'POST', body: JSON.stringify({ minVolPct, minTurnover }) }); }
+export async function refreshUniverse(filters?: { minVolPct?: number; minTurnover?: number }): Promise<unknown> { return request('/api/universe/refresh', { method: 'POST', body: JSON.stringify(filters ?? {}) }); }
+export async function clearUniverse(): Promise<{ ok: boolean }> { return request('/api/universe/clear', { method: 'POST', body: JSON.stringify({}) }); }
+export async function getBotState(): Promise<BotState> { return request('/api/bot/state'); }
+export async function getUniverseExclusions(): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions'); }
+export async function addUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions/add', { method: 'POST', body: JSON.stringify({ symbol }) }); }
+export async function removeUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions/remove', { method: 'POST', body: JSON.stringify({ symbol }) }); }
+export async function getBotStats(): Promise<{ ok: true; stats: BotStats }> { return request('/api/bot/stats'); }
+export async function killBot(): Promise<{ ok: true; cancelledOrders: number; closedPositions: number; warning: string | null; activeOrdersRemaining: number; openPositionsRemaining: number }> { return request('/api/bot/kill', { method: 'POST', body: JSON.stringify({}) }); }
+export async function resetBotStats(): Promise<{ ok: true }> { return request('/api/bot/stats/reset', { method: 'POST', body: JSON.stringify({}) }); }
+export async function resetAllRuntimeTables(): Promise<{ ok: true; cleared: { stats: boolean; journal: boolean; runtime: boolean; exclusions: boolean; universe: boolean; replay: boolean } }> { return request('/api/bot/clearAllTables', { method: 'POST', body: JSON.stringify({}) }); }
+export async function startBot(settings?: BotSettings | null): Promise<unknown> { return request('/api/bot/start', { method: 'POST', body: JSON.stringify(settings ?? null) }); }
+export async function stopBot(): Promise<unknown> { return request('/api/bot/stop', { method: 'POST', body: JSON.stringify({}) }); }
+export async function pauseBot(): Promise<unknown> { return request('/api/bot/pause', { method: 'POST', body: JSON.stringify({}) }); }
+export async function resumeBot(): Promise<unknown> { return request('/api/bot/resume', { method: 'POST', body: JSON.stringify({}) }); }
+export async function cancelOrder(symbol: string): Promise<{ ok: boolean }> { return request('/api/orders/cancel', { method: 'POST', body: JSON.stringify({ symbol }) }); }
 
-export async function getUniverse(): Promise<UniverseState> {
-  return request('/api/universe');
-}
+export async function getJournalTail(limit: number): Promise<{ ok: boolean; entries: JournalEntry[] }> { return request(`/api/journal/tail?limit=${limit}`); }
+export async function clearJournal(): Promise<{ ok: boolean }> { return request('/api/journal/clear', { method: 'POST', body: JSON.stringify({}) }); }
 
-export async function createUniverse(minVolPct: number, minTurnover: number): Promise<unknown> {
-  return request('/api/universe/create', {
-    method: 'POST',
-    body: JSON.stringify({ minVolPct, minTurnover })
-  });
-}
-
-export async function refreshUniverse(filters?: { minVolPct?: number; minTurnover?: number }): Promise<unknown> {
-  return request('/api/universe/refresh', {
-    method: 'POST',
-    body: JSON.stringify(filters ?? {})
-  });
-}
-
-export async function clearUniverse(): Promise<{ ok: boolean }> {
-  return request('/api/universe/clear', { method: 'POST', body: JSON.stringify({}) });
-}
-
-export async function getBotState(): Promise<BotState> {
-  return request('/api/bot/state');
-}
-
-
-export async function getUniverseExclusions(): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> {
-  return request('/api/universe/exclusions');
-}
-
-export async function addUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> {
-  return request('/api/universe/exclusions/add', {
-    method: 'POST',
-    body: JSON.stringify({ symbol })
-  });
-}
-
-export async function removeUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> {
-  return request('/api/universe/exclusions/remove', {
-    method: 'POST',
-    body: JSON.stringify({ symbol })
-  });
-}
-
-export async function getBotStats(): Promise<{ ok: true; stats: BotStats }> {
-  return request('/api/bot/stats');
-}
-
-
-export async function killBot(): Promise<{ ok: true; cancelledOrders: number; closedPositions: number; warning: string | null; activeOrdersRemaining: number; openPositionsRemaining: number }> {
-  return request('/api/bot/kill', { method: 'POST', body: JSON.stringify({}) });
-}
-
-export async function getBotGuardrails(): Promise<{ ok: true; guardrails: Pick<BotSettings, 'maxActiveSymbols' | 'dailyLossLimitUSDT' | 'maxConsecutiveLosses'> }> {
-  return request('/api/bot/guardrails');
-}
-
-export async function resetBotStats(): Promise<{ ok: true }> {
-  return request('/api/bot/stats/reset', { method: 'POST', body: JSON.stringify({}) });
-}
-
-
-export async function resetAllRuntimeTables(): Promise<{ ok: true; cleared: { stats: boolean; journal: boolean; runtime: boolean; exclusions: boolean; universe: boolean; replay: boolean } }> {
-  return request('/api/bot/clearAllTables', { method: 'POST', body: JSON.stringify({}) });
-}
-
-export async function startBot(settings?: BotSettings | null): Promise<unknown> {
-  return request('/api/bot/start', { method: 'POST', body: JSON.stringify(settings ?? null) });
-}
-
-export async function stopBot(): Promise<unknown> {
-  return request('/api/bot/stop', { method: 'POST', body: JSON.stringify({}) });
-}
-
-export async function pauseBot(): Promise<unknown> {
-  return request('/api/bot/pause', { method: 'POST', body: JSON.stringify({}) });
-}
-
-export async function resumeBot(): Promise<unknown> {
-  return request('/api/bot/resume', { method: 'POST', body: JSON.stringify({}) });
-}
-
-export async function cancelOrder(symbol: string): Promise<{ ok: boolean }> {
-  return request('/api/orders/cancel', { method: 'POST', body: JSON.stringify({ symbol }) });
-}
-
-export async function downloadUniverseJson(): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/api/universe/download`);
-  if (!response.ok) {
-    const body = (await response.json()) as { error?: string };
-    throw new ApiRequestError(body.error ?? `HTTP ${response.status}`, body.error);
-  }
-
-  return response.blob();
-}
-
-export async function startRecording(topN: number, fileName: string): Promise<{ ok: boolean; path: string; startedAt: number }> {
-  return request('/api/replay/record/start', {
-    method: 'POST',
-    body: JSON.stringify({ topN, fileName })
-  });
-}
-
-export async function stopRecording(): Promise<{ ok: boolean; stoppedAt: number; recordsWritten: number }> {
-  return request('/api/replay/record/stop', {
-    method: 'POST',
-    body: JSON.stringify({})
-  });
-}
-
-export async function startReplay(fileName: string, speed: ReplaySpeed): Promise<{ ok: boolean; startedAt: number }> {
-  return request('/api/replay/start', {
-    method: 'POST',
-    body: JSON.stringify({ fileName, speed })
-  });
-}
-
-export async function stopReplay(): Promise<{ ok: boolean; stoppedAt: number }> {
-  return request('/api/replay/stop', {
-    method: 'POST',
-    body: JSON.stringify({})
-  });
-}
-
-export async function getReplayState(): Promise<ReplayState> {
-  return request('/api/replay/state');
-}
-
-export async function getReplayFiles(): Promise<{ ok: boolean; files: string[] }> {
-  return request('/api/replay/files');
-}
-
-
-export async function getJournalTail(limit: number): Promise<{ ok: boolean; entries: JournalEntry[] }> {
-  return request(`/api/journal/tail?limit=${limit}`);
-}
-
-export async function clearJournal(): Promise<{ ok: boolean }> {
-  return request('/api/journal/clear', { method: 'POST', body: JSON.stringify({}) });
-}
-
-export async function downloadJournal(format: 'ndjson' | 'json' | 'csv'): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/api/journal/download?format=${format}`);
-  if (!response.ok) {
-    const body = (await response.json()) as { error?: string };
-    throw new ApiRequestError(body.error ?? `HTTP ${response.status}`, body.error);
-  }
-
-  return response.blob();
-}
-
-
-export async function exportPack(): Promise<{ blob: Blob; fileName: string; includedFiles: string[] }> {
-  const response = await fetch(`${API_BASE}/api/export/pack`);
-  if (!response.ok) {
-    let message = `HTTP ${response.status}`;
-    let code: string | undefined;
-    try {
-      const body = (await response.json()) as { error?: string | { code?: string; message?: string } };
-      if (typeof body.error === 'string') {
-        message = body.error;
-        code = body.error;
-      } else if (body.error && typeof body.error === 'object') {
-        message = body.error.message ?? body.error.code ?? message;
-        code = body.error.code;
-      }
-    } catch {
-      // non-json error payload
-    }
-
-    throw new ApiRequestError(`${message} (HTTP ${response.status})`, code);
-  }
-
-  const contentDisposition = response.headers.get('Content-Disposition') ?? '';
-  const matched = /filename="?([^";]+)"?/i.exec(contentDisposition);
-  const fileName = matched?.[1] ?? `export-pack-${new Date().toISOString().replaceAll(':', '-')}.zip`;
-  const includedRaw = response.headers.get('X-Export-Included') ?? '';
-  const includedFiles = includedRaw
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-
-  return { blob: await response.blob(), fileName, includedFiles };
-}
-
-export async function getDoctor(): Promise<DoctorReport | DoctorResponseLegacy> {
-  return request('/api/doctor');
-}
-
-export async function getProfiles(): Promise<ProfilesState> {
-  return request('/api/profiles');
-}
-
-export async function getProfile(name: string): Promise<{ ok: true; name: string; config: BotSettings }> {
-  return request(`/api/profiles/${encodeURIComponent(name)}`);
-}
-
-export async function saveProfile(name: string, config: BotSettings): Promise<{ ok: boolean }> {
-  return request(`/api/profiles/${encodeURIComponent(name)}`, {
-    method: 'POST',
-    body: JSON.stringify(config)
-  });
-}
-
-export async function setActiveProfile(name: string): Promise<{ ok: boolean }> {
-  return request(`/api/profiles/${encodeURIComponent(name)}/active`, {
-    method: 'POST',
-    body: JSON.stringify({})
-  });
-}
-
-export async function deleteProfile(name: string): Promise<{ ok: boolean }> {
-  return request(`/api/profiles/${encodeURIComponent(name)}`, {
-    method: 'DELETE'
-  });
-}
-
-export async function downloadProfiles(): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/api/profiles/download`);
-  if (!response.ok) {
-    throw new ApiRequestError(`HTTP ${response.status}`);
-  }
-
-  return response.blob();
-}
-
-export async function uploadProfiles(rawJson: unknown): Promise<{ ok: boolean }> {
-  return request('/api/profiles/upload', {
-    method: 'POST',
-    body: JSON.stringify(rawJson)
-  });
-}
-
-export async function getAutoTuneState(): Promise<{ ok: true; state: AutoTuneRuntimeState }> {
-  return request('/api/autotune/state');
-}
-
-
-export async function getRunsSummary(limit: number): Promise<{ ok: true; runs: RunSummary[] }> {
-  return request(`/api/runs/summary?limit=${limit}`);
-}
-
-export async function getRunEvents(runId: string, limit: number, types: string[] = ['SYSTEM']): Promise<{ ok: true; runId: string; events: RunEvent[]; warnings?: string[] }> {
-  const encodedTypes = encodeURIComponent(types.join(','));
-  return request(`/api/runs/${encodeURIComponent(runId)}/events?limit=${limit}&types=${encodedTypes}`);
-}
-
-export async function getAutoTuneHistory(limit: number): Promise<{ ok: true; items: AutoTuneApplied[] }> {
-  return request(`/api/autotune/history?limit=${limit}`);
-}
+export async function getDoctor(): Promise<DoctorReport | DoctorResponseLegacy> { return request('/api/doctor'); }
+export async function getProfiles(): Promise<ProfilesState> { return request('/api/profiles'); }
+export async function getProfile(name: string): Promise<{ ok: true; name: string; config: BotSettings }> { return request(`/api/profiles/${encodeURIComponent(name)}`); }
+export async function saveProfile(name: string, config: BotSettings): Promise<{ ok: boolean }> { return request(`/api/profiles/${encodeURIComponent(name)}`, { method: 'POST', body: JSON.stringify(config) }); }
+export async function setActiveProfile(name: string): Promise<{ ok: boolean }> { return request(`/api/profiles/${encodeURIComponent(name)}/active`, { method: 'POST', body: JSON.stringify({}) }); }
+export async function deleteProfile(name: string): Promise<{ ok: boolean }> { return request(`/api/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }); }

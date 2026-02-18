@@ -225,7 +225,10 @@ export type SymbolRuntimeState = {
   nextFundingTimeMs?: number | null;
   tradingAllowed?: "OK" | "BLACKOUT" | "COOLDOWN" | "MISSING";
   fundingBlackoutUntilMs?: number | null;
-  fundingActionTs?: number | null;
+  blackoutActionInFlight?: boolean;
+  lastBlackoutActionAtMs?: number | null;
+  lastCloseAttemptAtMs?: number | null;
+  lastCancelAttemptAtMs?: number | null;
   lastSignalAtMs?: number | null;
   lastSignalMskDayKey?: string;
   gates: GateSnapshot | null;
@@ -1429,7 +1432,7 @@ export class BotEngine {
       return;
     }
 
-    if (symbolState.tradingAllowed !== "OK") {
+    if (symbolState.tradingAllowed !== "OK" || symbolState.blackoutActionInFlight) {
       return;
     }
 
@@ -1617,9 +1620,15 @@ export class BotEngine {
     const timeToFunding = nextFunding - nowMs;
     if (timeToFunding < 30 * 60_000 && timeToFunding >= 0) {
       symbolState.tradingAllowed = "BLACKOUT";
-      if (!symbolState.fundingActionTs || nowMs - symbolState.fundingActionTs > 60_000) {
-        symbolState.fundingActionTs = nowMs;
-        void this.closeSymbolExposure(symbolState, marketState);
+      const throttleMs = 10_000;
+      const canAct = !symbolState.blackoutActionInFlight
+        && (!symbolState.lastBlackoutActionAtMs || nowMs - symbolState.lastBlackoutActionAtMs >= throttleMs);
+      if (canAct) {
+        symbolState.blackoutActionInFlight = true;
+        symbolState.lastBlackoutActionAtMs = nowMs;
+        void this.closeSymbolExposure(symbolState, marketState).finally(() => {
+          symbolState.blackoutActionInFlight = false;
+        });
       }
       return;
     }
@@ -1632,15 +1641,19 @@ export class BotEngine {
 
   private async closeSymbolExposure(symbolState: SymbolRuntimeState, marketState: MarketState): Promise<void> {
     if (!this.state.config || this.state.config.mode !== "demo") {
+      symbolState.lastCancelAttemptAtMs = this.now();
       await this.cancelSymbolPendingOrder(symbolState, marketState, "CANCELLED");
       if (symbolState.position) {
+        symbolState.lastCloseAttemptAtMs = this.now();
         symbolState.position = null;
         this.resetToIdle(symbolState);
       }
       return;
     }
     try {
+      symbolState.lastCancelAttemptAtMs = this.now();
       await this.deps.demoTradeClient?.cancelOrder({ symbol: symbolState.symbol });
+      symbolState.lastCloseAttemptAtMs = this.now();
       await this.deps.demoTradeClient?.closePositionMarket({ symbol: symbolState.symbol, side: symbolState.position?.side === "LONG" ? "Sell" : "Buy", qty: String(symbolState.position?.qty ?? 0) });
     } catch {}
   }
@@ -1969,7 +1982,10 @@ export class BotEngine {
       nextFundingTimeMs: null,
       tradingAllowed: "MISSING",
       fundingBlackoutUntilMs: null,
-      fundingActionTs: null,
+      blackoutActionInFlight: false,
+      lastBlackoutActionAtMs: null,
+      lastCloseAttemptAtMs: null,
+      lastCancelAttemptAtMs: null,
       lastSignalAtMs: null,
       lastSignalMskDayKey: "",
       gates: null,
