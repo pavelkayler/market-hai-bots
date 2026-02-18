@@ -1048,8 +1048,8 @@ export function BotPage({
                 <div><strong>Active orders:</strong> {botState.activeOrders}</div>
                 <div><strong>Open positions:</strong> {botState.openPositions}</div>
                 <div><strong>Uptime (active):</strong> {formatDuration(botState.uptimeMs)}</div>
-                <div><strong>Symbol updates/s:</strong> {symbolUpdatesPerSecond.toFixed(2)}</div>
-                <div><strong>Journal age:</strong> {dashboardLatencyMs === null ? '-' : `${dashboardLatencyMs}ms`}</div>
+                <div><strong>Symbol updates/s:</strong> {(botState.symbolUpdatesPerSec ?? symbolUpdatesPerSecond).toFixed(2)}</div>
+                <div><strong>Journal age:</strong> {`${botState.journalAgeMs ?? dashboardLatencyMs ?? 0}ms`}</div>
                 <div><strong>Last event:</strong> {dashboardEntries.length === 0 ? '-' : new Date(dashboardEntries[dashboardEntries.length - 1].ts).toLocaleTimeString()}</div>
               </Col>
             </Row>
@@ -1736,7 +1736,7 @@ export function BotPage({
             </Badge>
             <Badge bg="dark" className="me-2">openPositions: {botState.openPositions}</Badge>
             <Badge bg="primary" className="me-2">universeSymbols: {universeState.symbols?.length ?? 0}</Badge>
-            <Badge bg="light" text="dark">symbolUpdates/s: {symbolUpdatesPerSecond}</Badge>
+            <Badge bg="light" text="dark">symbolUpdates/s: {botState.symbolUpdatesPerSec ?? symbolUpdatesPerSecond}</Badge>
           </Card.Body>
         </Card>
       </Col>

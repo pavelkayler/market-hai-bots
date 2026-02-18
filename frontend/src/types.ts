@@ -66,6 +66,24 @@ export type BotState = {
   queueDepth: number;
   activeOrders: number;
   openPositions: number;
+  symbolUpdatesPerSec?: number;
+  journalAgeMs?: number;
+  openOrders?: Array<{
+    symbol: string;
+    side: 'Buy' | 'Sell';
+    qty: number;
+    limitPrice: number;
+    status: string;
+    orderId: string | null;
+    orderLinkId: string | null;
+  }>;
+  positions?: Array<{
+    symbol: string;
+    side: 'LONG' | 'SHORT';
+    size: number;
+    avgPrice: number;
+    unrealizedPnl: number;
+  }>;
   startedAt?: number | null;
   uptimeMs: number;
   killInProgress?: boolean;

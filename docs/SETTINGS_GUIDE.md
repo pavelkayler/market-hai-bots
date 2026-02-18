@@ -140,6 +140,11 @@ PnL:
 
 Stats and per-symbol performance use **net** PnL.
 
+Trade record required fields (paper/demo close events): `entryPrice`, `exitPrice`, `qty`, `closeReason`, `feesUSDT`, `realizedNetPnlUSDT`.
+
+Close reasons are deterministic and normalized to: `TP`, `SL`, `KILL`, `MANUAL`.
+Spread (`spreadBpsAtEntry`, `spreadBpsAtExit`) and slippage (`slippageUSDT`, `slippageBpsApplied`) are persisted when available.
+
 ## Trend / confirmation hardening (Task 29)
 
 - `trendTfMinutes`: `5 | 15` higher-TF context source.

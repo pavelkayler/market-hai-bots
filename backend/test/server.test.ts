@@ -383,6 +383,10 @@ describe('server routes', () => {
       queueDepth: 0,
       activeOrders: 0,
       openPositions: 0,
+      symbolUpdatesPerSec: 0,
+      journalAgeMs: 0,
+      openOrders: [],
+      positions: [],
       startedAt: null,
       uptimeMs: 0,
       killInProgress: false,
@@ -1543,12 +1547,14 @@ describe('server routes', () => {
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 102, openInterestValue: 1020, ts: now });
 
     const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
-    const payload = response.json() as { queueDepth: number; activeOrders: number; openPositions: number };
+    const payload = response.json() as { queueDepth: number; activeOrders: number; openPositions: number; symbolUpdatesPerSec: number; journalAgeMs: number };
 
     expect(response.statusCode).toBe(200);
     expect(typeof payload.queueDepth).toBe('number');
     expect(typeof payload.activeOrders).toBe('number');
     expect(typeof payload.openPositions).toBe('number');
+    expect(typeof payload.symbolUpdatesPerSec).toBe('number');
+    expect(typeof payload.journalAgeMs).toBe('number');
     expect(payload.activeOrders).toBe(1);
   });
 
@@ -1721,10 +1727,12 @@ describe('server routes', () => {
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 104, openInterestValue: 1040, ts: now });
     stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(stateResponse.json()).toMatchObject({ activeOrders: 1, openPositions: 0 });
+    expect((stateResponse.json() as { openOrders?: unknown[] }).openOrders?.length).toBeGreaterThanOrEqual(1);
 
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 101.85, openInterestValue: 1020, ts: now + 1_000 });
     stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(stateResponse.json()).toMatchObject({ activeOrders: 0, openPositions: 1 });
+    expect((stateResponse.json() as { positions?: unknown[] }).positions?.length).toBeGreaterThanOrEqual(1);
 
     tickerStream.emit({ symbol: 'BTCUSDT', markPrice: 104.6, openInterestValue: 1040, ts: now + 2_000 });
 
