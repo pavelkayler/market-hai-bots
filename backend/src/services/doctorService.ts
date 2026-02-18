@@ -122,65 +122,87 @@ export class DoctorService {
 
   private buildWsFreshnessCheck(nowMs: number): DoctorCheck {
     const marketStates = this.deps.getMarketStates();
-    const tracked = this.deps.getTrackedSymbols();
-    const selectedSymbols = tracked.length > 0 ? tracked : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+    const trackedSymbols = this.deps.getTrackedSymbols();
+    const streamStatus = this.deps.getTickerStreamStatus?.();
+    const desiredSymbolsCount = streamStatus?.desiredSymbolsCount ?? trackedSymbols.length;
+
+    if (desiredSymbolsCount === 0) {
+      return {
+        id: 'ws_freshness',
+        status: 'WARN',
+        message: 'no symbols subscribed',
+        details: {
+          desiredSymbolsCount,
+          subscribedCount: streamStatus?.subscribedCount ?? 0,
+          symbolsChecked: 0,
+          maxAgeMs: null,
+          minAgeMs: null,
+          staleSymbolsCount: 0
+        }
+      };
+    }
+
+    const selectedSymbols = trackedSymbols.length > 0 ? trackedSymbols : Object.keys(marketStates);
     const measured = selectedSymbols
       .map((symbol) => ({ symbol, state: marketStates[symbol] }))
       .filter((entry): entry is { symbol: string; state: MarketStateLike } => !!entry.state)
-      .slice(0, 50);
+      .slice(0, 300);
 
-    const streamStatus = this.deps.getTickerStreamStatus?.();
-    const streamDetails = streamStatus
-      ? {
-          streamRunning: streamStatus.running,
-          streamConnected: streamStatus.connected,
-          desiredSymbolsCount: streamStatus.desiredSymbolsCount,
-          subscribedCount: streamStatus.subscribedCount,
-          lastMessageAt: streamStatus.lastMessageAt,
-          lastTickerAt: streamStatus.lastTickerAt,
-          reconnectCount: streamStatus.reconnectCount,
-          lastError: streamStatus.lastError
-        }
-      : {};
+    const mode = this.deps.getBotState().mode;
+    const wsFreshnessThresholdMs = mode === 'paper' ? 3000 : 5000;
+    const minSymbolsForFreshness = Math.max(1, Math.min(5, desiredSymbolsCount));
 
     if (measured.length === 0) {
       return {
         id: 'ws_freshness',
         status: streamStatus?.running ? 'FAIL' : 'WARN',
-        message: streamStatus?.running ? 'market feed stream running but no ticker data' : 'no market feed active',
-        details: streamDetails
+        message: streamStatus?.running ? 'market feed stream running but no ticker ages available' : 'no market feed active',
+        details: {
+          desiredSymbolsCount,
+          subscribedCount: streamStatus?.subscribedCount ?? 0,
+          symbolsChecked: 0,
+          maxAgeMs: null,
+          minAgeMs: null,
+          staleSymbolsCount: 0,
+          wsFreshnessThresholdMs,
+          minSymbolsForFreshness,
+          lastMessageAt: streamStatus?.lastMessageAt ?? null,
+          lastTickerAt: streamStatus?.lastTickerAt ?? null,
+          reconnectCount: streamStatus?.reconnectCount ?? 0,
+          lastError: streamStatus?.lastError ?? null
+        }
       };
     }
 
-    const worstAgeMs = measured.reduce((max, entry) => Math.max(max, computeAgeMs(entry.state, nowMs)), 0);
-    const mode = this.deps.getBotState().mode;
-    const passThresholdMs = mode === 'paper' ? 3000 : 5000;
+    const ages = measured.map((entry) => ({ symbol: entry.symbol, ageMs: computeAgeMs(entry.state, nowMs) }));
+    const stale = ages.filter((entry) => entry.ageMs > wsFreshnessThresholdMs).sort((a, b) => b.ageMs - a.ageMs);
+    const maxAgeMs = ages.reduce((max, entry) => Math.max(max, entry.ageMs), 0);
+    const minAgeMs = ages.reduce((min, entry) => Math.min(min, entry.ageMs), Number.POSITIVE_INFINITY);
 
-    if (worstAgeMs > 30000) {
-      return {
-        id: 'ws_freshness',
-        status: 'FAIL',
-        message: `market feed stale (${worstAgeMs}ms)`,
-        details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol), ...streamDetails }
-      };
-    }
-
-    if (worstAgeMs > passThresholdMs) {
-      return {
-        id: 'ws_freshness',
-        status: 'WARN',
-        message: `market feed aging (${worstAgeMs}ms)`,
-        details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol), ...streamDetails }
-      };
-    }
+    const pass = measured.length >= minSymbolsForFreshness && (maxAgeMs <= wsFreshnessThresholdMs || stale.length === 0);
 
     return {
       id: 'ws_freshness',
-      status: 'PASS',
-      message: `market feed fresh (${worstAgeMs}ms)`,
-      details: { worstAgeMs, passThresholdMs, symbolsChecked: measured.map((entry) => entry.symbol), ...streamDetails }
+      status: pass ? 'PASS' : 'FAIL',
+      message: pass ? `market feed fresh by symbol ages (max=${maxAgeMs}ms)` : `market feed stale by symbol ages (max=${maxAgeMs}ms)`,
+      details: {
+        desiredSymbolsCount,
+        subscribedCount: streamStatus?.subscribedCount ?? measured.length,
+        symbolsChecked: measured.length,
+        minSymbolsForFreshness,
+        wsFreshnessThresholdMs,
+        maxAgeMs,
+        minAgeMs: Number.isFinite(minAgeMs) ? minAgeMs : null,
+        staleSymbolsCount: stale.length,
+        staleSymbols: stale.slice(0, 5),
+        lastMessageAt: streamStatus?.lastMessageAt ?? null,
+        lastTickerAt: streamStatus?.lastTickerAt ?? null,
+        reconnectCount: streamStatus?.reconnectCount ?? 0,
+        lastError: streamStatus?.lastError ?? null
+      }
     };
   }
+
 
   private buildMarketAgePerSymbolCheck(nowMs: number): DoctorCheck {
     const marketStates = this.deps.getMarketStates();

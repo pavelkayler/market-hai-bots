@@ -26,16 +26,20 @@ This project is now **v2 refactor complete** for the operator contract in this d
 ## Verify Doctor
 
 1. Open Doctor page.
-2. Confirm `/api/doctor` reports `ok: true` and no FAIL checks.
+2. Confirm `/api/doctor` reports `ok: true` and no FAIL checks while symbols are updating.
+3. Specifically confirm `market_age_per_symbol` PASS and `ws_freshness` PASS together (no false FAIL when per-symbol ages are fresh).
 3. CLI alternative:
    - `npm run rc:smoke`
 
 ## Verify Bot state contract and funding columns
 
-1. Open Bot page Active symbols table.
-2. Confirm columns appear in this order:
+1. Funding refresh contract: backend refreshes funding snapshots in a batch every 10 minutes, and once best-effort after universe create/refresh/exclusions changes.
+2. Open Bot page Active symbols table.
+3. Confirm columns appear in this order:
    - Symbol | Mark | OIV | ΔPrice% | ΔOIV% | Funding | Next funding (ETA) | Tradability | SignalCount | LastSignal
-3. Confirm symbols with missing funding render `MISSING` badge and do not crash UI.
+4. Confirm symbols with missing/stale funding render `MISSING` badge and do not crash UI.
+5. Confirm `Next funding (ETA)` appears for symbols with valid funding snapshots and stays `—` for missing snapshots.
+6. If upstream funding fetch fails, expected behavior is: funding stays missing/stale, trading stays blocked per symbol, and doctor explains freshness/market-age context.
 
 ## Paper test (signal counter and MSK day behavior)
 

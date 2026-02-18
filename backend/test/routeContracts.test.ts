@@ -102,6 +102,65 @@ describe('route contract stability', () => {
   });
 
 
+
+
+  it('/api/bot/state symbol rows include additive funding diagnostics fields', async () => {
+    await app.close();
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24hUSDT: 20_000_000,
+              turnover24h: 20_000_000,
+              highPrice24h: 102,
+              lowPrice24h: 100,
+              markPrice: 101,
+              openInterestValue: 100,
+              fundingRate: 0.0001,
+              nextFundingTime: Date.now() + 60_000
+            }
+          ]
+        ])
+      ),
+      tickerStream: new FakeTickerStream()
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 0, minTurnover: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper',
+        direction: 'both',
+        tf: 1,
+        holdSeconds: 1,
+        signalCounterThreshold: 1,
+        priceUpThrPct: 0.1,
+        oiUpThrPct: 0.1,
+        oiCandleThrPct: 0,
+        marginUSDT: 100,
+        leverage: 2,
+        tpRoiPct: 1,
+        slRoiPct: 1,
+        entryOffsetPct: 0
+      }
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(response.statusCode).toBe(200);
+
+    const body = response.json() as { symbols: Array<Record<string, unknown>> };
+    expect(body.symbols.length).toBeGreaterThan(0);
+    const symbol = body.symbols[0];
+    expect(symbol).toHaveProperty('fundingStatus');
+    expect(symbol).toHaveProperty('fundingAgeMs');
+    expect(symbol).toHaveProperty('fundingFetchedAtMs');
+  });
+
   it('removed endpoints return 404', async () => {
     for (const url of ['/api/autotune/state', '/api/runs/summary', '/api/export/pack']) {
       const response = await app.inject({ method: 'GET', url });

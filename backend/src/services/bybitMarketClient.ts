@@ -24,6 +24,8 @@ export type TickerLinear = {
   lowPrice24h: number | null;
   markPrice: number | null;
   openInterestValue: number | null;
+  fundingRate?: number | null;
+  nextFundingTime?: number | null;
 };
 
 export interface IBybitMarketClient {
@@ -132,7 +134,9 @@ export class BybitMarketClient implements IBybitMarketClient {
         highPrice24h: parseNumber((row as { highPrice24h?: unknown }).highPrice24h),
         lowPrice24h: parseNumber((row as { lowPrice24h?: unknown }).lowPrice24h),
         markPrice: parseNumber((row as { markPrice?: unknown }).markPrice),
-        openInterestValue: parseNumber((row as { openInterestValue?: unknown }).openInterestValue)
+        openInterestValue: parseNumber((row as { openInterestValue?: unknown }).openInterestValue),
+        fundingRate: parseNumber((row as { fundingRate?: unknown }).fundingRate),
+        nextFundingTime: parseNumber((row as { nextFundingTime?: unknown }).nextFundingTime)
       });
     }
 
