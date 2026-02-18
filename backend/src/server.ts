@@ -924,7 +924,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return { ok: true, ...result, warning };
   });
 
-  app.post('/api/bot/reset', async () => {
+  app.post('/api/bot/reset', async (_request, reply) => {
+    const state = botEngine.getState();
+    if (state.running || state.paused) {
+      return reply.code(409).send({ ok: false, error: 'BOT_RUNNING', message: 'Reset is STOP-only.' });
+    }
+
     killInProgress = true;
     killCompletedAt = null;
     killWarning = null;

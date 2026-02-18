@@ -179,6 +179,8 @@ export type BotPerSymbolStats = {
   confirmedBySide: { long: number; short: number };
   confirmedByEntryReason: Record<EntryReason, number>;
   avgHoldMs?: number | null;
+  avgWinUSDT?: number | null;
+  avgLossUSDT?: number | null;
   lastClosedTs?: number | null;
   lastClosedPnlUSDT?: number | null;
 };
