@@ -27,8 +27,8 @@
 | ROI/leverage math (`roi/leverage/100`) | PASS | `backend/src/bot/botEngine.ts` TP/SL formula with `percentToFraction(tpRoiPct/leverage)` | grep formula + integration tests | No drift detected. |
 | State payloads additive + snapshot-safe | PARTIAL | `restoreFromSnapshot` default injection, `normalizeBotConfig`, universe sanitize | restart with old-like snapshot/profile payload | Additive behavior present; no formal versioned schema tag. |
 | Reset-all STOP-only | PASS | `/api/reset/all` guard `if (botState.running) BOT_RUNNING` | run bot then call endpoint | Explicit 400 rejection. |
-| KILL deterministic flatten intent | PARTIAL | `killSwitch` cancel+close path; server stop + state broadcast | simulate open order/position then `/api/bot/kill` | Warning-only on residual counts (no hard fail). |
-| KILL final stable state `openPositions=0 activeOrders=0` | PARTIAL | returns `activeOrdersRemaining/openPositionsRemaining` + warning | assert post-kill `/api/bot/state` and response counters | Possible residuals acknowledged by warning. |
+| KILL deterministic flatten intent | PASS | `killSwitch` now confirms demo close via polling before local clear; warning + residuals surfaced deterministically | simulate demo close failure and assert residuals remain | No silent local force-close on unconfirmed demo close. |
+| KILL final stable state `openPositions=0 activeOrders=0` | PARTIAL | returns `activeOrdersRemaining/openPositionsRemaining` + warning | assert post-kill `/api/bot/state` and response counters | Incomplete flatten can still happen on exchange-side failures, now explicitly surfaced. |
 | Export pack robust/partial with mandatory meta.json | PASS | `/api/export/pack` always writes `meta.json`, optional files conditional | delete optional files then export and inspect zip | Journaling failures don’t abort export op. |
 | Best-effort journaling should not fail operation | PASS | `appendOpsJournalEvent` catches journal errors, still appends run event | existing server tests mocking journal failure | Warn-only logging behavior. |
 | UI phase correctness (no impossible lifecycle states) | PASS | `frontend/src/pages/BotPage.tsx` trackedSymbols normalization | run UI and inspect tracked symbols rendering | Client-side normalization masks upstream issues (P2). |
@@ -38,10 +38,12 @@
 | Universe exclusions persistence | PASS | `UniverseExclusionsService` + endpoints add/remove/clear | `npm --prefix backend test -- universeExclusionsService.test.ts` | Also writes timestamp snapshots. |
 | Profiles additive/back-compat normalization | PASS | `ProfileService.load/import` with `normalizeBotConfig` | import old/incomplete profile JSON | default profile auto-restored. |
 | Runtime snapshot persistence and restore | PASS | `snapshotStore.ts` + engine restore + server onReady loading | stop/start backend and inspect state | restore into paused snapshot flow. |
-| Runs recorder present for every run session | PASS | `server.ts` start/resume/stop/kill now writes run metadata/events/stats best-effort | start -> stop, pause -> resume, kill; inspect `data/runs/*` | Download payload still excludes `stats.json` (separate contract gap). |
+| Runs recorder present for every run session | PASS | `server.ts` start/resume/stop/kill writes run metadata/events/stats best-effort | start -> stop, pause -> resume, kill; inspect `data/runs/*` | `/api/runs/:id/download` now includes `stats.json` when present/valid. |
+| Run history summary API (`/api/runs/summary`) | PASS | `RunHistoryService` + route in `server.ts` | create runs with/without stats and query summary | Best-effort parse with per-run warnings. |
 | Bot UI tabs render isolated content | PASS | `frontend/src/pages/BotPage.tsx` tab-conditional blocks (journal/log/per-symbol/entry reasons) | click each tab, verify controls/table/cards render | No extra polling added for inactive tabs. |
 | Dashboard metrics are unified (no duplicate Results card) | PASS | `frontend/src/pages/BotPage.tsx` dashboard card groups performance/costs/guardrails/runtime | open dashboard and verify single metrics panel | Last events limited to 3 rows. |
-| AutoTune persisted state API | PASS | `AutoTuneService`, `/api/autotune/state` | call endpoint before/after restart | release docs wording drift exists. |
+| AutoTune v1 planner (deterministic, bounded, single-change) | PASS | `autoTunePlanner.ts` + close-handler integration | synthetic planner tests + close-event integration test | GLOBAL and UNIVERSE_ONLY scope behavior enforced. |
+| AutoTune persistence policy | PASS | runtime patch via `applyConfigPatch`; profile write only for active-profile start | start via active profile and verify profile update on apply | manual-start runs do not overwrite profiles. |
 | REST/WS contract frontend-backend alignment | PASS | `server.ts`, `symbolUpdateBroadcaster.ts`, `frontend/src/types.ts`, `frontend/src/App.tsx` | run app and inspect WS messages | Additive optional fields used. |
 
 ## Section 3 — Contradictions & Drift
@@ -61,10 +63,8 @@
    - Interpretation: likely no adaptive optimizer logic, only persisted state plumbing.
    - Follow-up: clarify wording in release notes (without changing runtime logic).
 
-4. **Run download payload omission (`stats.json`)**
-   - Drift: run recorder writes stats but download contract excludes it.
-   - More authoritative source: implementation (`getRunPayload`).
-   - Follow-up: additive API enhancement to include stats file.
+4. **Run download payload omission (`stats.json`) — RESOLVED**
+   - Updated: run download now includes `stats.json` when present and parseable.
 
 ## Section 4 — RC Checklist (Consolidated)
 

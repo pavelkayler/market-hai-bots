@@ -397,3 +397,18 @@ Notes:
   - `PUMP_DUMP_2ND_TRIGGER` defaults to `min=2`, `max=3`.
 - `autoTuneEnabled` (default OFF) and `autoTuneScope` (`GLOBAL` default, `UNIVERSE_ONLY`).
 - Always-on run recording: each `/api/bot/start` creates `data/runs/<ISO_TIMESTAMP>/` with `meta.json`, `events.ndjson`, and optional `stats.json`.
+- `/api/runs/:id/download` now includes `stats.json` when present and valid JSON (best-effort; corrupt/missing stats are omitted without failing download).
+- `/api/runs/summary?limit=N` returns best-effort run summaries for operators and Auto-Tune input (`meta` + optional `stats` + inferred `tradedSymbols`).
+
+### Auto-Tune v1 (history-aware, bounded, single-change)
+- Auto-Tune evaluates on position close and applies **at most one change** per evaluation.
+- GLOBAL scope: only config patch changes (bounded fields: `priceUpThrPct`, `oiUpThrPct`, `minNotionalUSDT`).
+- UNIVERSE_ONLY scope: only one exclusion candidate per evaluation (worst negative symbol from recent run summaries; no live-universe hot mutation during current run).
+- Persistence:
+  - Runtime snapshot persistence is always done via engine config patching.
+  - Active profile is updated only when bot start used the active profile configuration.
+  - Manual start payloads do not overwrite saved profiles.
+
+### KILL demo-mode confirmation
+- In demo mode, KILL now requires exchange close confirmation polling before local position state is cleared.
+- If close cannot be confirmed, position remains in local runtime state, warning is surfaced, and residual counters remain non-zero.

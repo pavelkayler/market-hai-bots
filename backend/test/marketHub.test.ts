@@ -11,7 +11,7 @@ class FakeTickerStream implements TickerStream {
 
   async stop(): Promise<void> {}
 
-  async setSymbols(_symbols: string[]): Promise<void> {}
+  async setSymbols(): Promise<void> {}
 
   onTicker(handler: (update: TickerUpdate) => void): () => void {
     this.handler = handler;

@@ -576,7 +576,7 @@ describe('BotEngine paper execution', () => {
 
   it('resets invalid ENTRY_PENDING snapshot state to IDLE without crashing', () => {
     const logs: string[] = [];
-    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const now = Date.UTC(2025, 0, 1, 0, 0, 0);
     const engine = new BotEngine({
       now: () => now,
       emitSignal: () => undefined,
@@ -1522,6 +1522,45 @@ describe('BotEngine snapshot + pause/resume', () => {
     const withPosition = engine.getState();
     expect(withPosition.activeOrders).toBe(0);
     expect(withPosition.openPositions).toBe(1);
+  });
+
+  it('demo killSwitch keeps local position when close fails', async () => {
+    const now = Date.UTC(2025, 0, 1, 0, 1, 0);
+    const client = new FakeDemoTradeClient();
+    client.closePositionMarket = async () => {
+      throw new Error('demo close failed');
+    };
+
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined,
+      demoTradeClient: client
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, mode: 'demo', signalCounterThreshold: 1 });
+
+    const symbolState = (engine as unknown as {
+      symbols: Map<string, { position?: Record<string, unknown> | null; fsmState?: string }>;
+    }).symbols.get('BTCUSDT');
+    symbolState.position = {
+      symbol: 'BTCUSDT',
+      side: 'LONG',
+      qty: 1,
+      entryPrice: 100,
+      tpPrice: 101,
+      slPrice: 99,
+      openedTs: now
+    };
+    symbolState.fsmState = 'POSITION_OPEN';
+
+    const result = await engine.killSwitch(() => ({ markPrice: 100, openInterestValue: 1_000, ts: now }));
+    expect(result.openPositionsRemaining).toBe(1);
+    expect(result.warning).toContain('Demo close failed');
+    expect(engine.getSymbolState('BTCUSDT')?.position).toBeTruthy();
   });
 });
 

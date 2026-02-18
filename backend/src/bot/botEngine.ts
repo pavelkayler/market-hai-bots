@@ -1114,6 +1114,7 @@ export class BotEngine {
       }
 
       if (this.state.config?.mode === 'demo' && this.deps.demoTradeClient) {
+        let demoCloseConfirmed = false;
         try {
           const openOrders = await this.deps.demoTradeClient.getOpenOrders(symbolState.symbol);
           for (const order of openOrders) {
@@ -1125,8 +1126,26 @@ export class BotEngine {
             side: symbolState.position.side === 'LONG' ? 'Sell' : 'Buy',
             qty: symbolState.position.qty.toString()
           });
+
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            const position = await this.deps.demoTradeClient.getPosition(symbolState.symbol);
+            const size = position?.size;
+            const isClosed = !position || typeof size !== 'number' || !Number.isFinite(size) || Math.abs(size) <= 0;
+            if (isClosed) {
+              demoCloseConfirmed = true;
+              break;
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 350));
+          }
+
+          if (!demoCloseConfirmed) {
+            warnings.push(`Demo close not confirmed for ${symbolState.symbol} after retries`);
+            continue;
+          }
         } catch (error) {
           warnings.push(`Demo close failed for ${symbolState.symbol}: ${(error as Error).message}`);
+          continue;
         }
       }
 

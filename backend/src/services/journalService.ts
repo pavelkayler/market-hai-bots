@@ -13,6 +13,7 @@ export type JournalEvent =
   | 'BOT_PAUSE'
   | 'BOT_RESUME'
   | 'BOT_KILL'
+  | 'AUTO_TUNE_APPLIED'
   | 'SYSTEM_RESET_ALL'
   | 'EXPORT_PACK_REQUESTED';
 

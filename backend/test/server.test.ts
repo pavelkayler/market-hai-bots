@@ -304,7 +304,7 @@ describe('server routes', () => {
 
     const zip = await JSZip.loadAsync(response.rawPayload);
     const names = Object.keys(zip.files).sort();
-    expect(names).toEqual(['journal.ndjson', 'latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'meta.json', 'profiles.json', 'runtime.json', 'universe.json']);
+    expect(names).toEqual(['journal.ndjson', 'latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'latest-run/stats.json', 'meta.json', 'profiles.json', 'runtime.json', 'universe.json']);
 
     const metaRaw = await zip.file('meta.json')?.async('string');
     const meta = JSON.parse(metaRaw ?? '{}') as {
@@ -344,7 +344,7 @@ describe('server routes', () => {
 
     const zip = await JSZip.loadAsync(response.rawPayload);
     const names = Object.keys(zip.files).sort();
-    expect(names).toEqual(['latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'meta.json', 'profiles.json', 'universe.json']);
+    expect(names).toEqual(['latest-run/', 'latest-run/events.ndjson', 'latest-run/meta.json', 'latest-run/stats.json', 'meta.json', 'profiles.json', 'universe.json']);
 
     const metaRaw = await zip.file('meta.json')?.async('string');
     const meta = JSON.parse(metaRaw ?? '{}') as { notes: string[] };
@@ -1846,5 +1846,57 @@ describe('universe exclusions routes', () => {
     await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
     const exclusionsAfterCreate = await app.inject({ method: 'GET', url: '/api/universe/exclusions' });
     expect(exclusionsAfterCreate.json()).toEqual({ ok: true, excluded: [] });
+  });
+});
+describe('runs APIs', () => {
+  let app = buildIsolatedServer();
+
+  afterEach(async () => {
+    await app.close();
+    app = buildIsolatedServer();
+  });
+
+  it('GET /api/runs/:id/download includes stats.json when present', async () => {
+    const runId = `2025-01-03T00-00-00.000Z-${Math.random().toString(16).slice(2)}`;
+    const runDir = path.join(process.cwd(), 'data', 'runs', runId);
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(runDir, 'meta.json'), '{"startTime":1}', 'utf-8');
+    await writeFile(path.join(runDir, 'events.ndjson'), '{"x":1}\n', 'utf-8');
+    await writeFile(path.join(runDir, 'stats.json'), '{"totalTrades":5}', 'utf-8');
+
+    try {
+      const response = await app.inject({ method: 'GET', url: `/api/runs/${runId}/download` });
+      expect(response.statusCode).toBe(200);
+      const zip = await JSZip.loadAsync(response.rawPayload);
+      expect(Object.keys(zip.files).sort((a, b) => a.localeCompare(b))).toEqual(['events.ndjson', 'meta.json', 'stats.json']);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('GET /api/runs/summary returns best-effort summaries', async () => {
+    const runA = `9999-01-04T00-00-00.000Z`;
+    const runB = `9999-01-03T00-00-00.000Z`;
+    const runDirA = path.join(process.cwd(), 'data', 'runs', runA);
+    const runDirB = path.join(process.cwd(), 'data', 'runs', runB);
+    await mkdir(runDirA, { recursive: true });
+    await mkdir(runDirB, { recursive: true });
+    await writeFile(path.join(runDirA, 'meta.json'), JSON.stringify({ startTime: 1, configSnapshot: { mode: 'paper', tf: 1, direction: 'both' }, universeSummary: { effective: 2 } }), 'utf-8');
+    await writeFile(path.join(runDirA, 'stats.json'), JSON.stringify({ totalTrades: 2, winratePct: 50, pnlUSDT: 1 }), 'utf-8');
+    await writeFile(path.join(runDirA, 'events.ndjson'), `${JSON.stringify({ type: 'position:update', payload: { symbol: 'BTCUSDT', status: 'OPEN' } })}\n`, 'utf-8');
+    await writeFile(path.join(runDirB, 'meta.json'), JSON.stringify({ startTime: 2, configSnapshot: { mode: 'paper', tf: 1, direction: 'long' } }), 'utf-8');
+    await writeFile(path.join(runDirB, 'events.ndjson'), `${JSON.stringify({ type: 'order:update', payload: { symbol: 'ETHUSDT', status: 'FILLED' } })}\n`, 'utf-8');
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/api/runs/summary?limit=200' });
+      expect(response.statusCode).toBe(200);
+      const json = response.json() as { ok: boolean; runs: Array<{ id: string; hasStats: boolean; tradedSymbols?: string[] }> };
+      expect(json.ok).toBe(true);
+      expect(json.runs.find((run) => run.id === runA)).toMatchObject({ hasStats: true, tradedSymbols: ['BTCUSDT'] });
+      expect(json.runs.find((run) => run.id === runB)).toMatchObject({ hasStats: false, tradedSymbols: ['ETHUSDT'] });
+    } finally {
+      await rm(runDirA, { recursive: true, force: true });
+      await rm(runDirB, { recursive: true, force: true });
+    }
   });
 });

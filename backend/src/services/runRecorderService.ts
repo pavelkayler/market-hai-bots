@@ -52,8 +52,12 @@ export class RunRecorderService {
         const eventsPath = path.join(runDir, 'events.ndjson');
         let hasMeta = false;
         let hasEvents = false;
-        try { await stat(metaPath); hasMeta = true; } catch {}
-        try { await stat(eventsPath); hasEvents = true; } catch {}
+        try { await stat(metaPath); hasMeta = true; } catch {
+          // ignore missing meta
+        }
+        try { await stat(eventsPath); hasEvents = true; } catch {
+          // ignore missing events
+        }
         result.push({ id, startedAt: id.replaceAll('-', ':'), hasMeta, hasEvents });
       }
       return result;
@@ -65,11 +69,27 @@ export class RunRecorderService {
   async getRunPayload(runId: string): Promise<Record<string, string> | null> {
     const runDir = path.join(this.baseDir, runId);
     try {
-      const [meta, events] = await Promise.all([
+      const [meta, events, stats] = await Promise.all([
         readFile(path.join(runDir, 'meta.json'), 'utf-8').catch(() => ''),
-        readFile(path.join(runDir, 'events.ndjson'), 'utf-8').catch(() => '')
+        readFile(path.join(runDir, 'events.ndjson'), 'utf-8').catch(() => ''),
+        readFile(path.join(runDir, 'stats.json'), 'utf-8').catch(() => null)
       ]);
-      return { 'meta.json': meta, 'events.ndjson': events };
+
+      const payload: Record<string, string> = {
+        'meta.json': meta,
+        'events.ndjson': events
+      };
+
+      if (typeof stats === 'string') {
+        try {
+          JSON.parse(stats);
+          payload['stats.json'] = stats;
+        } catch {
+          // best-effort: omit corrupt stats
+        }
+      }
+
+      return payload;
     } catch {
       return null;
     }

@@ -49,4 +49,24 @@ describe('AutoTuneService', () => {
     expect(normalized?.signalCounterMin).toBe(4);
     expect(normalized?.signalCounterMax).toBe(Number.MAX_SAFE_INTEGER);
   });
+
+  it('retains lastApplied and appends bounded history entries', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autotune-state-'));
+    const filePath = path.join(dir, 'state.json');
+
+    try {
+      const service = new AutoTuneService(filePath);
+      await service.init();
+      await service.noteApplied({ parameter: 'priceUpThrPct', before: 0.5, after: 0.45, reason: 'first', bounds: { min: 0.1, max: 5 } });
+      await service.noteApplied({ parameter: 'minNotionalUSDT', before: 5, after: 6, reason: 'second', bounds: { min: 1, max: 100 } });
+
+      const state = service.getState();
+      expect(state.lastApplied?.parameter).toBe('minNotionalUSDT');
+      expect(state.history).toHaveLength(2);
+      expect(state.history[0].parameter).toBe('priceUpThrPct');
+      expect(state.history[1].parameter).toBe('minNotionalUSDT');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -19,6 +19,8 @@ import { JournalService, type JournalEntry } from './services/journalService.js'
 import { ProfileService } from './services/profileService.js';
 import { RunRecorderService } from './services/runRecorderService.js';
 import { AutoTuneService } from './services/autoTuneService.js';
+import { planAutoTuneChange } from './services/autoTunePlanner.js';
+import { RunHistoryService } from './services/runHistoryService.js';
 import { resolveStoragePaths } from './services/storagePaths.js';
 import { ActiveSymbolSet, UniverseService } from './services/universeService.js';
 import { UniverseExclusionsService } from './services/universeExclusionsService.js';
@@ -62,6 +64,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   let killInProgress = false;
   let killCompletedAt: number | null = null;
   let killWarning: string | null = null;
+  let currentRunProfileNameUsed: string | null = null;
   const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
   const marketClient = options.marketClient ?? new BybitMarketClient();
@@ -89,6 +92,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const journalService = new JournalService(journalPath);
   const profileService = new ProfileService(storagePaths.profilesPath);
   const runRecorder = new RunRecorderService();
+  const runHistoryService = new RunHistoryService();
   const autoTuneService = new AutoTuneService();
   void autoTuneService.init();
 
@@ -308,44 +312,68 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         const currentConfig = botEngine.getState().config;
         const tuneState = autoTuneService.getState();
         if (currentConfig && tuneState.enabled) {
-          const candidates = [
-            {
-              parameter: 'priceUpThrPct',
-              before: currentConfig.priceUpThrPct,
-              after: Math.max(0.05, Number((currentConfig.priceUpThrPct - 0.05).toFixed(4))),
-              reason: 'recent close suggests reducing entry strictness (too few entries)',
-              bounds: { min: 0.05, max: 5 }
-            },
-            {
-              parameter: 'minNotionalUSDT',
-              before: currentConfig.minNotionalUSDT,
-              after: Math.min(100, Number((currentConfig.minNotionalUSDT + 1).toFixed(4))),
-              reason: 'fees dominate, nudging notional floor upward',
-              bounds: { min: 1, max: 100 }
-            }
-          ].filter((entry) => entry.before !== entry.after);
-
-          const next = candidates[0];
-          if (next) {
-            botEngine.applyConfigPatch({ [next.parameter]: next.after } as never);
-            void autoTuneService.noteApplied(next);
-            void journalService.append({
-              ts: Date.now(),
-              mode,
-              symbol: 'SYSTEM',
-              event: 'BOT_RESUME',
-              side: null,
-              data: {
-                kind: 'AUTO_TUNE_CHANGE',
-                parameter: next.parameter,
-                before: next.before,
-                after: next.after,
-                reason: next.reason,
-                bounds: next.bounds
-              }
+          void (async () => {
+            const recentRuns = await runHistoryService.summarizeRecent(20);
+            const plan = planAutoTuneChange({
+              currentConfig,
+              autoTuneScope: tuneState.scope,
+              recentRuns,
+              currentBotStats: botEngine.getStats()
             });
-            void runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'AUTO_TUNE_CHANGE', payload: next });
-          }
+
+            if (!plan) {
+              return;
+            }
+
+            if (plan.kind === 'CONFIG_PATCH') {
+              const updated = botEngine.applyConfigPatch(plan.patch);
+              if (!updated) return;
+
+              await autoTuneService.noteApplied({
+                parameter: plan.parameter,
+                before: plan.before,
+                after: plan.after,
+                reason: plan.reason,
+                bounds: { min: 0, max: Number.MAX_SAFE_INTEGER }
+              });
+
+              await appendOpsJournalEvent('AUTO_TUNE_APPLIED', {
+                kind: 'AUTO_TUNE_APPLIED',
+                changeKind: 'CONFIG_PATCH',
+                parameter: plan.parameter,
+                before: plan.before,
+                after: plan.after,
+                reason: plan.reason
+              });
+
+              if (currentRunProfileNameUsed) {
+                await profileService.set(currentRunProfileNameUsed, updated);
+              }
+              return;
+            }
+
+            const exclusions = await universeExclusionsService.get();
+            const beforeCount = exclusions.excluded.length;
+            await universeExclusionsService.add(plan.symbol);
+            const afterCount = (await universeExclusionsService.get()).excluded.length;
+
+            await autoTuneService.noteApplied({
+              parameter: 'universeExclusionsCount',
+              before: beforeCount,
+              after: afterCount,
+              reason: `${plan.reason}; excluded=${plan.symbol}`,
+              bounds: { min: 0, max: Number.MAX_SAFE_INTEGER }
+            });
+
+            await appendOpsJournalEvent('AUTO_TUNE_APPLIED', {
+              kind: 'AUTO_TUNE_APPLIED',
+              changeKind: 'UNIVERSE_EXCLUDE',
+              symbol: plan.symbol,
+              beforeCount,
+              afterCount,
+              reason: plan.reason
+            });
+          })();
         }
       }
     },
@@ -515,8 +543,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const requestBody = request.body as Record<string, unknown> | null | undefined;
     const shouldUseActiveProfile = requestBody == null || requestBody.mode === undefined;
+    const profilesList = await profileService.list();
     const config = shouldUseActiveProfile
-      ? await profileService.get((await profileService.list()).activeProfile)
+      ? await profileService.get(profilesList.activeProfile)
       : normalizeBotConfig(requestBody);
     if (!config) {
       return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
@@ -530,6 +559,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
     botEngine.setUniverseEntries(effectiveEntries);
+    currentRunProfileNameUsed = shouldUseActiveProfile ? profilesList.activeProfile : null;
     await autoTuneService.setEnabledScope(config.autoTuneEnabled, config.autoTuneScope);
     await runRecorder.startRun({
       startTime: Date.now(),
@@ -546,6 +576,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/bot/stop', async () => {
     botEngine.stop();
+    currentRunProfileNameUsed = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
     await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_STOP' });
     broadcastBotState();
@@ -573,6 +604,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const resumedState = botEngine.getState();
+    currentRunProfileNameUsed = null;
     await runRecorder.startRun({
       startTime: Date.now(),
       configSnapshot: resumedState.config,
@@ -609,6 +641,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     killInProgress = false;
     killCompletedAt = Date.now();
     botEngine.stop();
+    currentRunProfileNameUsed = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
     await runRecorder.appendEvent({
       ts: Date.now(),
@@ -807,6 +840,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const parsedLimit = Number(query.limit ?? 20);
     const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(200, Math.floor(parsedLimit))) : 20;
     const runs = await runRecorder.listRecent(limit);
+    return { ok: true, runs };
+  });
+
+  app.get('/api/runs/summary', async (request) => {
+    const query = request.query as { limit?: string | number };
+    const parsedLimit = Number(query.limit ?? 20);
+    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(200, Math.floor(parsedLimit))) : 20;
+    const runs = await runHistoryService.summarizeRecent(limit);
     return { ok: true, runs };
   });
 
