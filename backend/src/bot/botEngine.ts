@@ -54,6 +54,9 @@ export type BotConfig = {
   autoTuneEnabled: boolean;
   autoTuneScope: AutoTuneScope;
   autoTunePlannerMode?: 'DETERMINISTIC' | 'RANDOM_EXPLORE';
+  autoTuneWindowHours?: number;
+  autoTuneTargetTradesInWindow?: number;
+  autoTuneMinTradesBeforeTighten?: number;
   paperEntrySlippageBps?: number;
   paperExitSlippageBps?: number;
   paperPartialFillPct?: number;
@@ -379,6 +382,9 @@ const DEFAULT_SIGNAL_COUNTER_MAX = Number.MAX_SAFE_INTEGER;
 const DEFAULT_AUTO_TUNE_ENABLED = false;
 const DEFAULT_AUTO_TUNE_SCOPE: AutoTuneScope = 'GLOBAL';
 const DEFAULT_AUTO_TUNE_PLANNER_MODE: 'DETERMINISTIC' | 'RANDOM_EXPLORE' = 'DETERMINISTIC';
+const DEFAULT_AUTO_TUNE_WINDOW_HOURS = 24;
+const DEFAULT_AUTO_TUNE_TARGET_TRADES_IN_WINDOW = 6;
+const DEFAULT_AUTO_TUNE_MIN_TRADES_BEFORE_TIGHTEN = 4;
 const DEFAULT_OI_UP_THR_PCT = 50;
 const DEFAULT_OI_CANDLE_THR_PCT = 0;
 const DEFAULT_MAX_ACTIVE_SYMBOLS = 3;
@@ -517,6 +523,18 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
   const autoTuneEnabled = typeof raw.autoTuneEnabled === 'boolean' ? raw.autoTuneEnabled : DEFAULT_AUTO_TUNE_ENABLED;
   const autoTuneScope = raw.autoTuneScope === 'UNIVERSE_ONLY' || raw.autoTuneScope === 'GLOBAL' ? raw.autoTuneScope : DEFAULT_AUTO_TUNE_SCOPE;
   const autoTunePlannerMode = raw.autoTunePlannerMode === 'RANDOM_EXPLORE' ? 'RANDOM_EXPLORE' : DEFAULT_AUTO_TUNE_PLANNER_MODE;
+  const autoTuneWindowHours =
+    typeof raw.autoTuneWindowHours === 'number' && Number.isFinite(raw.autoTuneWindowHours)
+      ? Math.max(0, Math.min(168, raw.autoTuneWindowHours))
+      : DEFAULT_AUTO_TUNE_WINDOW_HOURS;
+  const autoTuneTargetTradesInWindow =
+    typeof raw.autoTuneTargetTradesInWindow === 'number' && Number.isFinite(raw.autoTuneTargetTradesInWindow)
+      ? Math.max(0, Math.min(500, Math.floor(raw.autoTuneTargetTradesInWindow)))
+      : DEFAULT_AUTO_TUNE_TARGET_TRADES_IN_WINDOW;
+  const autoTuneMinTradesBeforeTighten =
+    typeof raw.autoTuneMinTradesBeforeTighten === 'number' && Number.isFinite(raw.autoTuneMinTradesBeforeTighten)
+      ? Math.max(0, Math.min(500, Math.floor(raw.autoTuneMinTradesBeforeTighten)))
+      : DEFAULT_AUTO_TUNE_MIN_TRADES_BEFORE_TIGHTEN;
   const paperEntrySlippageBps =
     typeof raw.paperEntrySlippageBps === 'number' && Number.isFinite(raw.paperEntrySlippageBps)
       ? Math.max(0, raw.paperEntrySlippageBps)
@@ -577,6 +595,9 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     autoTuneEnabled,
     autoTuneScope,
     autoTunePlannerMode,
+    autoTuneWindowHours,
+    autoTuneTargetTradesInWindow,
+    autoTuneMinTradesBeforeTighten,
     paperEntrySlippageBps,
     paperExitSlippageBps,
     paperPartialFillPct
@@ -683,7 +704,7 @@ export class BotEngine {
 
 
 
-  applyConfigPatch(patch: Partial<Pick<BotConfig, 'priceUpThrPct' | 'oiUpThrPct' | 'oiCandleThrPct' | 'signalCounterThreshold' | 'impulseMaxAgeBars' | 'minNotionalUSDT' | 'maxSpreadBps' | 'maxTickStalenessMs'>>): BotConfig | null {
+  applyConfigPatch(patch: Partial<Pick<BotConfig, 'priceUpThrPct' | 'oiUpThrPct' | 'oiCandleThrPct' | 'signalCounterThreshold' | 'confirmMinContinuationPct' | 'confirmWindowBars' | 'impulseMaxAgeBars' | 'maxSecondsIntoCandle' | 'minNotionalUSDT' | 'maxSpreadBps' | 'maxTickStalenessMs'>>): BotConfig | null {
     if (!this.state.config) {
       return null;
     }
@@ -693,7 +714,7 @@ export class BotEngine {
         return null;
       }
 
-      if ((key === 'priceUpThrPct' || key === 'oiUpThrPct' || key === 'oiCandleThrPct' || key === 'signalCounterThreshold' || key === 'impulseMaxAgeBars' || key === 'minNotionalUSDT' || key === 'maxSpreadBps' || key === 'maxTickStalenessMs') && value < 0) {
+      if ((key === 'priceUpThrPct' || key === 'oiUpThrPct' || key === 'oiCandleThrPct' || key === 'signalCounterThreshold' || key === 'confirmMinContinuationPct' || key === 'confirmWindowBars' || key === 'impulseMaxAgeBars' || key === 'maxSecondsIntoCandle' || key === 'minNotionalUSDT' || key === 'maxSpreadBps' || key === 'maxTickStalenessMs') && value < 0) {
         return null;
       }
     }
@@ -860,7 +881,10 @@ export class BotEngine {
       signalCounterMax: config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX,
       autoTuneEnabled: config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED,
       autoTuneScope: config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE,
-      autoTunePlannerMode: config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE
+      autoTunePlannerMode: config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE,
+      autoTuneWindowHours: config.autoTuneWindowHours ?? DEFAULT_AUTO_TUNE_WINDOW_HOURS,
+      autoTuneTargetTradesInWindow: config.autoTuneTargetTradesInWindow ?? DEFAULT_AUTO_TUNE_TARGET_TRADES_IN_WINDOW,
+      autoTuneMinTradesBeforeTighten: config.autoTuneMinTradesBeforeTighten ?? DEFAULT_AUTO_TUNE_MIN_TRADES_BEFORE_TIGHTEN
     };
     this.state = {
       ...this.state,
@@ -964,7 +988,7 @@ export class BotEngine {
       runningSinceTs: null,
       activeUptimeMs: snapshot.activeUptimeMs ?? 0,
       uptimeMs: 0,
-      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK, strategyMode: snapshot.config.strategyMode ?? DEFAULT_STRATEGY_MODE, signalCounterMin: snapshot.config.signalCounterMin ?? snapshot.config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN, signalCounterMax: snapshot.config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX, autoTuneEnabled: snapshot.config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED, autoTuneScope: snapshot.config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE, autoTunePlannerMode: snapshot.config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE } : null
+      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK, strategyMode: snapshot.config.strategyMode ?? DEFAULT_STRATEGY_MODE, signalCounterMin: snapshot.config.signalCounterMin ?? snapshot.config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN, signalCounterMax: snapshot.config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX, autoTuneEnabled: snapshot.config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED, autoTuneScope: snapshot.config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE, autoTunePlannerMode: snapshot.config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE, autoTuneWindowHours: snapshot.config.autoTuneWindowHours ?? DEFAULT_AUTO_TUNE_WINDOW_HOURS, autoTuneTargetTradesInWindow: snapshot.config.autoTuneTargetTradesInWindow ?? DEFAULT_AUTO_TUNE_TARGET_TRADES_IN_WINDOW, autoTuneMinTradesBeforeTighten: snapshot.config.autoTuneMinTradesBeforeTighten ?? DEFAULT_AUTO_TUNE_MIN_TRADES_BEFORE_TIGHTEN } : null
     };
 
     this.perSymbolStats.clear();

@@ -52,6 +52,10 @@
 ### AutoTune / paper model
 - `autoTuneEnabled`: boolean
 - `autoTuneScope`: `GLOBAL | UNIVERSE_ONLY`
+- `autoTunePlannerMode`: `DETERMINISTIC | RANDOM_EXPLORE`
+- `autoTuneWindowHours`: number `>=0` (default 24)
+- `autoTuneTargetTradesInWindow`: int `>=0` (default 6)
+- `autoTuneMinTradesBeforeTighten`: int `>=0` (default 4)
 - `paperEntrySlippageBps`: `>=0`
 - `paperExitSlippageBps`: `>=0`
 - `paperPartialFillPct`: `[0..100]`
@@ -81,7 +85,7 @@
 - `aggressive_1m/3m/5m` — более частые входы.
 - `balanced_1m/3m/5m` — компромисс trade frequency/quality.
 - `conservative_1m/3m/5m` — более строгие пороги.
-- `skip_most_trades` — intentionally strict preset for near-zero entry cadence.
+- `skip_trades_max_filter` — intentionally strict preset for near-zero entry cadence.
 
 ## How to verify
 1. Проверить normalization bounds через unit tests:

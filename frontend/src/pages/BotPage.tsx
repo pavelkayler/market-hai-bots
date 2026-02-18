@@ -181,6 +181,10 @@ const defaultSettings: BotSettings = {
   minNotionalUSDT: 5,
   autoTuneEnabled: false,
   autoTuneScope: 'GLOBAL',
+  autoTunePlannerMode: 'DETERMINISTIC',
+  autoTuneWindowHours: 24,
+  autoTuneTargetTradesInWindow: 6,
+  autoTuneMinTradesBeforeTighten: 4,
   paperEntrySlippageBps: 0,
   paperExitSlippageBps: 0,
   paperPartialFillPct: 100
@@ -246,22 +250,10 @@ export function BotPage({
   const [expandedRuns, setExpandedRuns] = useState<Record<string, boolean>>({});
   const [runEventsById, setRunEventsById] = useState<Record<string, { loading: boolean; events: RunEvent[]; warnings?: string[]; error?: string }>>({});
   const [lastAutoTune, setLastAutoTune] = useState<AutoTuneApplied | null>(null);
+  const [autoTuneHistory, setAutoTuneHistory] = useState<AutoTuneApplied[]>([]);
   const [lastAutoTuneLoading, setLastAutoTuneLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<BotPageTab>(loadBotPageTab());
   const profileUploadInputRef = useRef<HTMLInputElement | null>(null);
-
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const response = await getAutoTuneState();
-        setAutoTuneState(response.state);
-      } catch {
-        // ignore
-      }
-    };
-    void load();
-  }, [botState.running]);
 
   useEffect(() => {
     if (!botState.lastConfig) {
@@ -687,18 +679,17 @@ export function BotPage({
   const refreshLastAutoTune = useCallback(async () => {
     setLastAutoTuneLoading(true);
     try {
-      const response = await getAutoTuneHistory(1);
-      setLastAutoTune(response.items[0] ?? null);
+      const [stateResponse, historyResponse] = await Promise.all([getAutoTuneState(), getAutoTuneHistory(10)]);
+      setAutoTuneState(stateResponse.state);
+      setAutoTuneHistory(historyResponse.items);
+      setLastAutoTune(historyResponse.items[0] ?? null);
     } catch {
       setLastAutoTune(null);
+      setAutoTuneHistory([]);
     } finally {
       setLastAutoTuneLoading(false);
     }
   }, []);
-
-  useEffect(() => {
-    void refreshLastAutoTune();
-  }, [refreshLastAutoTune]);
 
   const handleToggleRunDetails = useCallback(async (runId: string) => {
     setExpandedRuns((current) => ({ ...current, [runId]: !current[runId] }));
@@ -737,6 +728,14 @@ export function BotPage({
 
     void refreshRunsSummary();
   }, [activeTab, refreshRunsSummary]);
+
+  useEffect(() => {
+    if (activeTab !== 'dashboard') {
+      return;
+    }
+
+    void refreshLastAutoTune();
+  }, [activeTab, refreshLastAutoTune]);
 
   useEffect(() => {
     void refreshDashboardEvents();
@@ -1101,6 +1100,9 @@ export function BotPage({
               </Col>
               <Col md={3}>
                 <div><strong>Auto-Tune:</strong> {autoTuneState.enabled ? 'ON' : 'OFF'}</div>
+                <div><strong>Scope:</strong> {autoTuneState.scope ?? settings.autoTuneScope}</div>
+                <div><strong>Planner:</strong> {autoTuneState.plannerMode ?? settings.autoTunePlannerMode ?? 'DETERMINISTIC'}</div>
+                <div><strong>Policy:</strong> {autoTuneState.autoTuneWindowHours ?? settings.autoTuneWindowHours ?? 24}h / target {autoTuneState.autoTuneTargetTradesInWindow ?? settings.autoTuneTargetTradesInWindow ?? 6} / tighten≥{autoTuneState.autoTuneMinTradesBeforeTighten ?? settings.autoTuneMinTradesBeforeTighten ?? 4}</div>
                 <div>
                   <strong>Last Auto-Tune:</strong>{' '}
                   {lastAutoTune
@@ -1109,7 +1111,9 @@ export function BotPage({
                       ? `${autoTuneState.lastApplied.parameter} ${autoTuneState.lastApplied.before}→${autoTuneState.lastApplied.after} (${autoTuneState.lastApplied.reason}) @ ${new Date(autoTuneState.lastApplied.ts).toLocaleTimeString()}`
                       : '-'}
                 </div>
-                <div className="mt-1"><Button size="sm" variant="outline-secondary" onClick={() => void refreshLastAutoTune()} disabled={lastAutoTuneLoading}>Refresh last tune</Button></div>
+                <div className="mt-1"><Button size="sm" variant="outline-secondary" onClick={() => void refreshLastAutoTune()} disabled={lastAutoTuneLoading}>Refresh Auto-Tune</Button></div>
+                <div className="small mt-2"><strong>Recent Auto-Tune (10):</strong></div>
+                <div className="small text-muted">{autoTuneHistory.length === 0 ? 'No history yet.' : autoTuneHistory.map((item) => `${new Date(item.ts).toLocaleTimeString()} ${item.parameter} ${item.before}→${item.after}`).join(' | ')}</div>
                 <div><strong>Queue depth:</strong> {botState.queueDepth}</div>
                 <div><strong>Active orders:</strong> {botState.activeOrders}</div>
                 <div><strong>Open positions:</strong> {botState.openPositions}</div>
@@ -1727,6 +1731,37 @@ export function BotPage({
                     </Form.Select>
                   </Col>
                 </Row>
+              </Card.Body>
+            </Card>
+
+            <Card className="mt-3">
+              <Card.Header className="py-2">Auto-Tune (Advanced)</Card.Header>
+              <Card.Body>
+                <Row className="g-2">
+                  <Col md={4}>
+                    <Form.Label>autoTunePlannerMode</Form.Label>
+                    <Form.Select disabled={disableSettings} value={settings.autoTunePlannerMode ?? 'DETERMINISTIC'} onChange={(event) => persistSettings({ ...settings, autoTunePlannerMode: event.target.value as BotSettings['autoTunePlannerMode'] })}>
+                      <option value="DETERMINISTIC">DETERMINISTIC</option>
+                      <option value="RANDOM_EXPLORE">RANDOM_EXPLORE</option>
+                    </Form.Select>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>autoTuneWindowHours</Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} min={0} max={168} value={settings.autoTuneWindowHours ?? 24} onChange={(event) => persistSettings({ ...settings, autoTuneWindowHours: Number(event.target.value) })} />
+                    <Form.Text muted>Rolling window in hours used for trade/PnL policy checks.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>autoTuneTargetTradesInWindow</Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} min={0} value={settings.autoTuneTargetTradesInWindow ?? 6} onChange={(event) => persistSettings({ ...settings, autoTuneTargetTradesInWindow: Number(event.target.value) })} />
+                    <Form.Text muted>Target number of trades in the window to avoid starvation.</Form.Text>
+                  </Col>
+                  <Col md={4}>
+                    <Form.Label>autoTuneMinTradesBeforeTighten</Form.Label>
+                    <Form.Control disabled={disableSettings} type="number" step={1} min={0} value={settings.autoTuneMinTradesBeforeTighten ?? 4} onChange={(event) => persistSettings({ ...settings, autoTuneMinTradesBeforeTighten: Number(event.target.value) })} />
+                    <Form.Text muted>Minimum trades before negative PnL can tighten gates.</Form.Text>
+                  </Col>
+                </Row>
+                <Form.Text muted>Percent convention reminder: 3 means 3%, not 0.03.</Form.Text>
               </Card.Body>
             </Card>
 
