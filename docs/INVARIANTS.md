@@ -16,5 +16,6 @@
 14. Paper LIMIT@mark (with `entryOffsetPct` applied for entries), fill by mark crossing.
 15. Demo REST only (api-demo.bybit.com) + FIFO queue concurrency=1.
 16. Real trading NOT IMPLEMENTED.
+17. On process shutdown/crash, runtime attempts best-effort terminal SYSTEM event (`BOT_SHUTDOWN`/`BOT_CRASH`), stats flush, and clean `stop()` (no automatic KILL).
 
 Percent convention (all operator inputs): `3` means **3%**, not `0.03`.

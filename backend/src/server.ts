@@ -20,6 +20,7 @@ import { ProfileService } from './services/profileService.js';
 import { RunRecorderService } from './services/runRecorderService.js';
 import { AutoTuneService } from './services/autoTuneService.js';
 import { planAutoTuneChange } from './services/autoTunePlanner.js';
+import { DoctorService } from './services/doctorService.js';
 import { RunHistoryService } from './services/runHistoryService.js';
 import { RunEventsService } from './services/runEventsService.js';
 import { resolveStoragePaths } from './services/storagePaths.js';
@@ -43,6 +44,10 @@ type BuildServerOptions = {
 };
 
 const marketHubByApp = new WeakMap<FastifyInstance, MarketHub>();
+const runtimeHandlesByApp = new WeakMap<
+  FastifyInstance,
+  { botEngine: BotEngine; runRecorder: RunRecorderService; journalService: JournalService }
+>();
 
 export function getMarketHub(app: FastifyInstance): MarketHub {
   const marketHub = marketHubByApp.get(app);
@@ -53,9 +58,17 @@ export function getMarketHub(app: FastifyInstance): MarketHub {
   return marketHub;
 }
 
+export function getRuntimeHandles(app: FastifyInstance): { botEngine: BotEngine; runRecorder: RunRecorderService; journalService: JournalService } {
+  const handles = runtimeHandlesByApp.get(app);
+  if (!handles) {
+    throw new Error('Runtime handles are not registered for this app instance');
+  }
+
+  return handles;
+}
+
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: true });
-  const startedAtMs = Date.now();
   const perfWindowMs = 5000;
   let perfWindowStartedAtMs = Date.now();
   let tickHandlerTotalMs = 0;
@@ -96,6 +109,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const runRecorder = new RunRecorderService();
   const runHistoryService = new RunHistoryService();
   const runEventsService = new RunEventsService();
+  const dataDirPath = path.resolve(process.cwd(), 'data');
   const autoTuneService = new AutoTuneService();
   void autoTuneService.init();
 
@@ -121,15 +135,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
     } catch {
       return null;
-    }
-  };
-
-  const getJournalSizeBytes = async (): Promise<number> => {
-    try {
-      const details = await stat(journalPath);
-      return details.size;
-    } catch {
-      return 0;
     }
   };
 
@@ -278,6 +283,31 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       evalsPerSec: evalRunCount / elapsedSec
     };
   };
+
+  const doctorService = new DoctorService({
+    getBotState: () => {
+      const state = buildBroadcastBotState();
+      return {
+        running: state.running,
+        paused: state.paused,
+        activeOrders: state.activeOrders,
+        openPositions: state.openPositions,
+        mode: state.mode,
+        tf: state.tf,
+        direction: state.direction
+      };
+    },
+    getMarketStates: () => marketHub.getAllStates(),
+    getTrackedSymbols: () => botEngine.getRuntimeSymbols(),
+    getUniverseState: () => universeService.get(),
+    getCurrentRunDir: () => runRecorder.getCurrentRunDir(),
+    getRunRecorderLastWriteError: () => runRecorder.getLastWriteError(),
+    getDataDir: () => dataDirPath,
+    getVersion: async () => ({
+      commit: getCommitHash() ?? undefined,
+      node: process.version
+    })
+  });
 
   const botEngine = new BotEngine({
     now: options.now,
@@ -806,51 +836,17 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.get('/api/doctor', async () => {
-    const universe = await universeService.get();
-    const replay = replayService.getState();
-    const botState = botEngine.getState();
-    const perfMetrics = getPerfMetrics();
-    const journalSizeBytes = await getJournalSizeBytes();
-
-    return {
-      ok: true,
-      serverTime: Date.now(),
-      uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
-      version: await getVersion(),
-      universe: {
-        ready: !!universe?.ready,
-        symbols: universe?.symbols.length ?? 0
-      },
-      market: {
-        running: marketHub.isRunning(),
-        subscribed: marketHub.getSubscribedCount(),
-        updatesPerSec: Number(marketHub.getUpdatesPerSecond().toFixed(2)),
-        tickHandlersMsAvg: Number(perfMetrics.tickHandlersMsAvg.toFixed(2)),
-        wsClients: wsClients.size,
-        wsFramesPerSec: Number(perfMetrics.wsFramesPerSec.toFixed(2))
-      },
-      bot: {
-        running: botState.running,
-        paused: botState.paused,
-        mode: botState.config?.mode ?? null,
-        tf: botState.config?.tf ?? null,
-        direction: botState.config?.direction ?? null,
-        evalsPerSec: Number(perfMetrics.evalsPerSec.toFixed(2))
-      },
-      replay: {
-        recording: replay.recording,
-        replaying: replay.replaying,
-        fileName: replay.fileName
-      },
-      journal: {
-        enabled: true,
-        path: journalPath,
-        sizeBytes: journalSizeBytes
-      },
-      demo: {
-        configured: isDemoConfigured()
-      }
-    };
+    try {
+      return await doctorService.buildReport();
+    } catch (error) {
+      app.log.warn({ err: error }, 'doctor report build failed unexpectedly');
+      return {
+        ok: false,
+        ts: Date.now(),
+        checks: [{ id: 'doctor_internal', status: 'FAIL', message: 'doctor internal error' }],
+        warnings: [(error as Error).message]
+      };
+    }
   });
 
   app.post('/api/replay/record/start', async (request, reply) => {
@@ -1104,6 +1100,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       zip.file('journal.ndjson', journalRaw);
       includedFiles.push('journal.ndjson');
       counts.journalLines = journalRaw.split('\n').filter((line) => line.trim().length > 0).length;
+    }
+
+    try {
+      const doctorReport = await doctorService.buildReport();
+      zip.file('doctor.json', JSON.stringify(doctorReport, null, 2));
+      includedFiles.push('doctor.json');
+    } catch {
+      notes.push('doctor.json omitted (doctor snapshot unavailable)');
     }
 
     const appVersion = await getVersion();
@@ -1464,6 +1468,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     await replayService.stopReplay();
     await marketHub.stop();
   });
+
+  runtimeHandlesByApp.set(app, { botEngine, runRecorder, journalService });
 
   return app;
 }
