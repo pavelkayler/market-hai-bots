@@ -99,6 +99,16 @@ export type BotState = {
   }>;
 };
 
+export type WsStatus = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'ERROR';
+
+export type WsConnectionState = {
+  ready: boolean;
+  status: WsStatus;
+  lastError: string | null;
+  connectedAt: number | null;
+  lastMessageAt: number | null;
+};
+
 
 export type BotStatsSideBreakdown = {
   trades: number;

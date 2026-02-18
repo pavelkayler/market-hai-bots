@@ -120,7 +120,10 @@ For each section, record PASS/FAIL and short evidence in `docs/QA_REPORT_LATEST.
 
 ## Pre-run smoke commands (record in QA_REPORT_LATEST)
 1. Run `npm run rc:check` and record PASS/FAIL.
-2. Run `npm run rc:smoke` and record PASS/FAIL plus startup/timeout log evidence.
+2. Run `npm run rc:audit` and record PASS/FAIL.
+   - PASS: command exits `0` (no vulnerabilities at `moderate` or higher).
+   - FAIL: non-zero exit; treat as RC-blocking unless explicitly accepted in `docs/KNOWN_RISKS_AND_TODOS.md`.
+3. Run `npm run rc:smoke` and record PASS/FAIL plus startup/timeout log evidence.
 
 ## H) Bot page tabs and dashboard composition (Task 50)
 1. Open `/bot` in a fresh browser profile (no `bot:tab` in storage).
