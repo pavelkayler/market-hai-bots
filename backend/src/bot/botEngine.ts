@@ -167,6 +167,13 @@ export type NoEntryReason = {
   context?: Record<string, number | string | null>;
 };
 
+export type LastBlockSnapshot = {
+  reasonCode: string;
+  reasonText: string;
+  atMs: number;
+  debug?: Record<string, number | string | boolean | null>;
+};
+
 export type EntryReason = 'LONG_CONTINUATION' | 'SHORT_CONTINUATION' | 'SHORT_DIVERGENCE';
 export type TradeCloseReason = 'TP' | 'SL' | 'KILL' | 'MANUAL';
 
@@ -253,6 +260,7 @@ export type SymbolRuntimeState = {
   lastSignalMskDayKey?: string;
   gates: GateSnapshot | null;
   lastBothCandidate: BothCandidateDiagnostics | null;
+  lastBlock: LastBlockSnapshot | null;
 };
 
 export type SignalPayload = {
@@ -1127,7 +1135,8 @@ export class BotEngine {
         lastOiDeltaPct: state.lastOiDeltaPct ?? null,
         lastSignalCount24h: state.lastSignalCount24h ?? 0,
         gates: state.gates ?? null,
-        lastBothCandidate: state.lastBothCandidate ?? null
+        lastBothCandidate: state.lastBothCandidate ?? null,
+        lastBlock: null
       });
     }
 
@@ -1322,7 +1331,8 @@ export class BotEngine {
       lastOiDeltaPct: symbolState.lastOiDeltaPct,
       lastSignalCount24h: symbolState.lastSignalCount24h,
       gates: symbolState.gates ? { ...symbolState.gates } : null,
-      lastBothCandidate: symbolState.lastBothCandidate ? { ...symbolState.lastBothCandidate } : null
+      lastBothCandidate: symbolState.lastBothCandidate ? { ...symbolState.lastBothCandidate } : null,
+      lastBlock: symbolState.lastBlock ? { ...symbolState.lastBlock, debug: symbolState.lastBlock.debug ? { ...symbolState.lastBlock.debug } : undefined } : null
     };
   }
 
@@ -1593,6 +1603,12 @@ export class BotEngine {
 
     if (!this.state.running || this.state.paused) {
       this.recordNoEntryReason(symbolState, { code: 'GUARDRAIL_PAUSED', message: 'Bot paused/running disabled.' });
+      this.updateLastBlock(symbolState, {
+        reasonCode: 'GUARDRAIL_PAUSED',
+        reasonText: 'Bot paused/running disabled.',
+        atMs: now,
+        debug: { paused: this.state.paused, running: this.state.running }
+      });
       this.persistNoEntryReasonSnapshot(symbolState, now);
       return;
     }
@@ -1626,12 +1642,45 @@ export class BotEngine {
             bucketStart: symbolState.lastTfBucketStart
           }
         });
+        this.updateLastBlock(symbolState, {
+          reasonCode: 'FUNDING_MISSING',
+          reasonText: 'Funding data missing; trade skipped.',
+          atMs: now,
+          debug: {
+            fundingRate: symbolState.fundingRate ?? null,
+            minFundingAbs: this.state.config.minFundingAbs,
+            hasPrevTfClose: Boolean(symbolState.prevTfCloseMark && symbolState.prevTfCloseOiv)
+          }
+        });
         this.persistNoEntryReasonSnapshot(symbolState, now);
+      } else if (symbolState.tradingAllowed === 'BLACKOUT') {
+        this.updateLastBlock(symbolState, {
+          reasonCode: 'BLACKOUT',
+          reasonText: `Blackout active${symbolState.blackoutReason ? ` (${symbolState.blackoutReason})` : ''}.`,
+          atMs: now,
+          debug: {
+            isBlackout: true,
+            nextFundingTimeMs: symbolState.nextFundingTimeMs ?? null
+          }
+        });
+      } else if (symbolState.tradingAllowed === 'COOLDOWN') {
+        this.updateLastBlock(symbolState, {
+          reasonCode: 'COOLDOWN',
+          reasonText: 'Cooldown active.',
+          atMs: now,
+          debug: { isBlackout: false }
+        });
       }
       return;
     }
 
     if (now < symbolState.blockedUntilTs) {
+      this.updateLastBlock(symbolState, {
+        reasonCode: 'COOLDOWN',
+        reasonText: 'Cooldown active.',
+        atMs: now,
+        debug: { blockedUntilTs: symbolState.blockedUntilTs }
+      });
       this.persistNoEntryReasonSnapshot(symbolState, now);
       return;
     }
@@ -1671,6 +1720,15 @@ export class BotEngine {
           bucketStart: tfBucketStart
         }
       });
+      this.updateLastBlock(symbolState, {
+        reasonCode: 'MISSING_PREV_TF_PRICE',
+        reasonText: 'Previous TF candle close for price is missing.',
+        atMs: now,
+        debug: {
+          hasPrevTfClose: false,
+          prevTfCloseMark: symbolState.prevTfCloseMark ?? null
+        }
+      });
       this.persistNoEntryReasonSnapshot(symbolState, now);
       return;
     }
@@ -1681,6 +1739,15 @@ export class BotEngine {
         context: {
           prevCloseOiv: symbolState.prevTfCloseOiv,
           bucketStart: tfBucketStart
+        }
+      });
+      this.updateLastBlock(symbolState, {
+        reasonCode: 'MISSING_PREV_TF_OIV',
+        reasonText: 'Previous TF candle close for OIV is missing.',
+        atMs: now,
+        debug: {
+          hasPrevTfClose: false,
+          prevTfCloseOiv: symbolState.prevTfCloseOiv ?? null
         }
       });
       this.persistNoEntryReasonSnapshot(symbolState, now);
@@ -1727,6 +1794,22 @@ export class BotEngine {
           message: 'Funding rate missing or zero; trade skipped.',
           context: { fundingRate: fundingRate ?? null, minFundingAbs, bucketStart: tfBucketStart }
         });
+        this.updateLastBlock(symbolState, {
+          reasonCode: fundingRate === 0 ? 'FUNDING_ZERO' : 'FUNDING_MISSING',
+          reasonText: fundingRate === 0 ? 'Funding rate is zero; trade skipped.' : 'Funding rate missing; trade skipped.',
+          atMs: now,
+          debug: {
+            absPriceDeltaPct: Math.abs(priceDeltaPct),
+            absOiDeltaPct: Math.abs(oiDeltaPct),
+            thrPricePct: absPriceThr,
+            thrOiPct: absOiThr,
+            fundingRate: fundingRate ?? null,
+            minFundingAbs,
+            hasPrevTfClose: true,
+            isBlackout: false,
+            paused: false
+          }
+        });
       } else if (minFundingAbs > 0 && Math.abs(fundingRate ?? 0) < minFundingAbs) {
         this.recordNoEntryReason(symbolState, {
           code: 'funding_abs_below_min',
@@ -1735,9 +1818,44 @@ export class BotEngine {
           threshold: minFundingAbs,
           context: { fundingRate: fundingRate ?? null, minFundingAbs, bucketStart: tfBucketStart }
         });
+        this.updateLastBlock(symbolState, {
+          reasonCode: 'FUNDING_BELOW_MIN',
+          reasonText: `|fundingRate| below minFundingAbs (${fundingRate} < ${minFundingAbs}).`,
+          atMs: now,
+          debug: {
+            absPriceDeltaPct: Math.abs(priceDeltaPct),
+            absOiDeltaPct: Math.abs(oiDeltaPct),
+            thrPricePct: absPriceThr,
+            thrOiPct: absOiThr,
+            fundingRate: fundingRate ?? null,
+            minFundingAbs,
+            hasPrevTfClose: true,
+            isBlackout: false,
+            paused: false
+          }
+        });
+      } else {
+        this.updateLastBlock(symbolState, {
+          reasonCode: 'TRIGGER_NOT_MET',
+          reasonText: 'Trigger not met: abs deltas below thresholds.',
+          atMs: now,
+          debug: {
+            absPriceDeltaPct: Math.abs(priceDeltaPct),
+            absOiDeltaPct: Math.abs(oiDeltaPct),
+            thrPricePct: absPriceThr,
+            thrOiPct: absOiThr,
+            fundingRate: fundingRate ?? null,
+            minFundingAbs,
+            hasPrevTfClose: true,
+            isBlackout: false,
+            paused: false
+          }
+        });
       }
       return;
     }
+
+    this.updateLastBlock(symbolState, null);
 
     if (symbolState.lastImpulseProcessedBucketStart === tfBucketStart) {
       return;
@@ -1787,6 +1905,20 @@ export class BotEngine {
         value: signalCount24h,
         threshold: signalCount24h < minCount ? minCount : maxCount,
         context: { counter: signalCount24h, min: minCount, max: maxCount, bucketStart: tfBucketStart }
+      });
+      this.updateLastBlock(symbolState, {
+        reasonCode: signalCount24h < minCount ? 'WAIT_CONFIRMATION' : 'SIGNAL_COUNTER_ABOVE_MAX',
+        reasonText: signalCount24h < minCount
+          ? `Waiting for confirmation: signal counter ${signalCount24h}/${minCount}.`
+          : `Signal counter above max (${signalCount24h}/${maxCount}).`,
+        atMs: now,
+        debug: {
+          counter: signalCount24h,
+          minTriggerCount: minCount,
+          maxTriggerCount: maxCount,
+          absPriceDeltaPct: Math.abs(priceDeltaPct),
+          absOiDeltaPct: Math.abs(oiDeltaPct)
+        }
       });
       this.persistSnapshot();
       return;
@@ -1910,11 +2042,12 @@ export class BotEngine {
       }
       return;
     }
-    if (nowMs < nextFunding + 10 * 60_000) {
+    if (symbolState.fundingBlackoutUntilMs && nowMs < symbolState.fundingBlackoutUntilMs) {
       symbolState.tradingAllowed = "COOLDOWN";
       symbolState.blackoutReason = 'funding cooldown active';
       return;
     }
+    symbolState.fundingBlackoutUntilMs = null;
     symbolState.tradingAllowed = "OK";
   }
 
@@ -2308,8 +2441,13 @@ export class BotEngine {
       lastSignalAtMs: null,
       lastSignalMskDayKey: "",
       gates: null,
-      lastBothCandidate: null
+      lastBothCandidate: null,
+      lastBlock: null
     };
+  }
+
+  private updateLastBlock(symbolState: SymbolRuntimeState, block: LastBlockSnapshot | null): void {
+    symbolState.lastBlock = block;
   }
 
   private placeConfirmedOrder(symbolState: SymbolRuntimeState, marketState: MarketState, side: 'LONG' | 'SHORT', qty: number): void {
@@ -3019,7 +3157,8 @@ export class BotEngine {
         lastOiDeltaPct: symbolState.lastOiDeltaPct,
         lastSignalCount24h: symbolState.lastSignalCount24h,
         gates: symbolState.gates,
-        lastBothCandidate: symbolState.lastBothCandidate
+        lastBothCandidate: symbolState.lastBothCandidate,
+        lastBlock: symbolState.lastBlock
       };
     }
 

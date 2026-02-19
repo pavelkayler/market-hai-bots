@@ -54,6 +54,9 @@ export type BotSettings = {
 
 export type BotConfig = BotSettings;
 
+
+export type UniverseSymbolStatus = 'WAIT_CANDLE' | 'WAIT_SIGNAL' | 'WAIT_CONFIRMATION' | 'ORDER_PLACED' | 'POSITION_OPEN' | 'BLACKOUT';
+
 export type ProfilesState = {
   ok: true;
   activeProfile: string;
@@ -78,6 +81,20 @@ export type BotStateSymbol = {
   signalCount24h: number;
   lastSignalAtMs: number | null;
   topReasons?: NoEntryReason[];
+  statusCode?: UniverseSymbolStatus;
+  statusLabel?: string;
+  noEntryReason?: string | null;
+  noEntryDebug?: {
+    absPriceDeltaPct?: number;
+    absOiDeltaPct?: number;
+    thrPricePct?: number;
+    thrOiPct?: number;
+    fundingRate?: number | null;
+    minFundingAbs?: number;
+    hasPrevTfClose?: boolean;
+    isBlackout?: boolean;
+    paused?: boolean;
+  } | null;
 };
 
 export type BotStateContract = {

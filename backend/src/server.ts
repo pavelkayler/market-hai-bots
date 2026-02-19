@@ -385,6 +385,35 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     };
   };
 
+
+  const statusLabelByCode: Record<string, string> = {
+    WAIT_CANDLE: 'Ожидаю формирование свечи',
+    WAIT_SIGNAL: 'Ожидаю сигнал',
+    WAIT_CONFIRMATION: 'Ожидаю подтверждения',
+    ORDER_PLACED: 'Ордер размещен',
+    POSITION_OPEN: 'Позиция открыта',
+    BLACKOUT: 'Blackout'
+  };
+
+  const resolveSymbolStatus = (runtime: ReturnType<BotEngine['getSymbolState']>, hasPrevTfClose: boolean) => {
+    if (runtime?.tradingAllowed === 'BLACKOUT') {
+      return { statusCode: 'BLACKOUT', statusLabel: statusLabelByCode.BLACKOUT };
+    }
+    if (!hasPrevTfClose) {
+      return { statusCode: 'WAIT_CANDLE', statusLabel: statusLabelByCode.WAIT_CANDLE };
+    }
+    if (runtime?.fsmState === 'POSITION_OPEN') {
+      return { statusCode: 'POSITION_OPEN', statusLabel: statusLabelByCode.POSITION_OPEN };
+    }
+    if (runtime?.fsmState === 'ENTRY_PENDING') {
+      return { statusCode: 'ORDER_PLACED', statusLabel: statusLabelByCode.ORDER_PLACED };
+    }
+    if (runtime?.fsmState === 'HOLDING_LONG' || runtime?.fsmState === 'HOLDING_SHORT' || runtime?.fsmState === 'ARMED_LONG' || runtime?.fsmState === 'ARMED_SHORT') {
+      return { statusCode: 'WAIT_CONFIRMATION', statusLabel: statusLabelByCode.WAIT_CONFIRMATION };
+    }
+    return { statusCode: 'WAIT_SIGNAL', statusLabel: statusLabelByCode.WAIT_SIGNAL };
+  };
+
   const buildApiBotState = async (version = stateVersion + 1) => {
     stateVersion = version;
     const state = botEngine.getState();
@@ -451,6 +480,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           hasPrevTfClose && typeof market?.openInterestValue === 'number' && Number.isFinite(market.openInterestValue)
             ? ((market.openInterestValue - prevTfCloseOiv) / prevTfCloseOiv) * 100
             : null;
+        const status = resolveSymbolStatus(runtime, hasPrevTfClose);
 
         return {
           symbol,
@@ -469,7 +499,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           blackoutReason: runtime?.blackoutReason ?? null,
           signalCount24h: runtime?.lastSignalCount24h ?? 0,
           lastSignalAtMs: runtime?.lastSignalAtMs ?? null,
-          topReasons: runtime?.lastNoEntryReasons ?? []
+          topReasons: runtime?.lastNoEntryReasons ?? [],
+          statusCode: status.statusCode,
+          statusLabel: status.statusLabel,
+          noEntryReason: runtime?.lastBlock?.reasonText ?? null,
+          noEntryDebug: runtime?.lastBlock?.debug ?? null
         };
       }),
       // legacy fields kept for additive-safe migration
