@@ -1,6 +1,7 @@
 import type { DemoClosedPnlItem, DemoOpenOrder, DemoPosition, IDemoTradeClient } from '../bybit/demoTradeClient.js';
 import type { MarketState } from '../market/marketHub.js';
 import { DemoOrderQueue, type DemoQueueSnapshot } from './demoOrderQueue.js';
+import { PaperExecution } from './paperExecution.js';
 import { PAPER_FEES } from './paperFees.js';
 import type { PaperPendingOrder, PaperPosition } from './paperTypes.js';
 import type { RuntimeSnapshot, RuntimeSnapshotSymbol, SnapshotStore } from './snapshotStore.js';
@@ -420,6 +421,7 @@ type BotEngineDeps = {
   emitPositionUpdate: (payload: PositionUpdatePayload) => void;
   emitQueueUpdate: (payload: DemoQueueSnapshot) => void;
   demoTradeClient?: IDemoTradeClient;
+  paperExecution?: PaperExecution;
   snapshotStore?: SnapshotStore;
   emitLog?: (message: string) => void;
   onGuardrailPaused?: (payload: { reason: string; stats: BotStats; state: BotState }) => void;
@@ -738,6 +740,7 @@ export class BotEngine {
   private readonly now: () => number;
   private readonly symbols = new Map<string, SymbolRuntimeState>();
   private readonly demoQueue: DemoOrderQueue;
+  private readonly paperExecution: PaperExecution;
   private readonly lotSizeBySymbol = new Map<string, Pick<UniverseEntry, 'qtyStep' | 'minOrderQty' | 'maxOrderQty'>>();
   private state: BotState = {
     running: false,
@@ -797,11 +800,16 @@ export class BotEngine {
 
   constructor(private readonly deps: BotEngineDeps) {
     this.now = deps.now ?? Date.now;
+    this.paperExecution = deps.paperExecution ?? new PaperExecution();
     this.demoQueue = new DemoOrderQueue((snapshot) => {
       this.state = { ...this.state, queueDepth: snapshot.depth };
       this.deps.emitQueueUpdate(snapshot);
       this.persistSnapshot();
     });
+  }
+
+  getPaperExecution(): PaperExecution {
+    return this.paperExecution;
   }
 
   getState(): BotState {
@@ -1220,7 +1228,16 @@ export class BotEngine {
     this.clearSnapshotState();
   }
 
+  cancelPaperOpenOrders(symbol?: string): void {
+    this.paperExecution.cancelOpenOrders(symbol ? { symbol } : undefined);
+  }
+
+  clearPaperExecution(): void {
+    this.paperExecution.clearAll();
+  }
+
   resetRuntimeStateForAllSymbols(): void {
+    this.paperExecution.clearAll();
     for (const [symbol, symbolState] of this.symbols.entries()) {
       this.symbols.set(symbol, {
         ...this.buildEmptySymbolState(symbol),
@@ -1489,6 +1506,7 @@ export class BotEngine {
     };
 
     symbolState.position = null;
+    this.paperExecution.removePosition(symbolState.symbol);
     symbolState.fsmState = 'IDLE';
     symbolState.holdStartTs = null;
     this.resetBaseline(symbolState, marketState);
@@ -2308,6 +2326,10 @@ export class BotEngine {
     const tpMovePct = percentToFraction(this.state.config.tpRoiPct / this.state.config.leverage);
     const slMovePct = percentToFraction(this.state.config.slRoiPct / this.state.config.leverage);
 
+    if (this.state.config.mode === 'paper' && (this.paperExecution.hasOpenOrder(symbolState.symbol) || this.paperExecution.hasOpenPosition(symbolState.symbol))) {
+      return;
+    }
+
     const pendingOrder: PaperPendingOrder = {
       symbol: symbolState.symbol,
       side: orderSide,
@@ -2332,6 +2354,18 @@ export class BotEngine {
       this.deps.emitLog?.(`Skipped ${symbolState.symbol}: invalid entry payload (price=${pendingOrder.limitPrice}, qty=${pendingOrder.qty}).`);
       this.resetToIdle(symbolState);
       return;
+    }
+
+    if (this.state.config.mode === 'paper') {
+      const created = this.paperExecution.placeLimitOrder({
+        symbol: symbolState.symbol,
+        side: orderSide,
+        qty,
+        limitPrice: entryLimit,
+        tsMs: now
+      });
+      pendingOrder.orderId = created.orderId;
+      pendingOrder.sentToExchange = true;
     }
 
     if (this.state.config.mode === 'demo' && !this.isValidDemoOrderPayload(symbolState.symbol, pendingOrder)) {
@@ -2673,6 +2707,7 @@ export class BotEngine {
       const expiredOrder = symbolState.pendingOrder;
       symbolState.pendingOrder = null;
       symbolState.fsmState = 'IDLE';
+      this.paperExecution.cancelOpenOrders({ symbol: symbolState.symbol });
       this.resetBaseline(symbolState, marketState);
       this.deps.emitOrderUpdate({ symbol: symbolState.symbol, status: 'EXPIRED', order: expiredOrder });
       this.updateSummaryCounts();
@@ -2680,34 +2715,16 @@ export class BotEngine {
       return;
     }
 
-    const shouldFill =
-      (symbolState.pendingOrder.side === 'Buy' && marketState.markPrice <= symbolState.pendingOrder.limitPrice) ||
-      (symbolState.pendingOrder.side === 'Sell' && marketState.markPrice >= symbolState.pendingOrder.limitPrice);
+    this.paperExecution.onMarkTick({ symbol: symbolState.symbol, mark: marketState.markPrice, tsMs: now });
 
-    if (!shouldFill) {
+    if (this.paperExecution.hasOpenOrder(symbolState.symbol)) {
+      symbolState.fsmState = 'ENTRY_PENDING';
       return;
     }
 
     const filledOrder = symbolState.pendingOrder;
-    const side = filledOrder.side === 'Buy' ? 'LONG' : 'SHORT';
-    const tpMovePct = percentToFraction(this.state.config.tpRoiPct / this.state.config.leverage);
-    const slMovePct = percentToFraction(this.state.config.slRoiPct / this.state.config.leverage);
-
-    const fillRatio = (this.state.config.paperPartialFillPct ?? DEFAULT_PAPER_PARTIAL_FILL_PCT) / 100;
-    const filledQty = filledOrder.qty * fillRatio;
-    if (filledQty <= 0) {
-      return;
-    }
-    const entrySlippageFraction = (this.state.config.paperEntrySlippageBps ?? DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS) / 10_000;
-    const entrySlippageBpsApplied = this.state.config.paperEntrySlippageBps ?? DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS;
-    const entryPrice = side === 'LONG' ? filledOrder.limitPrice * (1 + entrySlippageFraction) : filledOrder.limitPrice * (1 - entrySlippageFraction);
-
-    if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(filledQty) || filledQty <= 0 || (side !== 'LONG' && side !== 'SHORT')) {
-      this.recordNoEntryReason(symbolState, {
-        code: 'INVALID_ENTRY_PAYLOAD',
-        message: 'Paper fill rejected: invalid entryPrice/qty/side.'
-      });
-      this.deps.emitLog?.(`Skipped ${symbolState.symbol}: paper fill rejected due to invalid entry payload.`);
+    const paperPosition = this.paperExecution.getOpenPosition(symbolState.symbol);
+    if (!paperPosition) {
       symbolState.pendingOrder = null;
       symbolState.fsmState = 'IDLE';
       this.resetBaseline(symbolState, marketState);
@@ -2716,19 +2733,23 @@ export class BotEngine {
       return;
     }
 
+    const side = paperPosition.side === 'Buy' ? 'LONG' : 'SHORT';
+    const tpMovePct = percentToFraction(this.state.config.tpRoiPct / this.state.config.leverage);
+    const slMovePct = percentToFraction(this.state.config.slRoiPct / this.state.config.leverage);
+
     const position: PaperPosition = {
       symbol: symbolState.symbol,
       side,
-      entryPrice,
+      entryPrice: paperPosition.avgPrice,
       markAtSignal: filledOrder.markAtSignal,
       entryLimit: filledOrder.limitPrice,
       entryOffsetPct: filledOrder.entryOffsetPct,
-      entrySlippageBpsApplied,
+      entrySlippageBpsApplied: 0,
       spreadBpsAtEntry: filledOrder.spreadBpsAtEntry,
-      qty: filledQty,
-      tpPrice: side === 'LONG' ? entryPrice * (1 + tpMovePct) : entryPrice * (1 - tpMovePct),
-      slPrice: side === 'LONG' ? entryPrice * (1 - slMovePct) : entryPrice * (1 + slMovePct),
-      openedTs: now
+      qty: paperPosition.size,
+      tpPrice: side === 'LONG' ? paperPosition.avgPrice * (1 + tpMovePct) : paperPosition.avgPrice * (1 - tpMovePct),
+      slPrice: side === 'LONG' ? paperPosition.avgPrice * (1 - slMovePct) : paperPosition.avgPrice * (1 + slMovePct),
+      openedTs: paperPosition.openedAtMs
     };
 
     symbolState.pendingOrder = null;
@@ -3249,6 +3270,8 @@ export class BotEngine {
           orderLinkId: cancelledOrder.orderLinkId
         });
       }
+    } else if (this.state.config?.mode === 'paper') {
+      this.paperExecution.cancelOpenOrders({ symbol: symbolState.symbol });
     }
 
     symbolState.pendingOrder = null;
