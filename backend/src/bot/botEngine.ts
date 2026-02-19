@@ -3314,8 +3314,9 @@ export class BotEngine {
     priceDeltaPct: number,
     oiDeltaPct: number
   ): { side: 'LONG' | 'SHORT'; entryReason: EntryReason; bothCandidate?: BothCandidateDiagnostics } | null {
-    const longTrue = priceDeltaPct >= this.state.config!.priceUpThrPct && oiDeltaPct >= this.state.config!.oiUpThrPct;
-    const shortTrue = priceDeltaPct <= -this.state.config!.priceUpThrPct && oiDeltaPct <= -this.state.config!.oiUpThrPct;
+    const absPriceThr = Math.abs(this.state.config!.priceUpThrPct);
+    const absOiThr = Math.abs(this.state.config!.oiUpThrPct);
+    const triggerOk = Math.abs(priceDeltaPct) >= absPriceThr && Math.abs(oiDeltaPct) >= absOiThr;
     const fundingRate = symbolState.fundingRate;
     if (!Number.isFinite(fundingRate ?? NaN) || fundingRate === 0) {
       return null;
@@ -3325,9 +3326,9 @@ export class BotEngine {
       return null;
     }
     if ((fundingRate ?? 0) > 0) {
-      return longTrue ? { side: 'LONG', entryReason: 'LONG_CONTINUATION' } : null;
+      return triggerOk ? { side: 'LONG', entryReason: 'LONG_CONTINUATION' } : null;
     }
-    return shortTrue ? { side: 'SHORT', entryReason: 'SHORT_CONTINUATION' } : null;
+    return triggerOk ? { side: 'SHORT', entryReason: 'SHORT_CONTINUATION' } : null;
   }
 
   private computeLongEdge(priceDeltaPct: number, oiDeltaPct: number): number {
