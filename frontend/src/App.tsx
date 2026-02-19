@@ -316,7 +316,7 @@ export function App() {
   return (
     <>
       <Navbar bg="dark" variant="dark" expand="sm" className="mb-3">
-        <Container>
+        <Container fluid>
           <Navbar.Brand>Bybit OI/Price Bot</Navbar.Brand>
           <Nav className="me-auto">
             <Nav.Link as={Link} to="/">
@@ -332,7 +332,7 @@ export function App() {
           <span>{connectionBadge}</span>
         </Container>
       </Navbar>
-      <Container className="pb-4">
+      <Container fluid className="pb-4">
         <Alert variant="secondary" className="py-2">
           Backend: {API_BASE}
         </Alert>

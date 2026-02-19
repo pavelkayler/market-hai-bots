@@ -314,3 +314,11 @@ Reference checklist: `docs/RC_CHECKLIST.md`.
 - First fix P0-1 (pause-in-stopped lifecycle violation) and P0-3 (test contract drift).
 - Then tackle P1-4/P1-6 to improve operator clarity and lifecycle control completeness.
 - Reserve P2 for controlled cleanup after contract freeze.
+
+
+## Build Fixes (Step-1)
+
+- Fixed backend start-config selection so `/api/bot/start` consumes non-empty payloads even when `mode` is omitted (Settings v2 compatibility).
+- Fixed profile defaults/migration to avoid operator-facing `default` profile while keeping legacy profile persistence on disk.
+- Fixed Doctor ws freshness semantics for zero desired-symbol subscriptions (WARN instead of false FAIL) and added stream diagnostics fields.
+- Fixed Bot dashboard rendering scope: fluid app container + open positions/open orders tables + safer monotonic bot-state refresh handling.

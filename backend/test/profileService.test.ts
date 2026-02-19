@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -23,22 +23,17 @@ const shippedPresets = [
 ];
 
 describe('ProfileService', () => {
-  it('seeds only new shipped presets and keeps autotune enabled', async () => {
+  it('loads empty storage with named default profile and seeded presets', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'profile-service-test-'));
     const service = new ProfileService(path.join(tempDir, 'profiles.json'));
 
     try {
       const list = await service.list();
-      expect(list.names).toEqual(['default', ...shippedPresets].sort((a, b) => a.localeCompare(b)));
-      for (const name of shippedPresets) {
-        const profile = await service.get(name);
-        expect(profile?.autoTuneEnabled).toBe(true);
-        expect(profile?.dailyLossLimitUSDT).toBe(0);
-        expect(profile?.maxConsecutiveLosses).toBe(0);
-      }
-      const defaultProfile = await service.get('default');
-      expect(defaultProfile?.dailyLossLimitUSDT).toBe(0);
-      expect(defaultProfile?.maxConsecutiveLosses).toBe(0);
+      expect(list.names).toEqual([...shippedPresets].sort((a, b) => a.localeCompare(b)));
+      expect(list.activeProfile).toBe('balanced_1m');
+      const legacyDefaultProfile = await service.get('default');
+      expect(legacyDefaultProfile?.dailyLossLimitUSDT).toBe(0);
+      expect(legacyDefaultProfile?.maxConsecutiveLosses).toBe(0);
       expect(await service.get('fast_test_1m')).toBeNull();
       expect(await service.get('skip_most_trades')).toBeNull();
       expect((await service.get('aggressive_1m'))?.autoTunePlannerMode).toBe('RANDOM_EXPLORE');
@@ -60,6 +55,48 @@ describe('ProfileService', () => {
       const serviceB = new ProfileService(filePath);
       const list = await serviceB.list();
       expect(list.activeProfile).toBe('custom_live');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates legacy default active profile and hides it from list', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'profile-service-legacy-test-'));
+    const filePath = path.join(tempDir, 'profiles.json');
+
+    try {
+      await writeFile(
+        filePath,
+        JSON.stringify({
+          activeProfile: 'default',
+          profiles: {
+            default: customConfig
+          }
+        }),
+        'utf-8'
+      );
+
+      const service = new ProfileService(filePath);
+      const list = await service.list();
+      expect(list.activeProfile).toBe('balanced_1m');
+      expect(list.names).not.toContain('default');
+      expect(list.names).toContain('balanced_1m');
+
+      const persisted = JSON.parse(await readFile(filePath, 'utf-8')) as { activeProfile: string; profiles: Record<string, unknown> };
+      expect(persisted.activeProfile).toBe('balanced_1m');
+      expect(Object.keys(persisted.profiles)).toContain('default');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('list output always points active profile to a visible existing profile', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'profile-service-list-active-test-'));
+    const service = new ProfileService(path.join(tempDir, 'profiles.json'));
+
+    try {
+      const list = await service.list();
+      expect(list.names).toContain(list.activeProfile);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

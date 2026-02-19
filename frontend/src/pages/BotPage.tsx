@@ -66,6 +66,25 @@ type ActiveSymbolRow = {
   topReason: string | null;
 };
 
+
+
+type OpenPositionRow = {
+  symbol: string;
+  side: string;
+  size: number;
+  avgPrice: number;
+  unrealizedPnl: number;
+};
+
+type OpenOrderRow = {
+  symbol: string;
+  side: string;
+  qty: number;
+  limitPrice: number;
+  status: string;
+  orderId: string | null;
+};
+
 const defaultSettings: MinimalSettings = { tf: 1, priceUpThrPct: 0.5, oiUpThrPct: 3, minFundingAbs: 0, signalCounterMin: 2, signalCounterMax: 3 };
 
 const toHuman = (ms?: number | null) => {
@@ -105,8 +124,18 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
   const [stats, setStats] = useState<BotStats | null>(null);
   const [cachedBotState, setCachedBotState] = useState<BotState>(botState);
   const refreshInFlight = useRef(false);
+  const cachedStateVersionRef = useRef(typeof botState.stateVersion === 'number' ? botState.stateVersion : 0);
 
   useEffect(() => {
+    const incomingVersion = typeof botState.stateVersion === 'number' ? botState.stateVersion : 0;
+    if (incomingVersion > 0 && incomingVersion < cachedStateVersionRef.current) {
+      return;
+    }
+
+    if (incomingVersion > cachedStateVersionRef.current) {
+      cachedStateVersionRef.current = incomingVersion;
+    }
+
     setCachedBotState(botState);
   }, [botState]);
 
@@ -149,7 +178,11 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
     refreshInFlight.current = true;
     try {
       const [nextState, statsResponse] = await Promise.all([getBotState(signal), getBotStats(signal)]);
-      setCachedBotState(nextState);
+      const nextVersion = typeof nextState.stateVersion === 'number' ? nextState.stateVersion : 0;
+      if (nextVersion === 0 || nextVersion >= cachedStateVersionRef.current) {
+        cachedStateVersionRef.current = Math.max(cachedStateVersionRef.current, nextVersion);
+        setCachedBotState(nextState);
+      }
       setStats(statsResponse.stats);
     } catch {
       // no-op
@@ -239,7 +272,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
     getSortValue: (row, key) => {
       if (key === 'nextFundingTimeMs') return row.nextFundingTimeMs ?? null;
       if (key === 'fundingRate') return row.fundingRate ?? null;
-      if (key === 'topReason') return row.topReason ?? '';
+      if (key === 'topReason') return (row.topReason ?? '').trim() || null;
       return (row as Record<string, unknown>)[String(key)];
     }
   });
@@ -362,7 +395,11 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
   const onRefreshNow = async () => {
     try {
       const refreshed = await refreshBotState();
-      setCachedBotState(refreshed);
+      const refreshedVersion = typeof refreshed.stateVersion === 'number' ? refreshed.stateVersion : 0;
+      if (refreshedVersion === 0 || refreshedVersion >= cachedStateVersionRef.current) {
+        cachedStateVersionRef.current = Math.max(cachedStateVersionRef.current, refreshedVersion);
+        setCachedBotState(refreshed);
+      }
       await syncRest();
       await refreshBotData();
     } catch {
@@ -373,6 +410,8 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
 
   const isStopped = !cachedBotState.running;
   const canKill = cachedBotState.running || cachedBotState.activeOrders > 0 || cachedBotState.openPositions > 0;
+  const openPositionsRows: OpenPositionRow[] = cachedBotState.positions ?? [];
+  const openOrdersRows: OpenOrderRow[] = cachedBotState.openOrders ?? [];
 
   const renderSortMarker = (key: keyof PerSymbolResultsRow) => {
     if (sortState?.key !== key) return null;
@@ -419,6 +458,62 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
               <Col md={4}><strong>Costs</strong><div className="small">Fees: {(stats?.totalFeesUSDT ?? 0).toFixed(2)} · Slippage: {(stats?.totalSlippageUSDT ?? 0).toFixed(2)} · Avg spread entry: {stats?.avgSpreadBpsEntry == null ? '—' : stats.avgSpreadBpsEntry.toFixed(2)}bps · Avg spread exit: {stats?.avgSpreadBpsExit == null ? '—' : stats.avgSpreadBpsExit.toFixed(2)}bps</div></Col>
             </Row>
           </Card.Body></Card>
+
+          <Card className="mt-3"><Card.Body>
+            <Card.Title>Open positions</Card.Title>
+            <Table size="sm" striped responsive style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <th style={{ width: '18%' }}>Symbol</th>
+                  <th style={{ width: '12%' }}>Side</th>
+                  <th style={{ width: '17%' }}>Size</th>
+                  <th style={{ width: '22%' }}>Avg Price</th>
+                  <th style={{ width: '31%' }}>Unrealized PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {openPositionsRows.map((row) => (
+                  <tr key={row.symbol}>
+                    <td>{row.symbol}</td>
+                    <td>{row.side}</td>
+                    <td className="font-monospace">{row.size}</td>
+                    <td className="font-monospace">{row.avgPrice}</td>
+                    <td className="font-monospace">{row.unrealizedPnl.toFixed(4)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+            {openPositionsRows.length === 0 ? <div className="small text-muted">No open positions.</div> : null}
+          </Card.Body></Card>
+
+          <Card className="mt-3"><Card.Body>
+            <Card.Title>Open orders</Card.Title>
+            <Table size="sm" striped responsive style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <th style={{ width: '14%' }}>Symbol</th>
+                  <th style={{ width: '10%' }}>Side</th>
+                  <th style={{ width: '12%' }}>Qty</th>
+                  <th style={{ width: '18%' }}>Limit Price</th>
+                  <th style={{ width: '12%' }}>Status</th>
+                  <th style={{ width: '34%' }}>Order ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {openOrdersRows.map((row) => (
+                  <tr key={`${row.symbol}-${row.orderId ?? row.status}`}>
+                    <td>{row.symbol}</td>
+                    <td>{row.side}</td>
+                    <td className="font-monospace">{row.qty}</td>
+                    <td className="font-monospace">{row.limitPrice}</td>
+                    <td>{row.status}</td>
+                    <td className="font-monospace text-truncate" title={row.orderId ?? '—'}>{row.orderId ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+            {openOrdersRows.length === 0 ? <div className="small text-muted">No open orders.</div> : null}
+          </Card.Body></Card>
         </Tab>
 
         <Tab eventKey="settings" title="Settings">
@@ -460,7 +555,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
             </div>
             <div className="small text-muted mb-2">Funding snapshots refresh every 10 minutes (batch, best-effort).</div>
             <div className="active-symbols-table-wrap">
-            <Table size="sm" striped className="active-symbols-table">
+            <Table size="sm" striped className="active-symbols-table w-100" style={{ tableLayout: 'fixed' }}>
               <colgroup>
                 <col style={{ width: '8%' }} />
                 <col style={{ width: '7%' }} />
