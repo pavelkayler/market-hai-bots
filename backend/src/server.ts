@@ -447,7 +447,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         oiUpThrPct: toFinite(normalizedConfig?.oiUpThrPct),
         minFundingAbs: toFinite(normalizedConfig?.minFundingAbs),
         minTriggerCount: toFinite(normalizedConfig?.signalCounterMin),
-        maxTriggerCount: toFinite(normalizedConfig?.signalCounterMax)
+        maxTriggerCount: toFinite(normalizedConfig?.signalCounterMax),
+        marginUSDT: toFinite(normalizedConfig?.marginUSDT),
+        leverage: toFinite(normalizedConfig?.leverage),
+        entryOffsetPct: toFinite(normalizedConfig?.entryOffsetPct),
+        tpRoiPct: toFinite(normalizedConfig?.tpRoiPct),
+        slRoiPct: toFinite(normalizedConfig?.slRoiPct)
       },
       universe: {
         ready: Boolean(universe?.ready),
@@ -862,6 +867,32 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/bot/config', async (request, reply) => {
     const requestBody = (request.body as Record<string, unknown> | null | undefined) ?? {};
+    const numericConfigKeys = new Set([
+      'tf',
+      'tfMinutes',
+      'priceUpThrPct',
+      'oiUpThrPct',
+      'minFundingAbs',
+      'minTriggerCount',
+      'maxTriggerCount',
+      'signalCounterMin',
+      'signalCounterMax',
+      'marginUSDT',
+      'leverage',
+      'entryOffsetPct',
+      'tpRoiPct',
+      'slRoiPct'
+    ]);
+
+    for (const [key, value] of Object.entries(requestBody)) {
+      if (!numericConfigKeys.has(key)) {
+        continue;
+      }
+
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return reply.code(400).send({ ok: false, error: `INVALID_BOT_CONFIG_FIELD:${key}` });
+      }
+    }
     const baselineConfig = (await loadBotConfig()) ?? defaultBotConfig;
     const mergedCandidate = mergeBotConfigOverrides(baselineConfig as unknown as Record<string, unknown>, requestBody);
     const normalized = normalizeBotConfig(mergedCandidate);

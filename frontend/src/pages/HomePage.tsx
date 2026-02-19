@@ -9,6 +9,17 @@ type Props = {
 };
 
 const fmt = (ts: number | null | undefined) => (ts ? new Date(ts).toLocaleString() : '—');
+const fmtPnl = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+
+  if (Math.abs(value) >= 100) {
+    return value.toFixed(2);
+  }
+
+  return value.toFixed(4);
+};
 
 export function HomePage({ wsState, bybitWs, botState }: Props) {
   return (
@@ -25,8 +36,12 @@ export function HomePage({ wsState, bybitWs, botState }: Props) {
       </Card.Body></Card>
 
       <Card><Card.Header>Open positions</Card.Header><Card.Body>
-        <Table size="sm" striped><thead><tr><th>Symbol</th><th>Side</th><th>Size</th><th>Avg price</th><th>Unrealized PnL</th></tr></thead>
-          <tbody>{(botState?.positions ?? []).map((row) => <tr key={row.symbol}><td>{row.symbol}</td><td>{row.side}</td><td>{row.size}</td><td>{row.avgPrice}</td><td>{row.unrealizedPnl}</td></tr>)}</tbody>
+        <Table size="sm" striped><thead><tr><th>Symbol</th><th>Side</th><th>Size</th><th>Avg price</th><th>Current PnL</th></tr></thead>
+          <tbody>
+            {(botState?.positions ?? []).length === 0
+              ? <tr><td colSpan={5} className="text-muted">No open positions</td></tr>
+              : (botState?.positions ?? []).map((row) => <tr key={row.symbol}><td>{row.symbol}</td><td>{row.side}</td><td>{row.size}</td><td>{row.avgPrice}</td><td>{fmtPnl(row.unrealizedPnl)}</td></tr>)}
+          </tbody>
         </Table>
       </Card.Body></Card>
 

@@ -80,7 +80,19 @@ const sortArrow = (active: boolean, dir: 'asc' | 'desc' | null) => {
 };
 
 export function BotPage({ onRefresh, botState }: Props) {
-  const [settings, setSettings] = useState({ tf: 1, priceUpThrPct: 0.5, oiUpThrPct: 3, minFundingAbs: 0, signalCounterMin: 2, signalCounterMax: 3 });
+  const [settings, setSettings] = useState({
+    tf: 1,
+    priceUpThrPct: 0.5,
+    oiUpThrPct: 3,
+    minFundingAbs: 0,
+    signalCounterMin: 2,
+    signalCounterMax: 3,
+    marginUSDT: 100,
+    leverage: 10,
+    entryOffsetPct: 0.01,
+    tpRoiPct: 0.3,
+    slRoiPct: 0.3
+  });
   const [universe, setUniverse] = useState({ minVolPct: 10, minTurnover: 10_000_000 });
   const [stats, setStats] = useState<{ totalTrades: number; pnlUSDT: number } | null>(null);
   const [msg, setMsg] = useState<string>('');
@@ -101,6 +113,27 @@ export function BotPage({ onRefresh, botState }: Props) {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!botState?.config) {
+      return;
+    }
+
+    setSettings((prev) => ({
+      ...prev,
+      tf: botState.config?.tfMinutes ?? prev.tf,
+      priceUpThrPct: botState.config?.priceUpThrPct ?? prev.priceUpThrPct,
+      oiUpThrPct: botState.config?.oiUpThrPct ?? prev.oiUpThrPct,
+      minFundingAbs: botState.config?.minFundingAbs ?? prev.minFundingAbs,
+      signalCounterMin: botState.config?.minTriggerCount ?? prev.signalCounterMin,
+      signalCounterMax: botState.config?.maxTriggerCount ?? prev.signalCounterMax,
+      marginUSDT: botState.config?.marginUSDT ?? prev.marginUSDT,
+      leverage: botState.config?.leverage ?? prev.leverage,
+      entryOffsetPct: botState.config?.entryOffsetPct ?? prev.entryOffsetPct,
+      tpRoiPct: botState.config?.tpRoiPct ?? prev.tpRoiPct,
+      slRoiPct: botState.config?.slRoiPct ?? prev.slRoiPct
+    }));
+  }, [botState?.config]);
 
   const renderError = (error: unknown): string => {
     if (error instanceof ApiError) {
@@ -165,6 +198,24 @@ export function BotPage({ onRefresh, botState }: Props) {
     );
   };
 
+  const parseNumericInput = (value: string): number | null => {
+    if (value.trim() === '') {
+      return null;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const updateSetting = <K extends keyof typeof settings>(key: K, value: string) => {
+    const parsed = parseNumericInput(value);
+    if (parsed === null) {
+      return;
+    }
+
+    setSettings((prev) => ({ ...prev, [key]: parsed }));
+  };
+
   return (
     <div className="d-grid gap-3">
       {msg ? <Alert variant="success">{msg}</Alert> : null}
@@ -211,15 +262,34 @@ export function BotPage({ onRefresh, botState }: Props) {
 
             <Card><Card.Header>Settings</Card.Header><Card.Body>
               <Row className="g-2">
-                <Col md={4}><Form.Label>TF</Form.Label><Form.Control type="number" value={settings.tf} onChange={(e) => setSettings((p) => ({ ...p, tf: Number(e.target.value) }))} /></Col>
-                <Col md={4}><Form.Label>ΔPrice% (модуль) к прошлой свече TF</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => setSettings((p) => ({ ...p, priceUpThrPct: Number(e.target.value) }))} /></Col>
-                <Col md={4}><Form.Label>ΔOIV% (модуль) к прошлой свече TF</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => setSettings((p) => ({ ...p, oiUpThrPct: Number(e.target.value) }))} /></Col>
-                <Col md={4}><Form.Label>Min funding abs</Form.Label><Form.Control type="number" value={settings.minFundingAbs} onChange={(e) => setSettings((p) => ({ ...p, minFundingAbs: Number(e.target.value) }))} /></Col>
+                <Col md={4}><Form.Label>TF</Form.Label><Form.Control type="number" value={settings.tf} onChange={(e) => updateSetting('tf', e.target.value)} /></Col>
+                <Col md={4}><Form.Label>ΔPrice% (модуль) к прошлой свече TF</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => updateSetting('priceUpThrPct', e.target.value)} /></Col>
+                <Col md={4}><Form.Label>ΔOIV% (модуль) к прошлой свече TF</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => updateSetting('oiUpThrPct', e.target.value)} /></Col>
+                <Col md={4}><Form.Label>Min funding abs</Form.Label><Form.Control type="number" value={settings.minFundingAbs} onChange={(e) => updateSetting('minFundingAbs', e.target.value)} /></Col>
                 <Col xs={12}><Form.Text className="text-muted">Порог применяется к модулю изменения. Направление сделки определяется знаком funding.</Form.Text></Col>
-                <Col md={4}><Form.Label>Min trigger count</Form.Label><Form.Control type="number" value={settings.signalCounterMin} onChange={(e) => setSettings((p) => ({ ...p, signalCounterMin: Number(e.target.value) }))} /></Col>
-                <Col md={4}><Form.Label>Max trigger count</Form.Label><Form.Control type="number" value={settings.signalCounterMax} onChange={(e) => setSettings((p) => ({ ...p, signalCounterMax: Number(e.target.value) }))} /></Col>
+                <Col md={4}><Form.Label>Min trigger count</Form.Label><Form.Control type="number" value={settings.signalCounterMin} onChange={(e) => updateSetting('signalCounterMin', e.target.value)} /></Col>
+                <Col md={4}><Form.Label>Max trigger count</Form.Label><Form.Control type="number" value={settings.signalCounterMax} onChange={(e) => updateSetting('signalCounterMax', e.target.value)} /></Col>
+
+                <Col xs={12}><hr className="my-2" /></Col>
+                <Col xs={12}><h6 className="mb-1">Entry settings</h6></Col>
+                <Col md={4}><Form.Label>Margin (USDT)</Form.Label><Form.Control type="number" value={settings.marginUSDT} onChange={(e) => updateSetting('marginUSDT', e.target.value)} /></Col>
+                <Col md={4}><Form.Label>Leverage</Form.Label><Form.Control type="number" value={settings.leverage} onChange={(e) => updateSetting('leverage', e.target.value)} /></Col>
+                <Col md={4}><Form.Label>Entry offset (%)</Form.Label><Form.Control type="number" value={settings.entryOffsetPct} onChange={(e) => updateSetting('entryOffsetPct', e.target.value)} /></Col>
+                <Col md={4}><Form.Label>TP (%)</Form.Label><Form.Control type="number" value={settings.tpRoiPct} onChange={(e) => updateSetting('tpRoiPct', e.target.value)} /></Col>
+                <Col md={4}><Form.Label>SL (%)</Form.Label><Form.Control type="number" value={settings.slRoiPct} onChange={(e) => updateSetting('slRoiPct', e.target.value)} /></Col>
+                <Col xs={12}><Form.Text className="text-muted">Entry offset: LONG limit = mark × (1 - offset/100), SHORT limit = mark × (1 + offset/100).</Form.Text></Col>
+                <Col xs={12}><Form.Text className="text-muted">TP/SL are ROI% thresholds calculated on margin.</Form.Text></Col>
               </Row>
-              <Button className="mt-3" onClick={() => run(() => saveBotConfig(settings as never), 'Bot settings saved')}>Save</Button>
+              <Button
+                className="mt-3"
+                onClick={() => run(() => {
+                  const minTriggerCount = Math.max(1, Math.floor(settings.signalCounterMin));
+                  const maxTriggerCount = Math.max(minTriggerCount, Math.min(1000, Math.floor(settings.signalCounterMax)));
+                  return saveBotConfig({ ...settings, signalCounterMin: minTriggerCount, signalCounterMax: maxTriggerCount } as never);
+                }, 'Bot settings saved')}
+              >
+                Save
+              </Button>
             </Card.Body></Card>
           </div>
         </Tab>
