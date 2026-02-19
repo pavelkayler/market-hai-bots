@@ -65,8 +65,8 @@ export type BotStateSymbol = {
   symbol: string;
   markPrice: number;
   openInterestValue: number;
-  priceDeltaPct: number;
-  oiDeltaPct: number;
+  priceDeltaPct: number | null;
+  oiDeltaPct: number | null;
   fundingRate: number | null;
   nextFundingTimeMs: number | null;
   timeToFundingMs: number | null;
@@ -77,6 +77,7 @@ export type BotStateSymbol = {
   blackoutReason?: string | null;
   signalCount24h: number;
   lastSignalAtMs: number | null;
+  topReasons?: NoEntryReason[];
 };
 
 export type BotStateContract = {
@@ -139,6 +140,7 @@ export type BotState = {
     fundingAgeMs?: number | null;
     fundingStatus?: 'OK' | 'MISSING' | 'STALE';
     tradingAllowed?: 'OK' | 'BLACKOUT' | 'COOLDOWN' | 'MISSING';
+    topReasons?: NoEntryReason[];
   }>;
 };
 

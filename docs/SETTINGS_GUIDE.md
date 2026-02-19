@@ -166,14 +166,15 @@ Spread (`spreadBpsAtEntry`, `spreadBpsAtExit`) and slippage (`slippageUSDT`, `sl
 
 ### Trigger delta semantics
 - `priceUpThrPct` and `oiUpThrPct` are interpreted vs the **previous TF candle** (UTC buckets for `tf=1/3/5`).
-- First-candle fallback: if previous candle values are missing/invalid, deltas are treated as `0` and no signal is triggered.
+- Missing previous candle close is explicit: if previous price/OIV close is missing or non-positive, engine reports `missing_prev_candle_price` / `missing_prev_candle_oiv` and skips entry (no same-candle bootstrap/lookahead).
+- Price source for trigger deltas is **markPrice** (same source used by trading logic), with OIV from Bybit `openInterestValue`.
 
 
 ### Funding gate semantics
 - `fundingRate` uses the raw Bybit ticker value that is parsed as a number without unit conversion (for example ticker `"0.0001"` is stored as `0.0001`).
 - Direction gate remains funding-sign based: `fundingRate > 0` allows LONG candidates, `fundingRate < 0` allows SHORT candidates, and missing/invalid/zero funding blocks entries.
 - `minFundingAbs` (default `0`) is an absolute funding magnitude threshold in the same funding units.
-  - When `minFundingAbs > 0` and `abs(fundingRate) < minFundingAbs`, entry is blocked with `FUNDING_ABS_BELOW_MIN`.
+  - When `minFundingAbs > 0` and `abs(fundingRate) < minFundingAbs`, entry is blocked with `funding_abs_below_min`.
 
 Examples (raw funding units):
 - If `fundingRate=0.0001` and `minFundingAbs=0.0002`, then `abs(0.0001) < 0.0002` => no trade.

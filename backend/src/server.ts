@@ -274,7 +274,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           timeToFundingMs,
           tradingAllowed: runtime.tradingAllowed ?? 'MISSING',
           priceDeltaPct: runtime.lastPriceDeltaPct ?? null,
-          oiDeltaPct: runtime.lastOiDeltaPct ?? null
+          oiDeltaPct: runtime.lastOiDeltaPct ?? null,
+          topReasons: runtime.lastNoEntryReasons ?? []
         };
       })
       .filter((value): value is NonNullable<typeof value> => value !== null);
@@ -361,11 +362,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         const priceDeltaPct =
           hasPrevTfClose && typeof market?.markPrice === 'number' && Number.isFinite(market.markPrice)
             ? ((market.markPrice - prevTfCloseMark) / prevTfCloseMark) * 100
-            : 0;
+            : null;
         const oiDeltaPct =
           hasPrevTfClose && typeof market?.openInterestValue === 'number' && Number.isFinite(market.openInterestValue)
             ? ((market.openInterestValue - prevTfCloseOiv) / prevTfCloseOiv) * 100
-            : 0;
+            : null;
 
         return {
           symbol,
@@ -383,7 +384,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           tradability: runtime?.tradingAllowed ?? 'MISSING',
           blackoutReason: runtime?.blackoutReason ?? null,
           signalCount24h: runtime?.lastSignalCount24h ?? 0,
-          lastSignalAtMs: runtime?.lastSignalAtMs ?? null
+          lastSignalAtMs: runtime?.lastSignalAtMs ?? null,
+          topReasons: runtime?.lastNoEntryReasons ?? []
         };
       }),
       // legacy fields kept for additive-safe migration

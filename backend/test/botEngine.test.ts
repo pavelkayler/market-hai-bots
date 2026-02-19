@@ -105,7 +105,7 @@ describe('BotEngine paper execution', () => {
     engine.setUniverseSymbols(['BTCUSDT']);
     engine.start(defaultConfig);
 
-    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, fundingRate: 0.0002, ts: now });
     now += 10;
     engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, ts: now });
     now += 60_000;
@@ -256,6 +256,73 @@ describe('BotEngine paper execution', () => {
     runtime = engine.getSymbolState('BTCUSDT');
     expect(runtime?.prevTfCloseMark).toBe(105);
     expect(runtime?.prevTfCloseOiv).toBe(1050);
+  });
+
+
+  it('records missing previous candle reasons before first TF close', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1 });
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
+    now += 5_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100.2, openInterestValue: 1001, openInterest: 1001, fundingRate: 0.0002, ts: now });
+
+    const reasonCodes = engine.getSymbolState('BTCUSDT')?.lastNoEntryReasons.map((entry) => entry.code) ?? [];
+    expect(reasonCodes.some((code) => code === 'missing_prev_candle_price' || code === 'missing_prev_candle_oiv')).toBe(true);
+  });
+
+  it('increments signal counter at most once per TF bucket with frequent ticks', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, signalCounterMin: 1, signalCounterMax: 99, maxSecondsIntoCandle: 59 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, fundingRate: 0.0002, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1025, openInterest: 1025, fundingRate: 0.0002, ts: now });
+    now += 5_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103, openInterestValue: 1030, openInterest: 1030, fundingRate: 0.0002, ts: now });
+    now += 5_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 103.5, openInterestValue: 1035, openInterest: 1035, fundingRate: 0.0002, ts: now });
+
+    expect(engine.getSymbolState('BTCUSDT')?.lastSignalCount24h).toBe(1);
+    expect(signals).toHaveLength(1);
+  });
+
+  it('records funding_abs_below_min reason when thresholds pass but funding magnitude is too small', () => {
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: () => undefined,
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, signalCounterThreshold: 1, minFundingAbs: 0.001 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, fundingRate: 0.0002, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, fundingRate: 0.0002, ts: now });
+
+    expect(engine.getSymbolState('BTCUSDT')?.lastNoEntryReasons[0]?.code).toBe('funding_abs_below_min');
   });
 
   it('auto-cancels pending order after 1 hour and resets baseline', () => {
@@ -498,7 +565,7 @@ describe('BotEngine paper execution', () => {
     const symbolState = engine.getSymbolState('BTCUSDT');
     expect(signals).toHaveLength(0);
     expect(symbolState?.pendingOrder).toBeNull();
-    expect(symbolState?.lastNoEntryReasons[0]?.code).toBe('FUNDING_ABS_BELOW_MIN');
+    expect(symbolState?.lastNoEntryReasons[0]?.code).toBe('funding_abs_below_min');
   });
 
   it('computes entryOffsetPct=0.01% entry limit from mark for long and short', () => {
