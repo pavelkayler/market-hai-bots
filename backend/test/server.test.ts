@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { IDemoTradeClient } from '../src/bybit/demoTradeClient.js';
-import { buildServer } from '../src/server.js';
+import { buildServer, getMarketHub } from '../src/server.js';
 import type { TickerStream, TickerUpdate } from '../src/market/tickerStream.js';
 import { BybitApiError, type IBybitMarketClient, type InstrumentLinear, type TickerLinear } from '../src/services/bybitMarketClient.js';
 import { JournalService } from '../src/services/journalService.js';
@@ -1538,6 +1538,36 @@ describe('server routes', () => {
     expect(botState.json()).toMatchObject({ activeOrders: 0, openPositions: 0 });
   });
 
+
+
+  it('POST /api/bot/kill clears desired symbols and advances stateVersion', async () => {
+    const tickerStream = new FakeTickerStream();
+    app = buildIsolatedServer({
+      tickerStream,
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 110, lowPrice24h: 100, markPrice: 100, openInterestValue: 100000 }]
+        ])
+      )
+    });
+
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 1 } });
+    const before = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    const beforeVersion = (before.json() as { stateVersion: number }).stateVersion;
+
+    const killResponse = await app.inject({ method: 'POST', url: '/api/bot/kill', payload: {} });
+    expect(killResponse.statusCode).toBe(200);
+
+    const after = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    const afterBody = after.json() as { running: boolean; paused: boolean; stateVersion: number };
+    expect(afterBody.running).toBe(false);
+    expect(afterBody.paused).toBe(false);
+    expect(afterBody.stateVersion).toBeGreaterThan(beforeVersion);
+
+    const marketHub = getMarketHub(app);
+    expect(marketHub.getSubscribedSymbols()).toEqual([]);
+  });
 
   it('/api/bot/kill cancels all pending orders and closes open positions', async () => {
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);

@@ -3,7 +3,7 @@ import type { InstrumentLinear } from '../services/bybitMarketClient.js';
 export type WsTickerEvent = {
   symbol: string;
   markPrice: number;
-  openInterestValue: number;
+  openInterestValue: number | null;
   fundingRate: number | null;
   nextFundingTimeMs: number | null;
   ts: number;
@@ -119,7 +119,7 @@ export const parseWsTickerEvent = (json: unknown): WsTickerEvent | null => {
   const nextFundingTimeMs = normalizeEpochMs((data as { nextFundingTime?: unknown }).nextFundingTime);
   const ts = parseFiniteNumber(packet.ts);
 
-  if (markPrice === null || openInterestValue === null || ts === null) {
+  if (markPrice === null || ts === null) {
     return null;
   }
 

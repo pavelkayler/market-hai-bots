@@ -47,7 +47,8 @@ describe('MarketHub', () => {
     expect(hub.getState('BTCUSDT')).toEqual({
       markPrice: 100,
       openInterestValue: 250000,
-      openInterest: null,
+      fundingRate: null,
+      nextFundingTimeMs: null,
       ts: 123456,
       lastPrice: null,
       bid: null,
@@ -60,7 +61,8 @@ describe('MarketHub', () => {
       BTCUSDT: {
         markPrice: 100,
         openInterestValue: 250000,
-        openInterest: null,
+          fundingRate: null,
+        nextFundingTimeMs: null,
         ts: 123456,
         lastPrice: null,
         bid: null,
@@ -69,6 +71,39 @@ describe('MarketHub', () => {
         lastTickTs: 123456
       }
     });
+  });
+
+
+  it('patches missing OIV from REST ticker fallback for subscribed symbols', async () => {
+    vi.useFakeTimers();
+    const fakeStream = new FakeTickerStream();
+    const hub = new MarketHub({
+      tickerStream: fakeStream,
+      marketClient: {
+        getTickerLinear: async () => ({
+          symbol: 'BTCUSDT',
+          turnover24hUSDT: null,
+          turnover24h: null,
+          highPrice24h: null,
+          lowPrice24h: null,
+          markPrice: 100,
+          openInterestValue: 250000,
+          fundingRate: 0.0001,
+          nextFundingTime: Date.now() + 60_000
+        })
+      }
+    });
+
+    await hub.setUniverseSymbols(['BTCUSDT']);
+    await hub.start();
+
+    fakeStream.emit({ symbol: 'BTCUSDT', markPrice: 100, openInterestValue: null, ts: 123456 });
+    expect(hub.getState('BTCUSDT')?.openInterestValue).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(5_100);
+
+    expect(hub.getState('BTCUSDT')?.openInterestValue).toBe(250000);
+    await hub.stop();
   });
 });
 

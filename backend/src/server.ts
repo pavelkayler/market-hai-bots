@@ -717,6 +717,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   const marketHub = new MarketHub({
     tickerStream: options.tickerStream,
+    marketClient,
+    getFundingSnapshot: (symbol) => fundingSnapshotService.get(symbol),
+    now: options.now,
     onMarketStateUpdate: (symbol, state) => {
       processMarketStateUpdate(symbol, state);
     }
@@ -1021,7 +1024,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
     setTrackedUniverseSymbols([]);
+    botEngine.resetLifecycleRuntime();
     symbolUpdateBroadcaster.reset();
+    botEngine.clearPersistedRuntime();
     currentRunProfileNameUsed = null;
     currentRunId = null;
 
@@ -1082,6 +1087,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
     setTrackedUniverseSymbols([]);
+    botEngine.resetLifecycleRuntime();
     symbolUpdateBroadcaster.reset();
     rotatePerfWindow(Date.now());
     botEngine.clearPersistedRuntime();

@@ -3,11 +3,12 @@
 ## 1) Install & static checks
 
 1. `npm install`
-2. `npm --prefix backend run build`
-3. `npm --prefix backend run typecheck`
-4. `npm --prefix backend test`
-5. `npm --prefix frontend run build`
-6. Optional bundled check: `npm run rc:check`
+2. `npm run install:all`
+3. `npm --prefix backend run build`
+4. `npm --prefix backend run typecheck`
+5. `npm --prefix backend test`
+6. `npm --prefix frontend run build`
+7. Optional bundled check: `npm run rc:check`
 
 ## 2) Start services
 
@@ -93,5 +94,7 @@
   - Verify with logs containing `funding snapshot refresh completed` and `reason: "bot_start"`.
   - In UI/`/api/bot/state`, `fundingStatus` should move from `MISSING` to `OK` (or remain visibly explained if upstream data is unavailable).
 
-- **Audit command limitation in this environment:**
-  - `npm audit` currently returns `403 Forbidden` from the npm advisories endpoint in this environment, so vulnerability deltas could not be computed here.
+- **Audit verification commands:**
+  - `npm --prefix backend audit --audit-level=high`
+  - `npm --prefix frontend audit --audit-level=high`
+  - If advisories endpoint is blocked by environment/network policy, capture command output and treat as a warning (do not use `--force`).

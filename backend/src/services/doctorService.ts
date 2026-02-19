@@ -129,12 +129,12 @@ export class DoctorService {
     const wsFreshnessThresholdMs = 15_000;
 
     const desiredSymbols =
-      trackedSymbols.length > 0
-        ? trackedSymbols
-        : desiredSymbolsFromHub.length > 0
-          ? desiredSymbolsFromHub
+      desiredSymbolsFromHub.length > 0
+        ? desiredSymbolsFromHub
+        : trackedSymbols.length > 0
+          ? trackedSymbols
           : streamStatus && streamStatus.desiredSymbolsCount > 0
-            ? Object.keys(marketStates)
+            ? trackedSymbols
             : [];
     const desiredSymbolsCount = desiredSymbols.length;
 
