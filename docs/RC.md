@@ -5,7 +5,8 @@ This project is now **v2 refactor complete** for the operator contract in this d
 ## Prerequisites
 
 - Node.js 20+
-- npm install at repo root (which installs backend/frontend deps via workspaces layout in this repo)
+- npm install at repo root
+- npm run install:all (installs backend/frontend dependencies used by `--prefix` scripts)
 - Bybit USDT Linear Perpetual symbols only in universe
 - For demo checks: valid `DEMO_API_KEY` and `DEMO_API_SECRET`
 

@@ -1599,6 +1599,7 @@ export class BotEngine {
           bucketStart: tfBucketStart
         }
       });
+      this.persistNoEntryReasonSnapshot(symbolState, now);
       return;
     }
     if (!deltas.canComputeOiv) {
@@ -1610,6 +1611,7 @@ export class BotEngine {
           bucketStart: tfBucketStart
         }
       });
+      this.persistNoEntryReasonSnapshot(symbolState, now);
       return;
     }
 

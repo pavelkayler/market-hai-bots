@@ -85,6 +85,25 @@ describe('DoctorService', () => {
     expect(wsFreshness?.status).toBe('PASS');
   });
 
+
+  it('ws_freshness returns WARN when some desired symbols are missing but present symbols are fresh', async () => {
+    const now = 1_700_000_000_000;
+    const service = new DoctorService({
+      now: () => now,
+      getBotState: () => ({ running: true, paused: false, activeOrders: 0, openPositions: 0, mode: 'paper', tf: 1, direction: 'both' }),
+      getMarketStates: () => ({ BTCUSDT: { ts: now - 500, lastTickTs: now - 500 } }),
+      getTrackedSymbols: () => ['BTCUSDT'],
+      getDesiredSymbols: () => ['BTCUSDT', 'ETHUSDT'],
+      getTickerStreamStatus: () => ({ running: true, connected: true, desiredSymbolsCount: 2, subscribedCount: 1, lastMessageAt: now - 250, lastTickerAt: now - 250, reconnectCount: 0, lastError: null }),
+      getUniverseState: async () => ({ contractFilter: 'USDT_LINEAR_PERPETUAL_ONLY', diagnostics: { excluded: { expiring: 0 } }, symbols: [{ symbol: 'BTCUSDT' }] })
+    });
+
+    const report = await service.buildReport();
+    const wsFreshness = report.checks.find((check) => check.id === 'ws_freshness');
+
+    expect(wsFreshness?.status).toBe('WARN');
+    expect(wsFreshness?.message).toContain('missing 1 symbols');
+  });
   it('ws_freshness returns FAIL when present symbol data is stale for desired symbols', async () => {
     const now = 1_700_000_000_000;
     const service = new DoctorService({
