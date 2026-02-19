@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import path from 'node:path';
-import { readFile, stat } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 
 import JSZip from 'jszip';
 
@@ -17,12 +17,10 @@ import { FundingSnapshotService, classifyFundingSnapshot } from './market/fundin
 import { ReplayService, type ReplaySpeed } from './replay/replayService.js';
 import { BybitMarketClient, type IBybitMarketClient } from './services/bybitMarketClient.js';
 import { JournalService, type JournalEntry } from './services/journalService.js';
-import { ProfileService } from './services/profileService.js';
 import { RunRecorderService } from './services/runRecorderService.js';
 import { AutoTuneService } from './services/autoTuneService.js';
 import { AUTO_TUNE_BOUNDS, planAutoTuneChange } from './services/autoTunePlanner.js';
 import { createDeterministicRng, mixSeed32 } from './utils/deterministicRng.js';
-import { DoctorService } from './services/doctorService.js';
 import { RunHistoryService } from './services/runHistoryService.js';
 import { RunEventsService } from './services/runEventsService.js';
 import { resolveStoragePaths } from './services/storagePaths.js';
@@ -41,7 +39,6 @@ type BuildServerOptions = {
   demoTradeClient?: IDemoTradeClient;
   wsClients?: Set<{ send: (payload: string) => unknown }>;
   journalFilePath?: string;
-  profileFilePath?: string;
   universeExclusionsFilePath?: string;
 };
 
@@ -82,7 +79,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   let killWarning: string | null = null;
   let stateVersion = 0;
   let lastJournalTs = 0;
-  let currentRunProfileNameUsed: string | null = null;
   let currentRunId: string | null = null;
   const packageJsonPath = path.resolve(process.cwd(), 'package.json');
 
@@ -92,7 +88,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const storagePaths = resolveStoragePaths({
     universePath: options.universeFilePath,
     runtimePath: options.runtimeSnapshotFilePath,
-    profilesPath: options.profileFilePath,
     journalPath: options.journalFilePath
   });
   const activeSymbolSet = options.activeSymbolSet ?? new ActiveSymbolSet();
@@ -111,11 +106,44 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const snapshotStore = new FileSnapshotStore(storagePaths.runtimePath);
   const journalPath = storagePaths.journalPath;
   const journalService = new JournalService(journalPath);
-  const profileService = new ProfileService(storagePaths.profilesPath);
+  const dataDirPath = path.resolve(process.cwd(), 'data');
+  const botConfigFilePath = path.resolve(dataDirPath, 'botConfig.json');
+  const universeConfigFilePath = path.resolve(dataDirPath, 'universeConfig.json');
+  const defaultBotConfig = normalizeBotConfig({});
+  const defaultUniverseConfig = { minVolPct: 10, minTurnover: 10_000_000 };
+
+  const saveJsonFile = async (filePath: string, value: unknown): Promise<void> => {
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, JSON.stringify(value, null, 2), 'utf-8');
+  };
+
+  const loadBotConfig = async () => {
+    try {
+      const raw = await readFile(botConfigFilePath, 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return normalizeBotConfig(parsed) ?? defaultBotConfig;
+    } catch {
+      return defaultBotConfig;
+    }
+  };
+
+  const loadUniverseConfig = async (): Promise<{ minVolPct: number; minTurnover: number }> => {
+    try {
+      const raw = await readFile(universeConfigFilePath, 'utf-8');
+      const parsed = JSON.parse(raw) as { minVolPct?: unknown; minTurnover?: unknown };
+      const minVolPct = Number(parsed.minVolPct);
+      const minTurnover = Number(parsed.minTurnover);
+      return {
+        minVolPct: Number.isFinite(minVolPct) && minVolPct > 0 ? minVolPct : defaultUniverseConfig.minVolPct,
+        minTurnover: Number.isFinite(minTurnover) && minTurnover > 0 ? minTurnover : defaultUniverseConfig.minTurnover
+      };
+    } catch {
+      return defaultUniverseConfig;
+    }
+  };
   const runRecorder = new RunRecorderService();
   const runHistoryService = new RunHistoryService();
   const runEventsService = new RunEventsService();
-  const dataDirPath = path.resolve(process.cwd(), 'data');
   const autoTuneService = new AutoTuneService();
   void autoTuneService.init();
   fundingSnapshotService.init({
@@ -152,7 +180,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
 
   const mergeBotConfigOverrides = (baselineConfig: Record<string, unknown>, requestBody: Record<string, unknown>): Record<string, unknown> => {
-    const overrides = Object.fromEntries(Object.entries(requestBody).filter(([key]) => key !== 'useActiveProfile'));
+    const overrides = Object.fromEntries(Object.entries(requestBody));
     const merged: Record<string, unknown> = { ...baselineConfig };
 
     if (Object.prototype.hasOwnProperty.call(overrides, 'tf')) {
@@ -286,9 +314,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         }
         const market = marketHub.getState(symbol);
         const marketWithFunding = market ? withFundingSnapshot(symbol, market, now) : null;
-        const nextFunding = runtime.nextFundingTimeMs ?? marketWithFunding?.nextFundingTimeMs ?? null;
-        const timeToFundingMs = nextFunding ? nextFunding - now : null;
         const fundingInfo = withFundingSnapshot(symbol, { fundingRate: null, nextFundingTimeMs: null }, now);
+        const nextFunding = marketWithFunding?.nextFundingTimeMs ?? runtime.nextFundingTimeMs ?? fundingInfo.nextFundingTimeMs ?? null;
+        const timeToFundingMs = nextFunding ? nextFunding - now : null;
         return {
           symbol,
           signalCount24h: runtime.lastSignalCount24h ?? 0,
@@ -383,7 +411,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         const market = marketHub.getState(symbol);
         const marketWithFunding = market ? withFundingSnapshot(symbol, market, now) : null;
         const fundingInfo = withFundingSnapshot(symbol, { fundingRate: null, nextFundingTimeMs: null }, now);
-        const nextFundingTimeMs = runtime?.nextFundingTimeMs ?? marketWithFunding?.nextFundingTimeMs ?? null;
+        const nextFundingTimeMs = marketWithFunding?.nextFundingTimeMs ?? runtime?.nextFundingTimeMs ?? fundingInfo.nextFundingTimeMs ?? null;
         const timeToFundingMs = nextFundingTimeMs === null ? null : Math.max(0, nextFundingTimeMs - now);
 
         const prevTfCloseMark = typeof runtime?.prevTfCloseMark === 'number' && Number.isFinite(runtime.prevTfCloseMark) ? runtime.prevTfCloseMark : null;
@@ -452,29 +480,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     };
   };
 
-  const doctorService = new DoctorService({
-    getBotState: () => {
-      const state = buildBroadcastBotState();
-      return {
-        running: state.running,
-        paused: state.paused,
-        activeOrders: state.activeOrders,
-        openPositions: state.openPositions,
-        mode: state.mode,
-        tf: state.tf,
-        direction: state.direction
-      };
-    },
-    getMarketStates: () => marketHub.getAllStates(),
-    getTrackedSymbols: () => botEngine.getRuntimeSymbols(),
-    getDesiredSymbols: () => marketHub.getSubscribedSymbols(),
-    getTickerStreamStatus: () => marketHub.getTickerStreamStatus(),
-    getUniverseState: () => universeService.get(),
-    getVersion: async () => ({
-      commit: getCommitHash() ?? undefined,
-      node: process.version
-    })
-  });
+
 
   const botEngine = new BotEngine({
     now: options.now,
@@ -624,9 +630,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
                 reason: plan.reason
               });
 
-              if (currentRunProfileNameUsed) {
-                await profileService.set(currentRunProfileNameUsed, updated);
-              }
+              await saveJsonFile(botConfigFilePath, updated);
               return;
             }
 
@@ -755,73 +759,53 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return { ok: true };
   });
 
-  app.get('/api/profiles', async () => {
-    const result = await profileService.list();
-    return { ok: true, ...result };
+  app.get('/api/status', async () => {
+    const tickerStatus = marketHub.getTickerStreamStatus();
+    return {
+      ok: true,
+      bybitWs: {
+        connected: tickerStatus.connected,
+        lastMessageAt: tickerStatus.lastMessageAt,
+        lastTickerAt: tickerStatus.lastTickerAt,
+        subscribedCount: tickerStatus.subscribedCount,
+        desiredCount: tickerStatus.desiredSymbolsCount
+      }
+    };
   });
 
-  app.get('/api/profiles/download', async (_request, reply) => {
-    const exported = await profileService.export();
-    reply.header('Content-Type', 'application/json');
-    return reply.send(exported);
+
+  app.get('/api/bot/config', async () => {
+    const config = await loadBotConfig();
+    return { ok: true, config };
   });
 
-  app.post('/api/profiles/upload', async (request, reply) => {
-    try {
-      await profileService.import(request.body);
-      return { ok: true };
-    } catch {
-      return reply.code(400).send({ ok: false, error: 'INVALID_IMPORT' });
-    }
-  });
-
-  app.get('/api/profiles/:name', async (request, reply) => {
-    const name = (request.params as { name: string }).name;
-    const config = await profileService.get(name);
-    if (!config) {
-      return reply.code(404).send({ ok: false, error: 'NOT_FOUND' });
-    }
-
-    return { ok: true, name, config };
-  });
-
-  app.post('/api/profiles/:name', async (request, reply) => {
-    const name = (request.params as { name: string }).name;
-    const config = normalizeBotConfig((request.body as Record<string, unknown>) ?? {});
-    if (!config) {
+  app.post('/api/bot/config', async (request, reply) => {
+    const normalized = normalizeBotConfig((request.body as Record<string, unknown>) ?? {});
+    if (!normalized) {
       return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
     }
 
-    await profileService.set(name, config);
-    return { ok: true };
+    await saveJsonFile(botConfigFilePath, normalized);
+    return { ok: true, config: normalized };
   });
 
-  app.post('/api/profiles/:name/active', async (request, reply) => {
-    const name = (request.params as { name: string }).name;
-    try {
-      await profileService.setActive(name);
-      return { ok: true };
-    } catch (error) {
-      if ((error as Error).message === 'LEGACY_PROFILE_LOCKED') {
-        return reply.code(400).send({ ok: false, error: 'LEGACY_PROFILE_LOCKED' });
-      }
-
-      return reply.code(404).send({ ok: false, error: 'NOT_FOUND' });
-    }
+  app.get('/api/universe/config', async () => {
+    const config = await loadUniverseConfig();
+    return { ok: true, config };
   });
 
-  app.delete('/api/profiles/:name', async (request, reply) => {
-    const name = (request.params as { name: string }).name;
-    try {
-      await profileService.delete(name);
-      return { ok: true };
-    } catch (error) {
-      if ((error as Error).message === 'DEFAULT_PROFILE_LOCKED') {
-        return reply.code(400).send({ ok: false, error: 'DEFAULT_PROFILE_LOCKED' });
-      }
+  app.post('/api/universe/config', async (request, reply) => {
+    const body = (request.body as { minVolPct?: unknown; minTurnover?: unknown } | null) ?? {};
+    const minVolPct = Number(body.minVolPct);
+    const minTurnover = Number(body.minTurnover);
 
-      return reply.code(404).send({ ok: false, error: 'NOT_FOUND' });
+    if (!Number.isFinite(minVolPct) || minVolPct <= 0 || !Number.isFinite(minTurnover) || minTurnover <= 0) {
+      return reply.code(400).send({ ok: false, error: 'INVALID_UNIVERSE_CONFIG' });
     }
+
+    const config = { minVolPct, minTurnover };
+    await saveJsonFile(universeConfigFilePath, config);
+    return { ok: true, config };
   });
 
   app.post('/api/bot/start', async (request, reply) => {
@@ -836,19 +820,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const requestBody = request.body as Record<string, unknown> | null | undefined;
     const hasUserConfig = !!requestBody && typeof requestBody === 'object' && Object.keys(requestBody).length > 0;
-    const profilesList = await profileService.list();
-    const activeProfileConfig = await profileService.get(profilesList.activeProfile);
-    const payloadMode = typeof requestBody?.mode === 'string' ? requestBody.mode : null;
-    const payloadDirection = typeof requestBody?.direction === 'string' ? requestBody.direction : null;
-    const hasRequiredPayloadConfig = payloadMode !== null && payloadDirection !== null;
-    const shouldUseActiveProfile =
-      !hasUserConfig || requestBody?.useActiveProfile === true || (hasUserConfig && !hasRequiredPayloadConfig);
-    const configCandidate = shouldUseActiveProfile
-      ? mergeBotConfigOverrides(
-          activeProfileConfig as unknown as Record<string, unknown>,
-          hasUserConfig && requestBody?.useActiveProfile !== true ? requestBody : {}
-        )
-      : requestBody;
+    const baselineConfig = await loadBotConfig();
+    const configBase = (baselineConfig ?? defaultBotConfig) as unknown as Record<string, unknown>;
+    const configCandidate = hasUserConfig ? mergeBotConfigOverrides(configBase, requestBody ?? {}) : configBase;
     const config = normalizeBotConfig(configCandidate);
     if (!config) {
       return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
@@ -862,7 +836,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
     botEngine.setUniverseEntries(effectiveEntries);
-    currentRunProfileNameUsed = shouldUseActiveProfile ? profilesList.activeProfile : null;
     try {
       await fundingSnapshotService.refreshNow(
         effectiveEntries.map((entry) => entry.symbol),
@@ -889,7 +862,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   app.post('/api/bot/stop', async () => {
     const cancelledOrders = await botEngine.cancelAllPendingOrders((symbol) => marketHub.getState(symbol));
     botEngine.stop();
-    currentRunProfileNameUsed = null;
     currentRunId = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
     await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_STOP' });
@@ -918,7 +890,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const resumedState = botEngine.getState();
-    currentRunProfileNameUsed = null;
     const run = await runRecorder.startRun({
       startTime: Date.now(),
       configSnapshot: resumedState.config,
@@ -969,7 +940,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     botEngine.resetLifecycleRuntime();
     symbolUpdateBroadcaster.reset();
     botEngine.clearPersistedRuntime();
-    currentRunProfileNameUsed = null;
     currentRunId = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
     await runRecorder.appendEvent({
@@ -998,11 +968,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.post('/api/bot/reset', async (_request, reply) => {
-    const state = botEngine.getState();
-    if (state.running || state.paused) {
-      return reply.code(409).send({ ok: false, error: 'BOT_RUNNING', message: 'Reset is STOP-only.' });
-    }
-
     killInProgress = true;
     killCompletedAt = null;
     killWarning = null;
@@ -1020,14 +985,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     killCompletedAt = Date.now();
     botEngine.stop();
     botEngine.resetRuntimeStateForAllSymbols();
-    await universeService.clear();
-    await marketHub.setUniverseSymbols([]);
-    botEngine.setUniverseSymbols([]);
-    setTrackedUniverseSymbols([]);
     botEngine.resetLifecycleRuntime();
     symbolUpdateBroadcaster.reset();
     botEngine.clearPersistedRuntime();
-    currentRunProfileNameUsed = null;
     currentRunId = null;
 
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
@@ -1052,7 +1012,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     });
     broadcastBotState();
 
-    return { ok: true, warning, cleared: { universe: true, runtime: true } };
+    return { ok: true, warning, cleared: { runtime: true } };
   });
 
   app.get('/api/bot/guardrails', async () => {
@@ -1083,10 +1043,6 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     await journalService.clear();
     await universeExclusionsService.clear('operator');
-    await universeService.clear();
-    await marketHub.setUniverseSymbols([]);
-    botEngine.setUniverseSymbols([]);
-    setTrackedUniverseSymbols([]);
     botEngine.resetLifecycleRuntime();
     symbolUpdateBroadcaster.reset();
     rotatePerfWindow(Date.now());
@@ -1113,19 +1069,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return reply.code(response.statusCode).send(response.json());
   });
 
-  app.get('/api/doctor', async () => {
-    try {
-      return await doctorService.buildReport();
-    } catch (error) {
-      app.log.warn({ err: error }, 'doctor report build failed unexpectedly');
-      return {
-        ok: false,
-        ts: Date.now(),
-        checks: [{ id: 'doctor_internal', status: 'FAIL', message: 'doctor internal error' }],
-        warnings: [(error as Error).message]
-      };
-    }
-  });
+
 
   app.post('/api/replay/record/start', async (_request, reply) => reply.code(404).send({ ok: false, error: 'REMOVED_IN_V2' }));
 
