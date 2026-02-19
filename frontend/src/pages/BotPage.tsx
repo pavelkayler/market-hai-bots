@@ -243,9 +243,10 @@ export function BotPage({ onRefresh, botState }: Props) {
             <Card><Card.Header>Settings</Card.Header><Card.Body>
               <Row className="g-2">
                 <Col md={4}><Form.Label>TF</Form.Label><Form.Control type="number" value={settings.tf} onChange={(e) => setSettings((p) => ({ ...p, tf: Number(e.target.value) }))} /></Col>
-                <Col md={4}><Form.Label>Price up %</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => setSettings((p) => ({ ...p, priceUpThrPct: Number(e.target.value) }))} /></Col>
-                <Col md={4}><Form.Label>OI up %</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => setSettings((p) => ({ ...p, oiUpThrPct: Number(e.target.value) }))} /></Col>
+                <Col md={4}><Form.Label>ΔPrice% (модуль) к прошлой свече TF</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => setSettings((p) => ({ ...p, priceUpThrPct: Number(e.target.value) }))} /></Col>
+                <Col md={4}><Form.Label>ΔOIV% (модуль) к прошлой свече TF</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => setSettings((p) => ({ ...p, oiUpThrPct: Number(e.target.value) }))} /></Col>
                 <Col md={4}><Form.Label>Min funding abs</Form.Label><Form.Control type="number" value={settings.minFundingAbs} onChange={(e) => setSettings((p) => ({ ...p, minFundingAbs: Number(e.target.value) }))} /></Col>
+                <Col xs={12}><Form.Text className="text-muted">Порог применяется к модулю изменения. Направление сделки определяется знаком funding.</Form.Text></Col>
                 <Col md={4}><Form.Label>Min trigger count</Form.Label><Form.Control type="number" value={settings.signalCounterMin} onChange={(e) => setSettings((p) => ({ ...p, signalCounterMin: Number(e.target.value) }))} /></Col>
                 <Col md={4}><Form.Label>Max trigger count</Form.Label><Form.Control type="number" value={settings.signalCounterMax} onChange={(e) => setSettings((p) => ({ ...p, signalCounterMax: Number(e.target.value) }))} /></Col>
               </Row>

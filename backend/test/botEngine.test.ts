@@ -325,6 +325,93 @@ describe('BotEngine paper execution', () => {
     expect(engine.getSymbolState('BTCUSDT')?.lastNoEntryReasons[0]?.code).toBe('funding_abs_below_min');
   });
 
+
+  it('uses absolute deltas for positive funding and emits LONG on negative deltas above threshold', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, fundingRate: 0.0002, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 98.5, openInterestValue: 980, openInterest: 980, fundingRate: 0.0002, ts: now });
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.side).toBe('LONG');
+    expect(signals[0]?.entryReason).toBe('LONG_CONTINUATION');
+  });
+
+  it('uses absolute deltas for negative funding and emits SHORT on positive deltas above threshold', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, fundingRate: -0.0002, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 101.5, openInterestValue: 1020, openInterest: 1020, fundingRate: -0.0002, ts: now });
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.side).toBe('SHORT');
+    expect(signals[0]?.entryReason).toBe('SHORT_CONTINUATION');
+  });
+
+  it('does not emit signal when funding is missing or zero even if absolute deltas pass threshold', () => {
+    const missingFundingSignals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const missingFundingEngine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => missingFundingSignals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    missingFundingEngine.setUniverseSymbols(['BTCUSDT']);
+    missingFundingEngine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1 });
+    missingFundingEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, ts: now });
+    now += 60_000;
+    missingFundingEngine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1030, openInterest: 1030, ts: now });
+
+    expect(missingFundingSignals).toHaveLength(0);
+    expect(missingFundingEngine.getSymbolState('BTCUSDT')?.lastNoEntryReasons.some((entry) => entry.code === 'funding_missing')).toBe(true);
+
+    const zeroFundingSignals: SignalPayload[] = [];
+    let zeroNow = Date.UTC(2025, 0, 1, 1, 0, 0);
+    const zeroFundingEngine = new BotEngine({
+      now: () => zeroNow,
+      emitSignal: (payload) => zeroFundingSignals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    zeroFundingEngine.setUniverseSymbols(['BTCUSDT']);
+    zeroFundingEngine.start({ ...defaultConfig, direction: 'both', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1 });
+    zeroFundingEngine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, fundingRate: 0, ts: zeroNow });
+    zeroNow += 60_000;
+    zeroFundingEngine.onMarketUpdate('BTCUSDT', { markPrice: 98, openInterestValue: 980, openInterest: 980, fundingRate: 0, ts: zeroNow });
+
+    expect(zeroFundingSignals).toHaveLength(0);
+    expect(zeroFundingEngine.getSymbolState('BTCUSDT')?.lastNoEntryReasons.some((entry) => entry.code === 'funding_missing')).toBe(true);
+  });
+
   it('auto-cancels pending order after 1 hour and resets baseline', () => {
     const orderUpdates: OrderUpdatePayload[] = [];
     let now = Date.UTC(2025, 0, 1, 0, 0, 0);
