@@ -241,6 +241,11 @@ Reference checklist: `docs/RC_CHECKLIST.md`.
 
 ### P0 (safety/lifecycle/contract correctness)
 
+0. **Implemented: funding absolute threshold gate (`minFundingAbs`) for PAPER minimal readiness.**
+   - Backend config now persists additive `minFundingAbs` with default `0` and backward-compatible normalization for older profiles/snapshots.
+   - Engine blocks entries when `abs(fundingRate) < minFundingAbs` (reason `FUNDING_ABS_BELOW_MIN`), while preserving existing funding-sign direction gating.
+   - Quick verify: set `minFundingAbs` high (e.g., `0.01`) and observe no entries + reason; then set `0` and confirm baseline behavior returns.
+
 1. **Pause allowed while bot is STOPPED (impossible lifecycle tuple via API).**
    - Symptom: `POST /api/bot/pause` returns success even when `running=false`, resulting in `paused=true` + `running=false`.
    - Repro: call pause on fresh boot before start.

@@ -22,6 +22,7 @@ const DEFAULT_PROFILE_CONFIG: BotConfig = {
   signalCounterMax: Number.MAX_SAFE_INTEGER,
   priceUpThrPct: 0.5,
   oiUpThrPct: 50,
+  minFundingAbs: 0,
   oiCandleThrPct: 0,
   marginUSDT: 100,
   leverage: 10,

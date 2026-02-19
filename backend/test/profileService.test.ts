@@ -10,7 +10,7 @@ import { ProfileService } from '../src/services/profileService.js';
 const customConfig: BotConfig = {
   mode: 'paper', direction: 'short', bothTieBreak: 'shortPriority', tf: 1, strategyMode: 'IMPULSE', holdSeconds: 1,
   signalCounterThreshold: 2, signalCounterMin: 2, signalCounterMax: Number.MAX_SAFE_INTEGER,
-  priceUpThrPct: 0.25, oiUpThrPct: 25, oiCandleThrPct: 0, marginUSDT: 100, leverage: 20,
+  priceUpThrPct: 0.25, oiUpThrPct: 25, minFundingAbs: 0, oiCandleThrPct: 0, marginUSDT: 100, leverage: 20,
   tpRoiPct: 1.5, slRoiPct: 0.8, entryOffsetPct: 0.01, maxActiveSymbols: 5, dailyLossLimitUSDT: 0, maxConsecutiveLosses: 0,
   trendTfMinutes: 5, trendLookbackBars: 20, trendMinMovePct: 0.2, confirmWindowBars: 2, confirmMinContinuationPct: 0.1,
   impulseMaxAgeBars: 2, requireOiTwoCandles: false, maxSecondsIntoCandle: 45, minSpreadBps: 0, maxSpreadBps: 35,

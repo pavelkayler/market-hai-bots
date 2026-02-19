@@ -33,6 +33,7 @@ export type BotConfig = {
   signalCounterMax: number;
   priceUpThrPct: number;
   oiUpThrPct: number;
+  minFundingAbs: number;
   oiCandleThrPct: number;
   marginUSDT: number;
   leverage: number;
@@ -148,6 +149,7 @@ export type NoEntryReason = {
     | 'SPREAD_TOO_WIDE'
     | 'NO_BIDASK'
     | 'TICK_STALE'
+    | 'FUNDING_ABS_BELOW_MIN'
     | 'INVALID_ENTRY_PAYLOAD'
     | 'INVALID_DEMO_ORDER_PAYLOAD';
   message: string;
@@ -441,6 +443,7 @@ const DEFAULT_MIN_NOTIONAL_USDT = 5;
 const DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS = 0;
 const DEFAULT_PAPER_EXIT_SLIPPAGE_BPS = 0;
 const DEFAULT_PAPER_PARTIAL_FILL_PCT = 100;
+const DEFAULT_MIN_FUNDING_ABS = 0;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const PNL_SANITY_WINDOW_TRADES = 20;
@@ -460,8 +463,11 @@ const NO_ENTRY_REASON_CODES: NoEntryReason['code'][] = [
   'GUARDRAIL_PAUSED',
   'SPREAD_TOO_WIDE',
   'NO_BIDASK',
-  'TICK_STALE'
+  'TICK_STALE',
+  'FUNDING_ABS_BELOW_MIN'
 ];
+
+let hasLoggedInvalidMinFundingAbs = false;
 
 const createEmptySideBreakdown = (): BotStatsSideBreakdown => ({
   trades: 0,
@@ -512,6 +518,15 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
   const signalCounterMin = Math.max(1, Math.floor(signalCounterMinRaw));
   const signalCounterMax = Math.max(signalCounterMin, Math.floor(signalCounterMaxRaw));
   const oiUpThrPct = typeof raw.oiUpThrPct === 'number' && Number.isFinite(raw.oiUpThrPct) ? raw.oiUpThrPct : DEFAULT_OI_UP_THR_PCT;
+  const minFundingAbsRaw = raw.minFundingAbs;
+  const minFundingAbs =
+    typeof minFundingAbsRaw === 'number' && Number.isFinite(minFundingAbsRaw)
+      ? Math.max(0, minFundingAbsRaw)
+      : DEFAULT_MIN_FUNDING_ABS;
+  if (minFundingAbsRaw !== undefined && (typeof minFundingAbsRaw !== 'number' || !Number.isFinite(minFundingAbsRaw)) && !hasLoggedInvalidMinFundingAbs) {
+    hasLoggedInvalidMinFundingAbs = true;
+    console.warn('[bot-config] Invalid minFundingAbs detected; defaulting to 0.');
+  }
   const oiCandleThrPct =
     typeof raw.oiCandleThrPct === 'number' && Number.isFinite(raw.oiCandleThrPct) ? Math.max(0, raw.oiCandleThrPct) : DEFAULT_OI_CANDLE_THR_PCT;
   const maxActiveSymbols =
@@ -610,6 +625,7 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
     maxTriggerCount: signalCounterMax,
     priceUpThrPct: raw.priceUpThrPct as number,
     oiUpThrPct,
+    minFundingAbs,
     oiCandleThrPct,
     marginUSDT: raw.marginUSDT as number,
     leverage: raw.leverage as number,
@@ -743,7 +759,7 @@ export class BotEngine {
 
 
 
-  applyConfigPatch(patch: Partial<Pick<BotConfig, 'priceUpThrPct' | 'oiUpThrPct' | 'oiCandleThrPct' | 'signalCounterThreshold' | 'confirmMinContinuationPct' | 'confirmWindowBars' | 'impulseMaxAgeBars' | 'maxSecondsIntoCandle' | 'minNotionalUSDT' | 'maxSpreadBps' | 'maxTickStalenessMs'>>): BotConfig | null {
+  applyConfigPatch(patch: Partial<Pick<BotConfig, 'priceUpThrPct' | 'oiUpThrPct' | 'minFundingAbs' | 'oiCandleThrPct' | 'signalCounterThreshold' | 'confirmMinContinuationPct' | 'confirmWindowBars' | 'impulseMaxAgeBars' | 'maxSecondsIntoCandle' | 'minNotionalUSDT' | 'maxSpreadBps' | 'maxTickStalenessMs'>>): BotConfig | null {
     if (!this.state.config) {
       return null;
     }
@@ -753,7 +769,7 @@ export class BotEngine {
         return null;
       }
 
-      if ((key === 'priceUpThrPct' || key === 'oiUpThrPct' || key === 'oiCandleThrPct' || key === 'signalCounterThreshold' || key === 'confirmMinContinuationPct' || key === 'confirmWindowBars' || key === 'impulseMaxAgeBars' || key === 'maxSecondsIntoCandle' || key === 'minNotionalUSDT' || key === 'maxSpreadBps' || key === 'maxTickStalenessMs') && value < 0) {
+      if ((key === 'priceUpThrPct' || key === 'oiUpThrPct' || key === 'minFundingAbs' || key === 'oiCandleThrPct' || key === 'signalCounterThreshold' || key === 'confirmMinContinuationPct' || key === 'confirmWindowBars' || key === 'impulseMaxAgeBars' || key === 'maxSecondsIntoCandle' || key === 'minNotionalUSDT' || key === 'maxSpreadBps' || key === 'maxTickStalenessMs') && value < 0) {
         return null;
       }
     }
@@ -920,6 +936,7 @@ export class BotEngine {
       strategyMode: config.strategyMode ?? DEFAULT_STRATEGY_MODE,
       signalCounterMin: config.signalCounterMin ?? config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN,
       signalCounterMax: config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX,
+      minFundingAbs: typeof config.minFundingAbs === 'number' && Number.isFinite(config.minFundingAbs) ? Math.max(0, config.minFundingAbs) : DEFAULT_MIN_FUNDING_ABS,
       autoTuneEnabled: config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED,
       autoTuneScope: config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE,
       autoTunePlannerMode: config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE,
@@ -1036,7 +1053,7 @@ export class BotEngine {
       runningSinceTs: null,
       activeUptimeMs: snapshot.activeUptimeMs ?? 0,
       uptimeMs: 0,
-      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK, strategyMode: snapshot.config.strategyMode ?? DEFAULT_STRATEGY_MODE, signalCounterMin: snapshot.config.signalCounterMin ?? snapshot.config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN, signalCounterMax: snapshot.config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX, autoTuneEnabled: snapshot.config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED, autoTuneScope: snapshot.config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE, autoTunePlannerMode: snapshot.config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE, autoTuneWindowHours: snapshot.config.autoTuneWindowHours ?? DEFAULT_AUTO_TUNE_WINDOW_HOURS, autoTuneTargetTradesInWindow: snapshot.config.autoTuneTargetTradesInWindow ?? DEFAULT_AUTO_TUNE_TARGET_TRADES_IN_WINDOW, autoTuneMinTradesBeforeTighten: snapshot.config.autoTuneMinTradesBeforeTighten ?? DEFAULT_AUTO_TUNE_MIN_TRADES_BEFORE_TIGHTEN } : null
+      config: snapshot.config ? { ...snapshot.config, bothTieBreak: snapshot.config.bothTieBreak ?? DEFAULT_BOTH_TIE_BREAK, strategyMode: snapshot.config.strategyMode ?? DEFAULT_STRATEGY_MODE, signalCounterMin: snapshot.config.signalCounterMin ?? snapshot.config.signalCounterThreshold ?? DEFAULT_SIGNAL_COUNTER_MIN, signalCounterMax: snapshot.config.signalCounterMax ?? DEFAULT_SIGNAL_COUNTER_MAX, minFundingAbs: typeof snapshot.config.minFundingAbs === 'number' && Number.isFinite(snapshot.config.minFundingAbs) ? Math.max(0, snapshot.config.minFundingAbs) : DEFAULT_MIN_FUNDING_ABS, autoTuneEnabled: snapshot.config.autoTuneEnabled ?? DEFAULT_AUTO_TUNE_ENABLED, autoTuneScope: snapshot.config.autoTuneScope ?? DEFAULT_AUTO_TUNE_SCOPE, autoTunePlannerMode: snapshot.config.autoTunePlannerMode ?? DEFAULT_AUTO_TUNE_PLANNER_MODE, autoTuneWindowHours: snapshot.config.autoTuneWindowHours ?? DEFAULT_AUTO_TUNE_WINDOW_HOURS, autoTuneTargetTradesInWindow: snapshot.config.autoTuneTargetTradesInWindow ?? DEFAULT_AUTO_TUNE_TARGET_TRADES_IN_WINDOW, autoTuneMinTradesBeforeTighten: snapshot.config.autoTuneMinTradesBeforeTighten ?? DEFAULT_AUTO_TUNE_MIN_TRADES_BEFORE_TIGHTEN } : null
     };
 
     this.perSymbolStats.clear();
@@ -1524,6 +1541,18 @@ export class BotEngine {
       }
     }
     if (!candidate) {
+      if ((priceDeltaPct >= this.state.config.priceUpThrPct && oiDeltaPct >= this.state.config.oiUpThrPct) || (priceDeltaPct <= -this.state.config.priceUpThrPct && oiDeltaPct <= -this.state.config.oiUpThrPct)) {
+        const fundingRate = symbolState.fundingRate;
+        const minFundingAbs = Math.max(0, this.state.config.minFundingAbs ?? 0);
+        if (Number.isFinite(fundingRate ?? Number.NaN) && fundingRate !== 0 && minFundingAbs > 0 && Math.abs(fundingRate ?? 0) < minFundingAbs) {
+          this.recordNoEntryReason(symbolState, {
+            code: 'FUNDING_ABS_BELOW_MIN',
+            message: `|fundingRate| below minFundingAbs (${fundingRate} < ${minFundingAbs}).`,
+            value: Math.abs(fundingRate ?? 0),
+            threshold: minFundingAbs
+          });
+        }
+      }
       return;
     }
 
@@ -3090,6 +3119,10 @@ export class BotEngine {
     const shortTrue = priceDeltaPct <= -this.state.config!.priceUpThrPct && oiDeltaPct <= -this.state.config!.oiUpThrPct;
     const fundingRate = symbolState.fundingRate;
     if (!Number.isFinite(fundingRate ?? NaN) || fundingRate === 0) {
+      return null;
+    }
+    const minFundingAbs = Math.max(0, this.state.config!.minFundingAbs ?? 0);
+    if (minFundingAbs > 0 && Math.abs(fundingRate ?? 0) < minFundingAbs) {
       return null;
     }
     if ((fundingRate ?? 0) > 0) {
