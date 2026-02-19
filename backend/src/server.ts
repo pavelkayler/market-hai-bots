@@ -8,7 +8,7 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 
-import { BotEngine, normalizeBotConfig } from './bot/botEngine.js';
+import { BotEngine, getDefaultBotConfig, normalizeBotConfig } from './bot/botEngine.js';
 import { FileSnapshotStore } from './bot/snapshotStore.js';
 import { DemoTradeClient, type IDemoTradeClient } from './bybit/demoTradeClient.js';
 import { MarketHub } from './market/marketHub.js';
@@ -109,7 +109,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const dataDirPath = path.resolve(process.cwd(), 'data');
   const botConfigFilePath = path.resolve(dataDirPath, 'botConfig.json');
   const universeConfigFilePath = path.resolve(dataDirPath, 'universeConfig.json');
-  const defaultBotConfig = normalizeBotConfig({});
+  const defaultBotConfig = getDefaultBotConfig();
   const defaultUniverseConfig = { minVolPct: 10, minTurnover: 10_000_000 };
 
   const saveJsonFile = async (filePath: string, value: unknown): Promise<void> => {
@@ -780,7 +780,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.post('/api/bot/config', async (request, reply) => {
-    const normalized = normalizeBotConfig((request.body as Record<string, unknown>) ?? {});
+    const requestBody = (request.body as Record<string, unknown> | null | undefined) ?? {};
+    const baselineConfig = (await loadBotConfig()) ?? defaultBotConfig;
+    const mergedCandidate = mergeBotConfigOverrides(baselineConfig as unknown as Record<string, unknown>, requestBody);
+    const normalized = normalizeBotConfig(mergedCandidate);
     if (!normalized) {
       return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
     }
@@ -834,27 +837,49 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         .send({ ok: false, error: { code: 'DEMO_NOT_CONFIGURED', message: 'Demo mode requires DEMO_API_KEY and DEMO_API_SECRET.' } });
     }
 
-    const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
-    botEngine.setUniverseEntries(effectiveEntries);
+    let step = 'get_effective_universe_entries';
     try {
-      await fundingSnapshotService.refreshNow(
-        effectiveEntries.map((entry) => entry.symbol),
-        'bot_start'
-      );
+      const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
+      step = 'set_universe_entries';
+      botEngine.setUniverseEntries(effectiveEntries);
+      step = 'refresh_funding_snapshot';
+      try {
+        await fundingSnapshotService.refreshNow(
+          effectiveEntries.map((entry) => entry.symbol),
+          'bot_start'
+        );
+      } catch (error) {
+        app.log.warn({ err: error }, 'funding snapshot refresh failed during bot start');
+      }
+      step = 'set_autotune_scope';
+      await autoTuneService.setEnabledScope(config.autoTuneEnabled, config.autoTuneScope);
+      step = 'start_run';
+      const run = await runRecorder.startRun({
+        startTime: Date.now(),
+        configSnapshot: config,
+        universeSummary: { total: universe.symbols.length, effective: effectiveEntries.length },
+        commitHash: getCommitHash()
+      });
+      currentRunId = run?.runId ?? null;
+      step = 'append_start_event';
+      await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_START' });
+      step = 'engine_start';
+      botEngine.start(config);
+      step = 'broadcast_state';
+      broadcastBotState();
     } catch (error) {
-      app.log.warn({ err: error }, 'funding snapshot refresh failed during bot start');
+      app.log.error({ err: error }, 'bot start failed');
+      return reply.code(500).send({
+        ok: false,
+        error: {
+          code: 'BOT_START_FAILED',
+          message: error instanceof Error ? error.message : 'Bot start failed unexpectedly.',
+          details: {
+            step
+          }
+        }
+      });
     }
-    await autoTuneService.setEnabledScope(config.autoTuneEnabled, config.autoTuneScope);
-    const run = await runRecorder.startRun({
-      startTime: Date.now(),
-      configSnapshot: config,
-      universeSummary: { total: universe.symbols.length, effective: effectiveEntries.length },
-      commitHash: getCommitHash()
-    });
-    currentRunId = run?.runId ?? null;
-    await runRecorder.appendEvent({ ts: Date.now(), type: 'SYSTEM', event: 'BOT_START' });
-    botEngine.start(config);
-    broadcastBotState();
 
     return { ok: true, ...botEngine.getState() };
   });

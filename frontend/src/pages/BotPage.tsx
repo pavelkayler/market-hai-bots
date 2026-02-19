@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Col, Form, Row } from 'react-bootstrap';
 
-import { createUniverse, getBotConfig, getBotStats, getUniverse, getUniverseConfig, resetBot, saveBotConfig, saveUniverseConfig, startBot, stopBot } from '../api';
+import { ApiError, createUniverse, getBotConfig, getBotStats, getUniverse, getUniverseConfig, resetBot, saveBotConfig, saveUniverseConfig, startBot, stopBot } from '../api';
 import type { BotState } from '../types';
 import { formatDuration } from '../utils/time';
 
@@ -33,14 +33,24 @@ export function BotPage({ onRefresh, botState }: Props) {
     })();
   }, []);
 
+  const renderError = (error: unknown): string => {
+    if (error instanceof ApiError) {
+      return error.message === error.code ? error.code : `${error.code}: ${error.message}`;
+    }
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return 'UNKNOWN_ERROR';
+  };
+
   const run = async (fn: () => Promise<unknown>, text: string) => {
     setErr('');
     try {
-      await fn();
-      setMsg(text);
+      const nextMessage = await fn();
+      setMsg(typeof nextMessage === 'string' ? nextMessage : text);
       await onRefresh();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(renderError(e));
     }
   };
 
@@ -67,7 +77,22 @@ export function BotPage({ onRefresh, botState }: Props) {
           <Col md={6}><Form.Label>Min vol %</Form.Label><Form.Control type="number" value={universe.minVolPct} onChange={(e) => setUniverse((p) => ({ ...p, minVolPct: Number(e.target.value) }))} /></Col>
           <Col md={6}><Form.Label>Min turnover</Form.Label><Form.Control type="number" value={universe.minTurnover} onChange={(e) => setUniverse((p) => ({ ...p, minTurnover: Number(e.target.value) }))} /></Col>
         </Row>
-        <Button className="mt-3" onClick={() => run(async () => { await saveUniverseConfig(universe); await createUniverse(universe.minVolPct, universe.minTurnover); }, 'Universe config saved')}>Save</Button>
+        <Button className="mt-3" onClick={() => run(async () => {
+          await saveUniverseConfig(universe);
+          try {
+            const result = await createUniverse(universe);
+            const total = result.totals?.totalSymbols ?? 0;
+            const valid = result.totals?.validSymbols ?? 0;
+            const passed = result.passed ?? 0;
+            return `Universe built: total=${total}, valid=${valid}, passed=${passed}`;
+          } catch (error) {
+            if (error instanceof ApiError && error.code === 'HTTP_502') {
+              const hasLastKnown = (error.details as { lastKnownUniverseAvailable?: boolean } | undefined)?.lastKnownUniverseAvailable;
+              throw new ApiError(error.status, error.code, `Universe build failed${hasLastKnown ? ' (lastKnownUniverseAvailable=true)' : ''}`, error.details);
+            }
+            throw error;
+          }
+        }, 'Universe config saved')}>Save</Button>
       </Card.Body></Card>
 
       <Card><Card.Header>Settings</Card.Header><Card.Body>
