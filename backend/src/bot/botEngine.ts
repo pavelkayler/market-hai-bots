@@ -504,6 +504,60 @@ const createEmptyReasonCounts = (): Record<EntryReason, number> => ({
   SHORT_DIVERGENCE: 0
 });
 
+const DEFAULT_RAW_BOT_CONFIG: Record<string, unknown> = {
+  mode: 'paper',
+  direction: 'both',
+  bothTieBreak: DEFAULT_BOTH_TIE_BREAK,
+  tfMinutes: 1,
+  strategyMode: DEFAULT_STRATEGY_MODE,
+  holdSeconds: DEFAULT_HOLD_SECONDS,
+  signalCounterThreshold: DEFAULT_SIGNAL_COUNTER_THRESHOLD,
+  minTriggerCount: DEFAULT_SIGNAL_COUNTER_MIN,
+  maxTriggerCount: DEFAULT_SIGNAL_COUNTER_MAX,
+  priceUpThrPct: 0.5,
+  oiUpThrPct: DEFAULT_OI_UP_THR_PCT,
+  minFundingAbs: DEFAULT_MIN_FUNDING_ABS,
+  oiCandleThrPct: DEFAULT_OI_CANDLE_THR_PCT,
+  marginUSDT: 50,
+  leverage: 1,
+  tpRoiPct: 1,
+  slRoiPct: 0.7,
+  entryOffsetPct: DEFAULT_ENTRY_OFFSET_PCT,
+  maxActiveSymbols: DEFAULT_MAX_ACTIVE_SYMBOLS,
+  dailyLossLimitUSDT: 0,
+  maxConsecutiveLosses: 0,
+  trendTfMinutes: DEFAULT_TREND_TF,
+  trendLookbackBars: DEFAULT_TREND_LOOKBACK_BARS,
+  trendMinMovePct: DEFAULT_TREND_MIN_MOVE_PCT,
+  confirmWindowBars: DEFAULT_CONFIRM_WINDOW_BARS,
+  confirmMinContinuationPct: DEFAULT_CONFIRM_MIN_CONTINUATION_PCT,
+  impulseMaxAgeBars: DEFAULT_IMPULSE_MAX_AGE_BARS,
+  requireOiTwoCandles: DEFAULT_REQUIRE_OI_TWO_CANDLES,
+  maxSecondsIntoCandle: DEFAULT_MAX_SECONDS_INTO_CANDLE,
+  minSpreadBps: DEFAULT_MIN_SPREAD_BPS,
+  maxSpreadBps: DEFAULT_MAX_SPREAD_BPS,
+  maxTickStalenessMs: DEFAULT_MAX_TICK_STALENESS_MS,
+  minNotionalUSDT: DEFAULT_MIN_NOTIONAL_USDT,
+  autoTuneEnabled: DEFAULT_AUTO_TUNE_ENABLED,
+  autoTuneScope: DEFAULT_AUTO_TUNE_SCOPE,
+  autoTunePlannerMode: DEFAULT_AUTO_TUNE_PLANNER_MODE,
+  autoTuneWindowHours: DEFAULT_AUTO_TUNE_WINDOW_HOURS,
+  autoTuneTargetTradesInWindow: DEFAULT_AUTO_TUNE_TARGET_TRADES_IN_WINDOW,
+  autoTuneMinTradesBeforeTighten: DEFAULT_AUTO_TUNE_MIN_TRADES_BEFORE_TIGHTEN,
+  paperEntrySlippageBps: DEFAULT_PAPER_ENTRY_SLIPPAGE_BPS,
+  paperExitSlippageBps: DEFAULT_PAPER_EXIT_SLIPPAGE_BPS,
+  paperPartialFillPct: DEFAULT_PAPER_PARTIAL_FILL_PCT
+};
+
+export const getDefaultBotConfig = (): BotConfig => {
+  const normalized = normalizeBotConfig(DEFAULT_RAW_BOT_CONFIG);
+  if (!normalized) {
+    throw new Error('Default bot config is invalid');
+  }
+
+  return normalized;
+};
+
 export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | null => {
   const tf = raw.tfMinutes ?? raw.tf;
   const mode = raw.mode;
