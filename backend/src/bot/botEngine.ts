@@ -234,6 +234,7 @@ export type SymbolRuntimeState = {
   } | null;
   noEntryReasonCounts: Map<NoEntryReason['code'], number>;
   lastNoEntryReasons: NoEntryReason[];
+  lastNoEntryPersistAtMs: number | null;
   entryReason: EntryReason | null;
   lastPriceDeltaPct: number | null;
   lastOiDeltaPct: number | null;
@@ -1058,6 +1059,7 @@ export class BotEngine {
         lastNoEntryReasons: (state.lastNoEntryReasons ?? []).filter((entry): entry is NoEntryReason =>
           NO_ENTRY_REASON_CODES.includes(entry.code as NoEntryReason['code'])
         ),
+        lastNoEntryPersistAtMs: null,
         entryReason: state.entryReason ?? null,
         lastPriceDeltaPct: state.lastPriceDeltaPct ?? null,
         lastOiDeltaPct: state.lastOiDeltaPct ?? null,
@@ -1519,6 +1521,7 @@ export class BotEngine {
 
     if (!this.state.running || this.state.paused) {
       this.recordNoEntryReason(symbolState, { code: 'GUARDRAIL_PAUSED', message: 'Bot paused/running disabled.' });
+      this.persistNoEntryReasonSnapshot(symbolState, now);
       return;
     }
 
@@ -1551,11 +1554,13 @@ export class BotEngine {
             bucketStart: symbolState.lastTfBucketStart
           }
         });
+        this.persistNoEntryReasonSnapshot(symbolState, now);
       }
       return;
     }
 
     if (now < symbolState.blockedUntilTs) {
+      this.persistNoEntryReasonSnapshot(symbolState, now);
       return;
     }
 
@@ -2123,6 +2128,21 @@ export class BotEngine {
     }
   }
 
+
+  private persistNoEntryReasonSnapshot(symbolState: SymbolRuntimeState, now: number): void {
+    if (symbolState.lastNoEntryReasons.length === 0) {
+      return;
+    }
+
+    if (symbolState.lastNoEntryPersistAtMs !== null && now - symbolState.lastNoEntryPersistAtMs < 2_000) {
+      return;
+    }
+
+    symbolState.lastNoEntryPersistAtMs = now;
+    this.updateSummaryCounts();
+    this.persistSnapshot();
+  }
+
   private formatNoEntryReason(symbolState: SymbolRuntimeState, entry: NoEntryReason): string {
     const gates = symbolState.gates;
     if (entry.code === 'TREND_BLOCK_LONG' || entry.code === 'TREND_BLOCK_SHORT') {
@@ -2197,6 +2217,7 @@ export class BotEngine {
       armedSignal: null,
       noEntryReasonCounts: new Map(),
       lastNoEntryReasons: [],
+      lastNoEntryPersistAtMs: null,
       entryReason: null,
       lastPriceDeltaPct: null,
       lastOiDeltaPct: null,

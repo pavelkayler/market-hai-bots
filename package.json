@@ -13,7 +13,8 @@
     "rc:check": "npm run backend:typecheck && npm test && npm run build:frontend",
     "rc:smoke": "npm run rc:check && node scripts/rc-smoke.mjs",
     "rc:e2e": "node scripts/rc-e2e-report.mjs",
-    "rc:audit": "npm --prefix backend run audit:moderate"
+    "rc:audit": "npm --prefix backend run audit:moderate",
+    "build": "npm run build:frontend"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

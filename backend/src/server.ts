@@ -150,6 +150,33 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     };
   };
 
+
+  const mergeBotConfigOverrides = (baselineConfig: Record<string, unknown>, requestBody: Record<string, unknown>): Record<string, unknown> => {
+    const overrides = Object.fromEntries(Object.entries(requestBody).filter(([key]) => key !== 'useActiveProfile'));
+    const merged: Record<string, unknown> = { ...baselineConfig };
+
+    if (Object.prototype.hasOwnProperty.call(overrides, 'tf')) {
+      delete merged.tfMinutes;
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'tfMinutes')) {
+      delete merged.tf;
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'minTriggerCount')) {
+      delete merged.signalCounterMin;
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'maxTriggerCount')) {
+      delete merged.signalCounterMax;
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'signalCounterMin')) {
+      delete merged.minTriggerCount;
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, 'signalCounterMax')) {
+      delete merged.maxTriggerCount;
+    }
+
+    return { ...merged, ...overrides };
+  };
+
   const isDemoConfigured = (): boolean => {
     const apiKey = (process.env.DEMO_API_KEY ?? '').trim();
     const apiSecret = (process.env.DEMO_API_SECRET ?? '').trim();
@@ -806,11 +833,20 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const requestBody = request.body as Record<string, unknown> | null | undefined;
     const hasUserConfig = !!requestBody && typeof requestBody === 'object' && Object.keys(requestBody).length > 0;
-    const shouldUseActiveProfile = !hasUserConfig || requestBody.useActiveProfile === true;
     const profilesList = await profileService.list();
-    const config = shouldUseActiveProfile
-      ? await profileService.get(profilesList.activeProfile)
-      : normalizeBotConfig(requestBody);
+    const activeProfileConfig = await profileService.get(profilesList.activeProfile);
+    const payloadMode = typeof requestBody?.mode === 'string' ? requestBody.mode : null;
+    const payloadDirection = typeof requestBody?.direction === 'string' ? requestBody.direction : null;
+    const hasRequiredPayloadConfig = payloadMode !== null && payloadDirection !== null;
+    const shouldUseActiveProfile =
+      !hasUserConfig || requestBody?.useActiveProfile === true || (hasUserConfig && !hasRequiredPayloadConfig);
+    const configCandidate = shouldUseActiveProfile
+      ? mergeBotConfigOverrides(
+          activeProfileConfig as unknown as Record<string, unknown>,
+          hasUserConfig && requestBody?.useActiveProfile !== true ? requestBody : {}
+        )
+      : requestBody;
+    const config = normalizeBotConfig(configCandidate);
     if (!config) {
       return reply.code(400).send({ ok: false, error: 'INVALID_BOT_CONFIG' });
     }
@@ -824,6 +860,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const effectiveEntries = await getEffectiveUniverseEntries(universe.symbols);
     botEngine.setUniverseEntries(effectiveEntries);
     currentRunProfileNameUsed = shouldUseActiveProfile ? profilesList.activeProfile : null;
+    try {
+      await fundingSnapshotService.refreshNow(
+        effectiveEntries.map((entry) => entry.symbol),
+        'bot_start'
+      );
+    } catch (error) {
+      app.log.warn({ err: error }, 'funding snapshot refresh failed during bot start');
+    }
     await autoTuneService.setEnabledScope(config.autoTuneEnabled, config.autoTuneScope);
     const run = await runRecorder.startRun({
       startTime: Date.now(),

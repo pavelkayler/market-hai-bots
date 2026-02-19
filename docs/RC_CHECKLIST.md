@@ -78,3 +78,20 @@
 2. In Bot Settings (v2), save thresholds and start without `mode` in payload; confirm `/api/bot/state.lastConfig` reflects the same thresholds.
 3. Run `POST /api/bot/kill`; confirm bot state STOPPED and `GET /api/doctor` shows `ws_freshness` as WARN (not FAIL) when no symbols are subscribed.
 4. Confirm Dashboard renders Open positions/Open orders tables (empty states are acceptable).
+
+## 7) Step-1 verification notes (partial-start + funding observability)
+
+- **Reproduce quick-signal PAPER setup (1-3 minutes):**
+  1. Create universe and start bot in PAPER with `tf=1`, tiny thresholds (`priceUpThrPct=0.001`, `oiUpThrPct=0.001`), and counter window (`minTriggerCount=2`, `maxTriggerCount=3`).
+  2. Start using a partial payload (without `mode`/`direction`); backend now merges these values over the active profile baseline.
+  3. Check `GET /api/bot/state` and `activeSymbolDiagnostics`:
+     - Within first minute, expected transient reasons include missing previous TF candle close.
+     - After the first candle boundary, deltas and signal counter should become observable when market moves.
+
+- **Confirm funding `refreshNow` on start:**
+  - On `POST /api/bot/start`, backend triggers a best-effort funding refresh for effective universe symbols before engine start.
+  - Verify with logs containing `funding snapshot refresh completed` and `reason: "bot_start"`.
+  - In UI/`/api/bot/state`, `fundingStatus` should move from `MISSING` to `OK` (or remain visibly explained if upstream data is unavailable).
+
+- **Audit command limitation in this environment:**
+  - `npm audit` currently returns `403 Forbidden` from the npm advisories endpoint in this environment, so vulnerability deltas could not be computed here.
