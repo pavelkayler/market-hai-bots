@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Badge, Button, Card, Col, Form, Row, Tab, Table, Tabs } from 'react-bootstrap';
 
-import { clearUniverse, createUniverse, getBotState, getBotStats, killBot, pauseBot, refreshUniverse, resetBot, startBot, stopBot } from '../api';
+import {
+  clearUniverse,
+  createUniverse,
+  getBotState,
+  getBotStats,
+  getProfile,
+  getProfiles,
+  killBot,
+  pauseBot,
+  refreshBotState,
+  refreshUniverse,
+  resetBot,
+  saveProfile,
+  startBot,
+  stopBot
+} from '../api';
 import { useSort } from '../hooks/useSort';
 import type { BotSettings, BotState, BotStats, BotPerSymbolStats, SymbolUpdatePayload, UniverseState } from '../types';
 import { formatDuration } from '../utils/time';
@@ -14,6 +29,7 @@ type Props = {
   logs: LogLine[];
   syncRest: () => Promise<void>;
   symbolUpdatesPerSecond: number;
+  wsConnected: boolean;
 };
 
 type MinimalSettings = Pick<BotSettings, 'tf' | 'priceUpThrPct' | 'oiUpThrPct' | 'minFundingAbs' | 'signalCounterMin' | 'signalCounterMax'>;
@@ -50,18 +66,7 @@ type ActiveSymbolRow = {
   topReason: string | null;
 };
 
-const SETTINGS_KEY = 'bot.settings.v2';
 const defaultSettings: MinimalSettings = { tf: 1, priceUpThrPct: 0.5, oiUpThrPct: 3, minFundingAbs: 0, signalCounterMin: 2, signalCounterMax: 3 };
-
-function loadSettings(): MinimalSettings {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return defaultSettings;
-    return { ...defaultSettings, ...(JSON.parse(raw) as Partial<MinimalSettings>) };
-  } catch {
-    return defaultSettings;
-  }
-}
 
 const toHuman = (ms?: number | null) => {
   if (!ms || !Number.isFinite(ms)) return '—';
@@ -88,12 +93,15 @@ function toPerSymbolRows(stats: BotStats | null): PerSymbolResultsRow[] {
   }));
 }
 
-export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUpdatesPerSecond }: Props) {
-  const [settings, setSettings] = useState<MinimalSettings>(loadSettings());
+export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUpdatesPerSecond, wsConnected }: Props) {
+  const [settings, setSettings] = useState<MinimalSettings>(defaultSettings);
   const [minVolPct, setMinVolPct] = useState(10);
   const [minTurnover, setMinTurnover] = useState(10_000_000);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [activeProfileName, setActiveProfileName] = useState<string | null>(null);
+  const [activeProfileConfig, setActiveProfileConfig] = useState<BotSettings | null>(null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
   const [stats, setStats] = useState<BotStats | null>(null);
   const [cachedBotState, setCachedBotState] = useState<BotState>(botState);
   const refreshInFlight = useRef(false);
@@ -103,12 +111,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
   }, [botState]);
 
   useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  }, [settings]);
-
-
-  useEffect(() => {
-    if (!botState.lastConfig) {
+    if (!botState.lastConfig || settingsDirty) {
       return;
     }
 
@@ -121,7 +124,22 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
       signalCounterMin: botState.lastConfig?.signalCounterMin ?? prev.signalCounterMin,
       signalCounterMax: botState.lastConfig?.signalCounterMax ?? prev.signalCounterMax
     }));
-  }, [botState.lastConfig]);
+  }, [botState.lastConfig, settingsDirty]);
+
+  useEffect(() => {
+    const loadActiveProfile = async () => {
+      try {
+        const profiles = await getProfiles();
+        setActiveProfileName(profiles.activeProfile);
+        const profile = await getProfile(profiles.activeProfile);
+        setActiveProfileConfig(profile.config);
+      } catch {
+        // no-op
+      }
+    };
+
+    void loadActiveProfile();
+  }, []);
 
   const refreshBotData = useCallback(async (signal?: AbortSignal) => {
     if (refreshInFlight.current) {
@@ -144,6 +162,12 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
     const controller = new AbortController();
     void refreshBotData(controller.signal);
 
+    if (wsConnected) {
+      return () => {
+        controller.abort();
+      };
+    }
+
     const interval = window.setInterval(() => {
       const tickController = new AbortController();
       void refreshBotData(tickController.signal);
@@ -153,7 +177,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
       controller.abort();
       window.clearInterval(interval);
     };
-  }, [refreshBotData]);
+  }, [refreshBotData, wsConnected]);
 
   const symbolRows = useMemo<ActiveSymbolRow[]>(() => {
     const contractSymbols = cachedBotState.symbols ?? [];
@@ -215,9 +239,51 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
     getSortValue: (row, key) => {
       if (key === 'nextFundingTimeMs') return row.nextFundingTimeMs ?? null;
       if (key === 'fundingRate') return row.fundingRate ?? null;
+      if (key === 'topReason') return row.topReason ?? '';
       return (row as Record<string, unknown>)[String(key)];
     }
   });
+
+  const onSaveSettings = async () => {
+    setError('');
+    setStatus('');
+    if (!activeProfileName) {
+      setError('Active profile unavailable');
+      return;
+    }
+
+    if (settings.minFundingAbs < 0 || settings.signalCounterMin < 0 || settings.signalCounterMax < 0) {
+      setError('Settings validation failed: values must be non-negative.');
+      return;
+    }
+
+    const base = activeProfileConfig ?? botState.lastConfig;
+    if (!base) {
+      setError('No base config available to save. Start from an existing profile first.');
+      return;
+    }
+
+    const nextConfig: BotSettings = {
+      ...base,
+      tf: settings.tf,
+      priceUpThrPct: settings.priceUpThrPct,
+      oiUpThrPct: settings.oiUpThrPct,
+      minFundingAbs: settings.minFundingAbs,
+      signalCounterMin: settings.signalCounterMin,
+      signalCounterMax: settings.signalCounterMax
+    };
+
+    try {
+      await saveProfile(activeProfileName, nextConfig);
+      setActiveProfileConfig(nextConfig);
+      setSettingsDirty(false);
+      setStatus(`Saved settings to profile "${activeProfileName}". Takes effect on next start.`);
+      await syncRest();
+      await refreshBotData();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
   const onStart = async () => {
     setError('');
@@ -294,8 +360,15 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
   };
 
   const onRefreshNow = async () => {
-    await syncRest();
-    await refreshBotData();
+    try {
+      const refreshed = await refreshBotState();
+      setCachedBotState(refreshed);
+      await syncRest();
+      await refreshBotData();
+    } catch {
+      await syncRest();
+      await refreshBotData();
+    }
   };
 
   const isStopped = !cachedBotState.running;
@@ -364,22 +437,43 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
           <Card className="mt-3"><Card.Body>
             <Card.Title>Settings (v2)</Card.Title>
             <Row className="g-2">
-              <Col md={2}><Form.Label>TF</Form.Label><Form.Select value={settings.tf} onChange={(e) => setSettings((s) => ({ ...s, tf: Number(e.target.value) as MinimalSettings['tf'] }))}>{[1,3,5,10,15].map((v)=><option key={v} value={v}>{v}m</option>)}</Form.Select></Col>
-              <Col md={2}><Form.Label>priceUpThrPct</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => setSettings((s) => ({ ...s, priceUpThrPct: Number(e.target.value) }))} /></Col>
-              <Col md={2}><Form.Label>oiUpThrPct</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => setSettings((s) => ({ ...s, oiUpThrPct: Number(e.target.value) }))} /></Col>
-              <Col md={2}><Form.Label>Min Funding (abs)</Form.Label><Form.Control type="number" value={settings.minFundingAbs ?? 0} onChange={(e) => setSettings((s) => ({ ...s, minFundingAbs: Number(e.target.value) }))} /><Form.Text className="text-muted">Blocks trading if |funding| is below this threshold. Sign is taken from live funding.</Form.Text></Col>
-              <Col md={2}><Form.Label>minTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMin} onChange={(e) => setSettings((s) => ({ ...s, signalCounterMin: Number(e.target.value) }))} /></Col>
-              <Col md={2}><Form.Label>maxTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMax} onChange={(e) => setSettings((s) => ({ ...s, signalCounterMax: Number(e.target.value) }))} /></Col>
+              <Col md={2}><Form.Label>TF</Form.Label><Form.Select value={settings.tf} onChange={(e) => { setSettingsDirty(true); setSettings((s) => ({ ...s, tf: Number(e.target.value) as MinimalSettings['tf'] })); }}>{[1,3,5,10,15].map((v)=><option key={v} value={v}>{v}m</option>)}</Form.Select></Col>
+              <Col md={2}><Form.Label>priceUpThrPct</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => { setSettingsDirty(true); setSettings((s) => ({ ...s, priceUpThrPct: Number(e.target.value) })); }} /></Col>
+              <Col md={2}><Form.Label>oiUpThrPct</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => { setSettingsDirty(true); setSettings((s) => ({ ...s, oiUpThrPct: Number(e.target.value) })); }} /></Col>
+              <Col md={2}><Form.Label>Min Funding (abs)</Form.Label><Form.Control type="number" value={settings.minFundingAbs ?? 0} onChange={(e) => { setSettingsDirty(true); setSettings((s) => ({ ...s, minFundingAbs: Number(e.target.value) })); }} /><Form.Text className="text-muted">Blocks trading if |funding| is below this threshold. Sign is taken from live funding.</Form.Text></Col>
+              <Col md={2}><Form.Label>minTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMin} onChange={(e) => { setSettingsDirty(true); setSettings((s) => ({ ...s, signalCounterMin: Number(e.target.value) })); }} /></Col>
+              <Col md={2}><Form.Label>maxTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMax} onChange={(e) => { setSettingsDirty(true); setSettings((s) => ({ ...s, signalCounterMax: Number(e.target.value) })); }} /></Col>
             </Row>
+            <div className="mt-2 d-flex align-items-center gap-2">
+              <Button size="sm" variant="primary" onClick={() => void onSaveSettings()} disabled={!settingsDirty}>Save</Button>
+              <span className="small text-muted">Saved to active profile{activeProfileName ? `: ${activeProfileName}` : ''}. Changes apply on next start.</span>
+            </div>
             <div className="small text-muted mt-2">Percent convention: 3 means 3%.</div>
           </Card.Body></Card>
         </Tab>
 
         <Tab eventKey="active-symbols" title="Active symbols">
           <Card className="mt-3"><Card.Body>
-            <Card.Title>Active symbols</Card.Title>
+            <div className="d-flex justify-content-between align-items-center mb-1">
+              <Card.Title className="mb-0">Active symbols</Card.Title>
+              <Button size="sm" variant="outline-primary" onClick={() => void onRefreshNow()}>Refresh</Button>
+            </div>
             <div className="small text-muted mb-2">Funding snapshots refresh every 10 minutes (batch, best-effort).</div>
-            <Table size="sm" striped responsive>
+            <div className="active-symbols-table-wrap">
+            <Table size="sm" striped className="active-symbols-table">
+              <colgroup>
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '9%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '15%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '16%' }} />
+                <col style={{ width: '8%' }} />
+              </colgroup>
               <thead><tr>
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('symbol')}>Symbol{renderActiveSortMarker('symbol')}</Button></th>
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('markPrice')}>Mark{renderActiveSortMarker('markPrice')}</Button></th>
@@ -390,7 +484,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('nextFundingTimeMs')}>Next funding (ETA){renderActiveSortMarker('nextFundingTimeMs')}</Button></th>
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('tradability')}>Tradability{renderActiveSortMarker('tradability')}</Button></th>
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('signalCount24h')}>SignalCount{renderActiveSortMarker('signalCount24h')}</Button></th>
-                <th>Top no-entry reason</th>
+                <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('topReason')}>Top no-entry reason{renderActiveSortMarker('topReason')}</Button></th>
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('lastSignalAtMs')}>LastSignal{renderActiveSortMarker('lastSignalAtMs')}</Button></th>
               </tr></thead>
               <tbody>
@@ -405,12 +499,13 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
                     <td className="font-monospace">{row.nextFundingTimeMs ? `${new Date(row.nextFundingTimeMs).toLocaleString()} (${toHuman(row.timeToFundingMs)})` : '—'}{row.fundingStatus === 'STALE' ? ' · stale' : ''}</td>
                     <td><Badge bg={row.tradability === 'OK' ? 'success' : row.tradability === 'MISSING' ? 'danger' : 'warning'}>{row.tradability}</Badge></td>
                     <td className="font-monospace">{row.signalCount24h}</td>
-                    <td className="small">{row.topReason ?? 'No reasons available yet'}</td>
+                    <td className="small active-symbols-reason" title={row.topReason ?? 'No reasons available yet'}>{row.topReason ?? 'No reasons available yet'}</td>
                     <td className="font-monospace">{row.lastSignalAtMs ? new Date(row.lastSignalAtMs).toLocaleTimeString() : '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </Table>
+            </div>
           </Card.Body></Card>
         </Tab>
 

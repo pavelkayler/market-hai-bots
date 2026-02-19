@@ -80,6 +80,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   let killInProgress = false;
   let killCompletedAt: number | null = null;
   let killWarning: string | null = null;
+  let stateVersion = 0;
   let lastJournalTs = 0;
   let currentRunProfileNameUsed: string | null = null;
   let currentRunId: string | null = null;
@@ -281,6 +282,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       .filter((value): value is NonNullable<typeof value> => value !== null);
 
     return {
+      stateVersion,
       running: state.running,
       paused: state.paused,
       pauseReason: stats.guardrailPauseReason,
@@ -306,6 +308,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   };
 
   const buildApiBotState = async () => {
+    stateVersion += 1;
     const state = botEngine.getState();
     const perf = getPerfMetrics();
     const now = Date.now();
@@ -394,6 +397,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   };
 
   const broadcastBotState = (): void => {
+    stateVersion += 1;
     broadcast('state', buildBroadcastBotState());
   };
 
@@ -881,6 +885,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return buildApiBotState();
   });
 
+  app.post('/api/bot/refresh', async () => {
+    const snapshot = await buildApiBotState();
+    broadcast('state', buildBroadcastBotState());
+    return snapshot;
+  });
+
 
   app.post('/api/bot/kill', async () => {
     killInProgress = true;
@@ -899,6 +909,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     killInProgress = false;
     killCompletedAt = Date.now();
     botEngine.stop();
+    botEngine.resetRuntimeStateForAllSymbols();
+    botEngine.setUniverseSymbols([]);
+    botEngine.resetLifecycleRuntime();
+    symbolUpdateBroadcaster.reset();
+    botEngine.clearPersistedRuntime();
     currentRunProfileNameUsed = null;
     currentRunId = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);

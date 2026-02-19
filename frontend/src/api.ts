@@ -48,6 +48,7 @@ export async function createUniverse(minVolPct: number, minTurnover: number): Pr
 export async function refreshUniverse(filters?: { minVolPct?: number; minTurnover?: number }): Promise<unknown> { return request('/api/universe/refresh', { method: 'POST', body: JSON.stringify(filters ?? {}) }); }
 export async function clearUniverse(): Promise<{ ok: boolean }> { return request('/api/universe/clear', { method: 'POST', body: JSON.stringify({}) }); }
 export async function getBotState(signal?: AbortSignal): Promise<BotState> { return request('/api/bot/state', { signal }); }
+export async function refreshBotState(): Promise<BotState> { return request('/api/bot/refresh', { method: 'POST', body: JSON.stringify({}) }); }
 export async function getUniverseExclusions(): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions'); }
 export async function addUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions/add', { method: 'POST', body: JSON.stringify({ symbol }) }); }
 export async function removeUniverseExclusion(symbol: string): Promise<{ ok: true; symbols: string[]; excluded: string[]; updatedAt: number; warnings?: string[] }> { return request('/api/universe/exclusions/remove', { method: 'POST', body: JSON.stringify({ symbol }) }); }
