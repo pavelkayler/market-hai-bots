@@ -194,9 +194,11 @@ describe('server routes', () => {
             'BTCUSDT',
             {
               symbol: 'BTCUSDT',
-              turnover24h: '12000000',
-              highPrice24h: '41000',
-              lowPrice24h: '39000'
+              turnover24h: 12000000,
+              highPrice24h: 41000,
+              lowPrice24h: 39000,
+              fundingRate: '0.0002',
+              nextFundingTime: String(Date.now() + 60_000)
             }
           ]
         ])
@@ -205,6 +207,29 @@ describe('server routes', () => {
 
     await app.ready();
     await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 0, minTurnover: 1 } });
+
+    const profileResponse = await app.inject({
+      method: 'POST',
+      url: '/api/profiles/test-start-profile',
+      payload: {
+        mode: 'paper',
+        direction: 'both',
+        tf: 5,
+        holdSeconds: 3,
+        signalCounterThreshold: 2,
+        priceUpThrPct: 0.5,
+        oiUpThrPct: 10,
+        oiCandleThrPct: 0,
+        marginUSDT: 100,
+        leverage: 10,
+        tpRoiPct: 1,
+        slRoiPct: 0.7,
+        entryOffsetPct: 0
+      }
+    });
+    expect(profileResponse.statusCode).toBe(200);
+    const activeResponse = await app.inject({ method: 'POST', url: '/api/profiles/test-start-profile/active' });
+    expect(activeResponse.statusCode).toBe(200);
 
     const startResponse = await app.inject({
       method: 'POST',
@@ -221,15 +246,94 @@ describe('server routes', () => {
     expect(startResponse.statusCode).toBe(200);
     const stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
     expect(stateResponse.statusCode).toBe(200);
-    expect(stateResponse.json()).toMatchObject({
-      lastConfig: {
-        tf: 1,
-        priceUpThrPct: 0.001,
-        oiUpThrPct: 0.001,
-        signalCounterMin: 2,
-        signalCounterMax: 3
+    const lastConfig = stateResponse.json().lastConfig as Record<string, unknown>;
+    expect(lastConfig.tf).toBe(1);
+    expect(lastConfig.priceUpThrPct).toBe(0.001);
+    expect(lastConfig.oiUpThrPct).toBe(0.001);
+    expect((lastConfig.signalCounterMin ?? lastConfig.minTriggerCount)).toBe(2);
+    expect((lastConfig.signalCounterMax ?? lastConfig.maxTriggerCount)).toBe(3);
+  });
+
+  it('POST /api/bot/start with empty payload uses active profile config', async () => {
+    await app.close();
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 41000, lowPrice24h: 39000, fundingRate: '0.0002', nextFundingTime: String(Date.now() + 60_000) }]
+        ])
+      )
+    });
+
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 0, minTurnover: 1 } });
+    await app.inject({
+      method: 'POST',
+      url: '/api/profiles/test-empty-profile',
+      payload: {
+        mode: 'paper',
+        direction: 'long',
+        tf: 3,
+        holdSeconds: 4,
+        signalCounterThreshold: 2,
+        priceUpThrPct: 0.4,
+        oiUpThrPct: 9,
+        marginUSDT: 100,
+        leverage: 10,
+        tpRoiPct: 1,
+        slRoiPct: 0.7,
+        entryOffsetPct: 0
       }
     });
+    await app.inject({ method: 'POST', url: '/api/profiles/test-empty-profile/active' });
+
+    const response = await app.inject({ method: 'POST', url: '/api/bot/start', payload: {} });
+    expect(response.statusCode).toBe(200);
+    const stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    const lastConfig = stateResponse.json().lastConfig as Record<string, unknown>;
+    expect(lastConfig.tf).toBe(3);
+    expect(lastConfig.direction).toBe('long');
+  });
+
+  it('POST /api/bot/start accepts full payload with required fields', async () => {
+    await app.close();
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          ['BTCUSDT', { symbol: 'BTCUSDT', turnover24h: 12000000, highPrice24h: 41000, lowPrice24h: 39000, fundingRate: '0.0002', nextFundingTime: String(Date.now() + 60_000) }]
+        ])
+      )
+    });
+
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 0, minTurnover: 1 } });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        mode: 'paper',
+        direction: 'short',
+        tf: 1,
+        holdSeconds: 3,
+        priceUpThrPct: 0.002,
+        oiUpThrPct: 0.002,
+        minTriggerCount: 2,
+        maxTriggerCount: 3,
+        marginUSDT: 100,
+        leverage: 10,
+        tpRoiPct: 1,
+        slRoiPct: 0.7,
+        entryOffsetPct: 0
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    const stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    const lastConfig = stateResponse.json().lastConfig as Record<string, unknown>;
+    expect(lastConfig.direction).toBe('short');
+    expect(lastConfig.tf).toBe(1);
   });
 
   it('GET /api/journal/download?format=csv returns header and rows', async () => {
@@ -708,7 +812,7 @@ describe('server routes', () => {
       }
     });
 
-    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ ok: false, error: 'UNIVERSE_NOT_READY' });
   });
 

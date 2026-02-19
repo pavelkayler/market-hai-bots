@@ -117,11 +117,24 @@ export class FundingSnapshotService {
   }
 
   async refreshNowBestEffort(reason: string): Promise<void> {
-    if (!this.bybitClient || !this.universeProvider || !this.logger) {
+    if (!this.universeProvider) {
       return;
     }
 
     const symbols = Array.from(new Set(this.universeProvider.getSymbols().map((symbol) => symbol.trim().toUpperCase()).filter(Boolean)));
+    return this.refreshSymbolsBestEffort(symbols, reason);
+  }
+
+  async refreshNow(symbols: string[], reason = 'manual_refresh'): Promise<void> {
+    const normalizedSymbols = Array.from(new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean)));
+    return this.refreshSymbolsBestEffort(normalizedSymbols, reason);
+  }
+
+  private async refreshSymbolsBestEffort(symbols: string[], reason: string): Promise<void> {
+    if (!this.bybitClient || !this.logger) {
+      return;
+    }
+
     if (symbols.length === 0) {
       return;
     }
