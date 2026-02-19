@@ -3,10 +3,11 @@
 ## 1) Install & static checks
 
 1. `npm install`
-2. `npm run backend:typecheck`
-3. `npm test` (backend vitest)
-4. `npm run build:frontend`
-5. Optional bundled check: `npm run rc:check`
+2. `npm --prefix backend run build`
+3. `npm --prefix backend run typecheck`
+4. `npm --prefix backend test`
+5. `npm --prefix frontend run build`
+6. Optional bundled check: `npm run rc:check`
 
 ## 2) Start services
 
@@ -70,3 +71,10 @@
 - Case 2: set `minFundingAbs` high (e.g. `0.01`); verify no entry reason `funding_abs_below_min`.
 - Case 3: set `minFundingAbs=0` and moderate thresholds; verify signal counter increments at most once per TF bucket under frequent ticks.
 - Re-verify lifecycle: Pause/Resume/Stop/KILL and reset-all STOP-only behavior remains stable.
+
+## 6) Step-1 PAPER regression checks
+
+1. Verify `/api/profiles` does not expose legacy `default` in names and active profile is named (e.g. `balanced_1m`).
+2. In Bot Settings (v2), save thresholds and start without `mode` in payload; confirm `/api/bot/state.lastConfig` reflects the same thresholds.
+3. Run `POST /api/bot/kill`; confirm bot state STOPPED and `GET /api/doctor` shows `ws_freshness` as WARN (not FAIL) when no symbols are subscribed.
+4. Confirm Dashboard renders Open positions/Open orders tables (empty states are acceptable).

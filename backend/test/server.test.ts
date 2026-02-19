@@ -137,8 +137,8 @@ describe('server routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       ok: true,
-      activeProfile: 'default',
-      names: ['aggressive_1m', 'aggressive_3m', 'aggressive_5m', 'balanced_1m', 'balanced_3m', 'balanced_5m', 'conservative_1m', 'conservative_3m', 'conservative_5m', 'default', 'skip_trades_max_filter']
+      activeProfile: 'balanced_1m',
+      names: ['aggressive_1m', 'aggressive_3m', 'aggressive_5m', 'balanced_1m', 'balanced_3m', 'balanced_5m', 'conservative_1m', 'conservative_3m', 'conservative_5m', 'skip_trades_max_filter']
     });
   });
 
@@ -182,6 +182,55 @@ describe('server routes', () => {
     });
   });
 
+
+
+  it('POST /api/bot/start applies payload config without requiring mode', async () => {
+    await app.close();
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [{ symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: '12000000',
+              highPrice24h: '41000',
+              lowPrice24h: '39000'
+            }
+          ]
+        ])
+      )
+    });
+
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 0, minTurnover: 1 } });
+
+    const startResponse = await app.inject({
+      method: 'POST',
+      url: '/api/bot/start',
+      payload: {
+        tf: 1,
+        priceUpThrPct: 0.001,
+        oiUpThrPct: 0.001,
+        minTriggerCount: 2,
+        maxTriggerCount: 3
+      }
+    });
+
+    expect(startResponse.statusCode).toBe(200);
+    const stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(stateResponse.statusCode).toBe(200);
+    expect(stateResponse.json()).toMatchObject({
+      lastConfig: {
+        tf: 1,
+        priceUpThrPct: 0.001,
+        oiUpThrPct: 0.001,
+        signalCounterMin: 2,
+        signalCounterMax: 3
+      }
+    });
+  });
 
   it('GET /api/journal/download?format=csv returns header and rows', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'journal-route-test-'));

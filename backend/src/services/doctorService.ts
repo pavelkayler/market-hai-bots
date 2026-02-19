@@ -40,6 +40,7 @@ type DoctorServiceDeps = {
   getBotState: () => BotLifecycleState;
   getMarketStates: () => Record<string, MarketStateLike>;
   getTrackedSymbols: () => string[];
+  getDesiredSymbols?: () => string[];
   getTickerStreamStatus?: () => {
     running: boolean;
     connected: boolean;
@@ -124,9 +125,18 @@ export class DoctorService {
     const marketStates = this.deps.getMarketStates();
     const trackedSymbols = this.deps.getTrackedSymbols();
     const streamStatus = this.deps.getTickerStreamStatus?.();
-    const desiredSymbols = trackedSymbols.length > 0 ? trackedSymbols : Object.keys(marketStates);
-    const desiredSymbolsCount = desiredSymbols.length;
+    const desiredSymbolsFromHub = this.deps.getDesiredSymbols?.() ?? [];
     const wsFreshnessThresholdMs = 15_000;
+
+    const desiredSymbols =
+      trackedSymbols.length > 0
+        ? trackedSymbols
+        : desiredSymbolsFromHub.length > 0
+          ? desiredSymbolsFromHub
+          : streamStatus && streamStatus.desiredSymbolsCount > 0
+            ? Object.keys(marketStates)
+            : [];
+    const desiredSymbolsCount = desiredSymbols.length;
 
     if (desiredSymbolsCount === 0) {
       return {
@@ -134,11 +144,17 @@ export class DoctorService {
         status: 'WARN',
         message: 'no symbols subscribed',
         details: {
-          desiredSymbolsCount,
+          streamRunning: streamStatus?.running ?? null,
+          streamConnected: streamStatus?.connected ?? null,
+          desiredSymbolsCount: streamStatus?.desiredSymbolsCount ?? desiredSymbolsCount,
+          subscribedCount: streamStatus?.subscribedCount ?? 0,
+          symbolsChecked: 0,
           presentSymbolsCount: 0,
           missingSymbolsCount: 0,
           worstAgeMs: null,
           thresholdMs: wsFreshnessThresholdMs,
+          lastMessageAt: streamStatus?.lastMessageAt ?? null,
+          lastTickerAt: streamStatus?.lastTickerAt ?? null,
           sampleMissingSymbols: [],
           topOldestPresent: []
         }
@@ -161,14 +177,17 @@ export class DoctorService {
         status: 'WARN',
         message: 'no tickers observed yet',
         details: {
-          desiredSymbolsCount,
+          streamRunning: streamStatus?.running ?? null,
+          streamConnected: streamStatus?.connected ?? null,
+          desiredSymbolsCount: streamStatus?.desiredSymbolsCount ?? desiredSymbolsCount,
+          subscribedCount: streamStatus?.subscribedCount ?? 0,
+          symbolsChecked: desiredSymbolsCount,
           presentSymbolsCount,
           missingSymbolsCount,
           worstAgeMs: null,
           thresholdMs: wsFreshnessThresholdMs,
           sampleMissingSymbols: missingSymbols.slice(0, 10),
           topOldestPresent: [],
-          subscribedCount: streamStatus?.subscribedCount ?? 0,
           lastMessageAt: streamStatus?.lastMessageAt ?? null,
           lastTickerAt: streamStatus?.lastTickerAt ?? null,
           reconnectCount: streamStatus?.reconnectCount ?? 0,
@@ -193,14 +212,17 @@ export class DoctorService {
       status,
       message,
       details: {
-        desiredSymbolsCount,
+        streamRunning: streamStatus?.running ?? null,
+        streamConnected: streamStatus?.connected ?? null,
+        desiredSymbolsCount: streamStatus?.desiredSymbolsCount ?? desiredSymbolsCount,
+        subscribedCount: streamStatus?.subscribedCount ?? presentSymbolsCount,
+        symbolsChecked: desiredSymbolsCount,
         presentSymbolsCount,
         missingSymbolsCount,
         worstAgeMs,
         thresholdMs: wsFreshnessThresholdMs,
         sampleMissingSymbols: missingSymbols.slice(0, 10),
         topOldestPresent,
-        subscribedCount: streamStatus?.subscribedCount ?? presentSymbolsCount,
         lastMessageAt: streamStatus?.lastMessageAt ?? null,
         lastTickerAt: streamStatus?.lastTickerAt ?? null,
         reconnectCount: streamStatus?.reconnectCount ?? 0,

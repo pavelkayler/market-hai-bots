@@ -440,6 +440,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     },
     getMarketStates: () => marketHub.getAllStates(),
     getTrackedSymbols: () => botEngine.getRuntimeSymbols(),
+    getDesiredSymbols: () => marketHub.getSubscribedSymbols(),
     getTickerStreamStatus: () => marketHub.getTickerStreamStatus(),
     getUniverseState: () => universeService.get(),
     getVersion: async () => ({
@@ -770,7 +771,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     try {
       await profileService.setActive(name);
       return { ok: true };
-    } catch {
+    } catch (error) {
+      if ((error as Error).message === 'LEGACY_PROFILE_LOCKED') {
+        return reply.code(400).send({ ok: false, error: 'LEGACY_PROFILE_LOCKED' });
+      }
+
       return reply.code(404).send({ ok: false, error: 'NOT_FOUND' });
     }
   });
@@ -800,7 +805,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const requestBody = request.body as Record<string, unknown> | null | undefined;
-    const shouldUseActiveProfile = requestBody == null || requestBody.mode === undefined;
+    const hasUserConfig = !!requestBody && typeof requestBody === 'object' && Object.keys(requestBody).length > 0;
+    const shouldUseActiveProfile = !hasUserConfig || requestBody.useActiveProfile === true;
     const profilesList = await profileService.list();
     const config = shouldUseActiveProfile
       ? await profileService.get(profilesList.activeProfile)
@@ -910,7 +916,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     killCompletedAt = Date.now();
     botEngine.stop();
     botEngine.resetRuntimeStateForAllSymbols();
+    await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
+    setTrackedUniverseSymbols([]);
     botEngine.resetLifecycleRuntime();
     symbolUpdateBroadcaster.reset();
     botEngine.clearPersistedRuntime();

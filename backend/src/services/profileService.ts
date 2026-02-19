@@ -8,7 +8,8 @@ type ProfilesFile = {
   profiles: Record<string, BotConfig>;
 };
 
-const DEFAULT_PROFILE_NAME = 'default' as const;
+const DEFAULT_PROFILE_NAME = 'balanced_1m' as const;
+const LEGACY_DEFAULT_PROFILE_NAME = 'default' as const;
 
 const DEFAULT_PROFILE_CONFIG: BotConfig = {
   mode: 'paper',
@@ -83,7 +84,7 @@ const SHIPPED_PRESETS: Record<(typeof SHIPPED_PRESET_NAMES)[number], BotConfig> 
 const DEFAULT_PROFILES_FILE: ProfilesFile = {
   activeProfile: DEFAULT_PROFILE_NAME,
   profiles: {
-    [DEFAULT_PROFILE_NAME]: DEFAULT_PROFILE_CONFIG,
+    [LEGACY_DEFAULT_PROFILE_NAME]: DEFAULT_PROFILE_CONFIG,
     ...SHIPPED_PRESETS
   }
 };
@@ -95,9 +96,13 @@ export class ProfileService {
 
   async list(): Promise<{ activeProfile: string; names: string[] }> {
     const state = await this.ensureLoaded();
+    const visibleNames = Object.keys(state.profiles)
+      .filter((name) => name !== LEGACY_DEFAULT_PROFILE_NAME)
+      .sort((a, b) => a.localeCompare(b));
+    const activeProfile = visibleNames.includes(state.activeProfile) ? state.activeProfile : DEFAULT_PROFILE_NAME;
     return {
-      activeProfile: state.activeProfile,
-      names: Object.keys(state.profiles).sort((a, b) => a.localeCompare(b))
+      activeProfile,
+      names: visibleNames
     };
   }
 
@@ -114,6 +119,10 @@ export class ProfileService {
 
   async setActive(name: string): Promise<void> {
     const state = await this.ensureLoaded();
+    if (name === LEGACY_DEFAULT_PROFILE_NAME) {
+      throw new Error('LEGACY_PROFILE_LOCKED');
+    }
+
     if (!state.profiles[name]) {
       throw new Error('NOT_FOUND');
     }
@@ -124,7 +133,7 @@ export class ProfileService {
 
   async delete(name: string): Promise<void> {
     const state = await this.ensureLoaded();
-    if (name === DEFAULT_PROFILE_NAME) {
+    if (name === DEFAULT_PROFILE_NAME || name === LEGACY_DEFAULT_PROFILE_NAME) {
       throw new Error('DEFAULT_PROFILE_LOCKED');
     }
 
@@ -177,14 +186,15 @@ export class ProfileService {
     }
 
     if (typeof input.activeProfile === 'string' && state.profiles[input.activeProfile]) {
-      state.activeProfile = input.activeProfile;
+      state.activeProfile = input.activeProfile === LEGACY_DEFAULT_PROFILE_NAME ? DEFAULT_PROFILE_NAME : input.activeProfile;
     }
 
-    if (!state.profiles[DEFAULT_PROFILE_NAME]) {
-      state.profiles[DEFAULT_PROFILE_NAME] = DEFAULT_PROFILE_CONFIG;
+    if (!state.profiles[LEGACY_DEFAULT_PROFILE_NAME]) {
+      state.profiles[LEGACY_DEFAULT_PROFILE_NAME] = DEFAULT_PROFILE_CONFIG;
     }
 
     this.seedStarterProfiles(state);
+    this.migrateLegacyDefault(state);
 
     await this.persist(state);
   }
@@ -228,8 +238,8 @@ export class ProfileService {
         }
       }
 
-      if (!profiles[DEFAULT_PROFILE_NAME]) {
-        profiles[DEFAULT_PROFILE_NAME] = DEFAULT_PROFILE_CONFIG;
+      if (!profiles[LEGACY_DEFAULT_PROFILE_NAME]) {
+        profiles[LEGACY_DEFAULT_PROFILE_NAME] = DEFAULT_PROFILE_CONFIG;
       }
 
       this.seedStarterProfiles({ activeProfile: DEFAULT_PROFILE_NAME, profiles });
@@ -238,6 +248,7 @@ export class ProfileService {
         typeof parsed.activeProfile === 'string' && profiles[parsed.activeProfile] ? parsed.activeProfile : DEFAULT_PROFILE_NAME;
 
       const next = { activeProfile, profiles };
+      this.migrateLegacyDefault(next);
       await this.persist(next);
       return next;
     } catch {
@@ -267,6 +278,16 @@ export class ProfileService {
       if (!state.profiles[presetName]) {
         state.profiles[presetName] = SHIPPED_PRESETS[presetName];
       }
+    }
+  }
+
+  private migrateLegacyDefault(state: ProfilesFile): void {
+    const profileNames = Object.keys(state.profiles);
+    const onlyLegacyDefault = profileNames.length === 1 && profileNames[0] === LEGACY_DEFAULT_PROFILE_NAME;
+
+    if (state.activeProfile === LEGACY_DEFAULT_PROFILE_NAME || onlyLegacyDefault || !state.profiles[state.activeProfile]) {
+      this.seedStarterProfiles(state);
+      state.activeProfile = DEFAULT_PROFILE_NAME;
     }
   }
 }

@@ -86,6 +86,10 @@ export class MarketHub {
     return this.subscribedSymbols.size;
   }
 
+  getSubscribedSymbols(): string[] {
+    return Array.from(this.subscribedSymbols);
+  }
+
   getTickerStreamStatus(): TickerStreamStatus {
     return this.tickerStream.getStatus?.() ?? {
       running: this.running,
