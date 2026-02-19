@@ -439,7 +439,8 @@ const DEFAULT_HOLD_SECONDS = 3;
 const DEFAULT_SIGNAL_COUNTER_THRESHOLD = 2;
 const DEFAULT_STRATEGY_MODE: StrategyMode = 'IMPULSE';
 const DEFAULT_SIGNAL_COUNTER_MIN = DEFAULT_SIGNAL_COUNTER_THRESHOLD;
-const DEFAULT_SIGNAL_COUNTER_MAX = Number.MAX_SAFE_INTEGER;
+const DEFAULT_SIGNAL_COUNTER_MAX = 3;
+const MAX_SIGNAL_COUNTER_UPPER_BOUND = 1000;
 const DEFAULT_AUTO_TUNE_ENABLED = false;
 const DEFAULT_AUTO_TUNE_SCOPE: AutoTuneScope = 'GLOBAL';
 const DEFAULT_AUTO_TUNE_PLANNER_MODE: 'DETERMINISTIC' | 'RANDOM_EXPLORE' = 'DETERMINISTIC';
@@ -528,8 +529,8 @@ const DEFAULT_RAW_BOT_CONFIG: Record<string, unknown> = {
   oiUpThrPct: DEFAULT_OI_UP_THR_PCT,
   minFundingAbs: DEFAULT_MIN_FUNDING_ABS,
   oiCandleThrPct: DEFAULT_OI_CANDLE_THR_PCT,
-  marginUSDT: 50,
-  leverage: 1,
+  marginUSDT: 100,
+  leverage: 10,
   tpRoiPct: 1,
   slRoiPct: 0.7,
   entryOffsetPct: DEFAULT_ENTRY_OFFSET_PCT,
@@ -599,9 +600,10 @@ export const normalizeBotConfig = (raw: Record<string, unknown>): BotConfig | nu
       : DEFAULT_SIGNAL_COUNTER_THRESHOLD;
   const signalCounterMinRaw = typeof raw.minTriggerCount === 'number' && Number.isFinite(raw.minTriggerCount) ? raw.minTriggerCount : (typeof raw.signalCounterMin === 'number' && Number.isFinite(raw.signalCounterMin) ? raw.signalCounterMin : signalCounterThreshold);
   const signalCounterMaxRaw =
-    typeof raw.maxTriggerCount === 'number' && Number.isFinite(raw.maxTriggerCount) ? raw.maxTriggerCount : (typeof raw.signalCounterMax === 'number' && Number.isFinite(raw.signalCounterMax) ? raw.signalCounterMax : Number.MAX_SAFE_INTEGER);
+    typeof raw.maxTriggerCount === 'number' && Number.isFinite(raw.maxTriggerCount) ? raw.maxTriggerCount : (typeof raw.signalCounterMax === 'number' && Number.isFinite(raw.signalCounterMax) ? raw.signalCounterMax : DEFAULT_SIGNAL_COUNTER_MAX);
   const signalCounterMin = Math.max(1, Math.floor(signalCounterMinRaw));
-  const signalCounterMax = Math.max(signalCounterMin, Math.floor(signalCounterMaxRaw));
+  const signalCounterMaxBounded = Math.min(MAX_SIGNAL_COUNTER_UPPER_BOUND, Math.max(1, Math.floor(signalCounterMaxRaw)));
+  const signalCounterMax = Math.max(signalCounterMin, signalCounterMaxBounded);
   const oiUpThrPct = typeof raw.oiUpThrPct === 'number' && Number.isFinite(raw.oiUpThrPct) ? raw.oiUpThrPct : DEFAULT_OI_UP_THR_PCT;
   const minFundingAbsRaw = raw.minFundingAbs;
   const minFundingAbs =

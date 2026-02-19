@@ -100,50 +100,58 @@ export class PaperExecution {
 
   onMarkTick(input: { symbol: string; mark: number; tsMs: number }): void {
     const orderIds = this.openOrderIdsBySymbol.get(input.symbol);
-    if (!orderIds || orderIds.size === 0) {
+    if (orderIds && orderIds.size > 0) {
+      for (const orderId of [...orderIds]) {
+        const order = this.orders.get(orderId);
+        if (!order || order.status !== 'NEW') {
+          orderIds.delete(orderId);
+          continue;
+        }
+
+        const shouldFill = (order.side === 'Buy' && input.mark <= order.limitPrice) || (order.side === 'Sell' && input.mark >= order.limitPrice);
+        if (!shouldFill) {
+          continue;
+        }
+
+        const existingPosition = this.positionsBySymbol.get(order.symbol);
+        if (existingPosition && existingPosition.side !== order.side) {
+          continue;
+        }
+
+        order.status = 'FILLED';
+        order.filledAtMs = input.tsMs;
+        orderIds.delete(orderId);
+
+        if (!existingPosition) {
+          this.positionsBySymbol.set(order.symbol, {
+            symbol: order.symbol,
+            side: order.side,
+            size: order.qty,
+            avgPrice: order.limitPrice,
+            openedAtMs: input.tsMs,
+            unrealizedPnl: 0
+          });
+          continue;
+        }
+
+        const nextSize = existingPosition.size + order.qty;
+        const weightedAvgPrice = ((existingPosition.avgPrice * existingPosition.size) + (order.limitPrice * order.qty)) / nextSize;
+        this.positionsBySymbol.set(order.symbol, { ...existingPosition, size: nextSize, avgPrice: weightedAvgPrice });
+      }
+
+      if (orderIds.size === 0) {
+        this.openOrderIdsBySymbol.delete(input.symbol);
+      }
+    }
+
+    const position = this.positionsBySymbol.get(input.symbol);
+    if (!position) {
       return;
     }
 
-    for (const orderId of [...orderIds]) {
-      const order = this.orders.get(orderId);
-      if (!order || order.status !== 'NEW') {
-        orderIds.delete(orderId);
-        continue;
-      }
-
-      const shouldFill = (order.side === 'Buy' && input.mark <= order.limitPrice) || (order.side === 'Sell' && input.mark >= order.limitPrice);
-      if (!shouldFill) {
-        continue;
-      }
-
-      const existingPosition = this.positionsBySymbol.get(order.symbol);
-      if (existingPosition && existingPosition.side !== order.side) {
-        continue;
-      }
-
-      order.status = 'FILLED';
-      order.filledAtMs = input.tsMs;
-      orderIds.delete(orderId);
-
-      if (!existingPosition) {
-        this.positionsBySymbol.set(order.symbol, {
-          symbol: order.symbol,
-          side: order.side,
-          size: order.qty,
-          avgPrice: order.limitPrice,
-          openedAtMs: input.tsMs,
-          unrealizedPnl: 0
-        });
-        continue;
-      }
-
-      const nextSize = existingPosition.size + order.qty;
-      const weightedAvgPrice = ((existingPosition.avgPrice * existingPosition.size) + (order.limitPrice * order.qty)) / nextSize;
-      this.positionsBySymbol.set(order.symbol, { ...existingPosition, size: nextSize, avgPrice: weightedAvgPrice });
-    }
-
-    if (orderIds.size === 0) {
-      this.openOrderIdsBySymbol.delete(input.symbol);
-    }
+    const signedPnl = position.side === 'Buy'
+      ? (input.mark - position.avgPrice) * position.size
+      : (position.avgPrice - input.mark) * position.size;
+    this.positionsBySymbol.set(input.symbol, { ...position, unrealizedPnl: signedPnl });
   }
 }
