@@ -73,6 +73,17 @@
 - Case 3: set `minFundingAbs=0` and moderate thresholds; verify signal counter increments at most once per TF bucket under frequent ticks.
 - Re-verify lifecycle: Pause/Resume/Stop/KILL and reset-all STOP-only behavior remains stable.
 
+### G. PAPER trade smoke (orders/positions visibility)
+1. Start backend + frontend.
+2. Universe: configure filters, Save, then Create (universe must become Ready).
+3. Bot Settings: `tf=1`, `priceUpThrPct=0.01`, `oiUpThrPct=0.01`, `minFundingAbs=0`, `minTriggerCount=2`, `maxTriggerCount=3`, Save.
+4. Start bot in PAPER mode.
+5. Expected within a few TF candles:
+   - Bot → Universe symbols table transitions through `WAIT_CONFIRMATION` → `ORDER_PLACED` → `POSITION_OPEN` for at least one symbol.
+   - Home → Open orders and Open positions tables are populated from PAPER execution state.
+6. Stop semantics: Stop cancels only open orders and keeps open positions.
+7. Reset semantics: Reset clears open orders + open positions and leaves bot lifecycle in STOPPED state.
+
 ## 6) Step-1 PAPER regression checks
 
 1. Verify `/api/profiles` does not expose legacy `default` in names and active profile is named (e.g. `balanced_1m`).

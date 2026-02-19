@@ -10,6 +10,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import { BotEngine, getDefaultBotConfig, normalizeBotConfig } from './bot/botEngine.js';
 import { FileSnapshotStore } from './bot/snapshotStore.js';
+import { PaperExecution } from './bot/paperExecution.js';
 import { DemoTradeClient, type IDemoTradeClient } from './bybit/demoTradeClient.js';
 import { MarketHub } from './market/marketHub.js';
 import type { TickerStream } from './market/tickerStream.js';
@@ -104,6 +105,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
   });
   const snapshotStore = new FileSnapshotStore(storagePaths.runtimePath);
+  const paperExecution = new PaperExecution();
   const journalPath = storagePaths.journalPath;
   const journalService = new JournalService(journalPath);
   const dataDirPath = path.resolve(process.cwd(), 'data');
@@ -272,40 +274,61 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const perf = getPerfMetrics();
     const now = Date.now();
     const symbols = botEngine.getRuntimeSymbols();
-    const openOrders = symbols
-      .map((symbol) => {
-        const runtime = botEngine.getSymbolState(symbol);
-        if (!runtime?.pendingOrder) {
-          return null;
-        }
+    const mode = state.config?.mode ?? 'paper';
+    const openOrders =
+      mode === 'paper'
+        ? botEngine.getPaperExecution().getOpenOrders().map((order) => ({
+            symbol: order.symbol,
+            side: order.side,
+            qty: order.qty,
+            limitPrice: order.limitPrice,
+            status: order.status,
+            orderId: order.orderId,
+            orderLinkId: null
+          }))
+        : symbols
+            .map((symbol) => {
+              const runtime = botEngine.getSymbolState(symbol);
+              if (!runtime?.pendingOrder) {
+                return null;
+              }
 
-        return {
-          symbol,
-          side: runtime.pendingOrder.side,
-          qty: runtime.pendingOrder.qty,
-          limitPrice: runtime.pendingOrder.limitPrice,
-          status: runtime.fsmState,
-          orderId: runtime.pendingOrder.orderId ?? null,
-          orderLinkId: runtime.pendingOrder.orderLinkId ?? null
-        };
-      })
-      .filter((value): value is NonNullable<typeof value> => value !== null);
-    const positions = symbols
-      .map((symbol) => {
-        const runtime = botEngine.getSymbolState(symbol);
-        if (!runtime?.position) {
-          return null;
-        }
+              return {
+                symbol,
+                side: runtime.pendingOrder.side,
+                qty: runtime.pendingOrder.qty,
+                limitPrice: runtime.pendingOrder.limitPrice,
+                status: runtime.fsmState,
+                orderId: runtime.pendingOrder.orderId ?? null,
+                orderLinkId: runtime.pendingOrder.orderLinkId ?? null
+              };
+            })
+            .filter((value): value is NonNullable<typeof value> => value !== null);
+    const positions =
+      mode === 'paper'
+        ? botEngine.getPaperExecution().getOpenPositions().map((position) => ({
+            symbol: position.symbol,
+            side: position.side,
+            size: position.size,
+            avgPrice: position.avgPrice,
+            unrealizedPnl: position.unrealizedPnl ?? 0
+          }))
+        : symbols
+            .map((symbol) => {
+              const runtime = botEngine.getSymbolState(symbol);
+              if (!runtime?.position) {
+                return null;
+              }
 
-        return {
-          symbol,
-          side: runtime.position.side,
-          size: runtime.position.qty,
-          avgPrice: runtime.position.entryPrice,
-          unrealizedPnl: runtime.position.lastPnlUSDT ?? 0
-        };
-      })
-      .filter((value): value is NonNullable<typeof value> => value !== null);
+              return {
+                symbol,
+                side: runtime.position.side,
+                size: runtime.position.qty,
+                avgPrice: runtime.position.entryPrice,
+                unrealizedPnl: runtime.position.lastPnlUSDT ?? 0
+              };
+            })
+            .filter((value): value is NonNullable<typeof value> => value !== null);
     const activeSymbolDiagnostics = symbols
       .map((symbol) => {
         const runtime = botEngine.getSymbolState(symbol);
@@ -686,6 +709,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       broadcast('queue:update', payload);
     },
     demoTradeClient,
+    paperExecution,
     snapshotStore,
     emitLog: (message) => emitLog(message),
     onGuardrailPaused: (payload) => {
@@ -909,6 +933,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/bot/stop', async () => {
     const cancelledOrders = await botEngine.cancelAllPendingOrders((symbol) => marketHub.getState(symbol));
+    botEngine.cancelPaperOpenOrders();
     botEngine.stop();
     currentRunId = null;
     await runRecorder.writeStats(botEngine.getStats() as unknown as Record<string, unknown>);
@@ -981,6 +1006,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     killInProgress = false;
     killCompletedAt = Date.now();
     botEngine.stop();
+    botEngine.clearPaperExecution();
     botEngine.resetRuntimeStateForAllSymbols();
     await marketHub.setUniverseSymbols([]);
     botEngine.setUniverseSymbols([]);
@@ -1032,6 +1058,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     killInProgress = false;
     killCompletedAt = Date.now();
     botEngine.stop();
+    botEngine.clearPaperExecution();
     botEngine.resetRuntimeStateForAllSymbols();
     botEngine.resetLifecycleRuntime();
     symbolUpdateBroadcaster.reset();
