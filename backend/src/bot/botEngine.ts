@@ -1194,6 +1194,20 @@ export class BotEngine {
     this.persistSnapshot();
   }
 
+  resetLifecycleRuntime(): void {
+    this.state = {
+      ...this.state,
+      running: false,
+      paused: false,
+      startedAt: null,
+      runningSinceTs: null,
+      activeUptimeMs: 0,
+      uptimeMs: 0,
+      queueDepth: 0
+    };
+    this.persistSnapshot();
+  }
+
   getSymbolState(symbol: string): SymbolRuntimeState | undefined {
     const symbolState = this.symbols.get(symbol);
     if (!symbolState) {

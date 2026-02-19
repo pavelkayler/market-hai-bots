@@ -41,3 +41,27 @@
 .ui-dense .universe-panel .table {
   margin-bottom: 0.4rem;
 }
+
+.active-symbols-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.active-symbols-table {
+  width: 100%;
+  min-width: 1180px;
+  table-layout: fixed;
+}
+
+.active-symbols-table th,
+.active-symbols-table td {
+  vertical-align: middle;
+}
+
+.active-symbols-table td.font-monospace {
+  font-variant-numeric: tabular-nums;
+}
+
+.active-symbols-reason {
+  overflow-wrap: anywhere;
+}

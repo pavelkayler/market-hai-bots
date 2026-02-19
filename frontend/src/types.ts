@@ -89,6 +89,7 @@ export type BotStateContract = {
 };
 
 export type BotState = {
+  stateVersion?: number;
   bot?: BotStateContract['bot'];
   config?: BotStateContract['config'];
   universe?: BotStateContract['universe'];

@@ -55,6 +55,48 @@ export function App() {
   const reconnectTimer = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const symbolUpdatesInWindowRef = useRef(0);
+  const lastStateVersionRef = useRef(0);
+
+  const applyIncomingBotState = useCallback((incoming: BotState, options?: { merge?: boolean }) => {
+    const nextVersion = typeof incoming.stateVersion === 'number' && Number.isFinite(incoming.stateVersion) ? incoming.stateVersion : 0;
+    if (nextVersion > 0 && nextVersion < lastStateVersionRef.current) {
+      return;
+    }
+
+    if (nextVersion > lastStateVersionRef.current) {
+      lastStateVersionRef.current = nextVersion;
+    }
+
+    const merge = options?.merge ?? false;
+    if (!merge) {
+      setBotState(incoming);
+      if (!incoming.running && !incoming.paused) {
+        setSymbolMap({});
+      }
+      return;
+    }
+
+    setBotState((prev) => {
+      const { paused: _paused, hasSnapshot: _hasSnapshot, lastConfig: _lastConfig, ...allowedPayload } = incoming;
+      const safeActivityMetrics = {
+        queueDepth: typeof allowedPayload.queueDepth === 'number' && Number.isFinite(allowedPayload.queueDepth) ? allowedPayload.queueDepth : undefined,
+        activeOrders: typeof allowedPayload.activeOrders === 'number' && Number.isFinite(allowedPayload.activeOrders) ? allowedPayload.activeOrders : undefined,
+        openPositions:
+          typeof allowedPayload.openPositions === 'number' && Number.isFinite(allowedPayload.openPositions) ? allowedPayload.openPositions : undefined
+      };
+      return {
+        ...prev,
+        ...allowedPayload,
+        queueDepth: safeActivityMetrics.queueDepth ?? prev.queueDepth ?? 0,
+        activeOrders: safeActivityMetrics.activeOrders ?? prev.activeOrders ?? 0,
+        openPositions: safeActivityMetrics.openPositions ?? prev.openPositions ?? 0
+      };
+    });
+
+    if (incoming.running === false && incoming.paused === false) {
+      setSymbolMap({});
+    }
+  }, []);
 
   const appendLog = useCallback((text: string, ts?: number) => {
     setLogs((prev) => pushLog(prev, { text, ts: ts ?? Date.now() }));
@@ -65,11 +107,11 @@ export function App() {
       const [health, nextUniverse, nextBotState] = await Promise.all([getHealth(), getUniverse(), getBotState()]);
       setRestHealthy(health.ok);
       setUniverseState(nextUniverse);
-      setBotState(nextBotState);
+      applyIncomingBotState(nextBotState);
     } catch {
       setRestHealthy(false);
     }
-  }, []);
+  }, [applyIncomingBotState]);
 
   useEffect(() => {
     void syncRest();
@@ -190,22 +232,7 @@ export function App() {
         setWsState((prev) => ({ ...prev, lastMessageAt: Date.now() }));
 
         if (message.type === 'state') {
-          const payload = message.payload as Partial<BotState>;
-          const { paused: _paused, hasSnapshot: _hasSnapshot, lastConfig: _lastConfig, ...allowedPayload } = payload;
-          const safeActivityMetrics = {
-            queueDepth: typeof allowedPayload.queueDepth === 'number' && Number.isFinite(allowedPayload.queueDepth) ? allowedPayload.queueDepth : undefined,
-            activeOrders:
-              typeof allowedPayload.activeOrders === 'number' && Number.isFinite(allowedPayload.activeOrders) ? allowedPayload.activeOrders : undefined,
-            openPositions:
-              typeof allowedPayload.openPositions === 'number' && Number.isFinite(allowedPayload.openPositions) ? allowedPayload.openPositions : undefined
-          };
-          setBotState((prev) => ({
-            ...prev,
-            ...allowedPayload,
-            queueDepth: safeActivityMetrics.queueDepth ?? prev.queueDepth ?? 0,
-            activeOrders: safeActivityMetrics.activeOrders ?? prev.activeOrders ?? 0,
-            openPositions: safeActivityMetrics.openPositions ?? prev.openPositions ?? 0
-          }));
+          applyIncomingBotState(message.payload as BotState, { merge: true });
           return;
         }
 
@@ -270,7 +297,7 @@ export function App() {
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [appendLog, syncRest]);
+  }, [appendLog, applyIncomingBotState, syncRest]);
 
   const connectionBadge = useMemo(
     () => (
@@ -329,6 +356,7 @@ export function App() {
                 logs={logs}
                 syncRest={syncRest}
                 symbolUpdatesPerSecond={symbolUpdatesPerSecond}
+                wsConnected={wsState.ready}
               />
             }
           />
