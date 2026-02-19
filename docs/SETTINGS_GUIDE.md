@@ -168,6 +168,17 @@ Spread (`spreadBpsAtEntry`, `spreadBpsAtExit`) and slippage (`slippageUSDT`, `sl
 - `priceUpThrPct` and `oiUpThrPct` are interpreted vs the **previous TF candle** (UTC buckets for `tf=1/3/5`).
 - First-candle fallback: if previous candle values are missing/invalid, deltas are treated as `0` and no signal is triggered.
 
+
+### Funding gate semantics
+- `fundingRate` uses the raw Bybit ticker value that is parsed as a number without unit conversion (for example ticker `"0.0001"` is stored as `0.0001`).
+- Direction gate remains funding-sign based: `fundingRate > 0` allows LONG candidates, `fundingRate < 0` allows SHORT candidates, and missing/invalid/zero funding blocks entries.
+- `minFundingAbs` (default `0`) is an absolute funding magnitude threshold in the same funding units.
+  - When `minFundingAbs > 0` and `abs(fundingRate) < minFundingAbs`, entry is blocked with `FUNDING_ABS_BELOW_MIN`.
+
+Examples (raw funding units):
+- If `fundingRate=0.0001` and `minFundingAbs=0.0002`, then `abs(0.0001) < 0.0002` => no trade.
+- If `fundingRate=-0.00035` and `minFundingAbs=0.0002`, then `abs(-0.00035) >= 0.0002`; sign gate still drives SHORT-only direction.
+
 ### Factory presets (10 shipped)
 
 - aggressive: `aggressive_1m`, `aggressive_3m`, `aggressive_5m`

@@ -331,6 +331,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         tfMinutes: toFinite(normalizedConfig?.tf),
         priceUpThrPct: toFinite(normalizedConfig?.priceUpThrPct),
         oiUpThrPct: toFinite(normalizedConfig?.oiUpThrPct),
+        minFundingAbs: toFinite(normalizedConfig?.minFundingAbs),
         minTriggerCount: toFinite(normalizedConfig?.signalCounterMin),
         maxTriggerCount: toFinite(normalizedConfig?.signalCounterMax)
       },

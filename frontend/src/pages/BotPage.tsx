@@ -16,7 +16,7 @@ type Props = {
   symbolUpdatesPerSecond: number;
 };
 
-type MinimalSettings = Pick<BotSettings, 'tf' | 'priceUpThrPct' | 'oiUpThrPct' | 'signalCounterMin' | 'signalCounterMax'>;
+type MinimalSettings = Pick<BotSettings, 'tf' | 'priceUpThrPct' | 'oiUpThrPct' | 'minFundingAbs' | 'signalCounterMin' | 'signalCounterMax'>;
 
 type PerSymbolResultsRow = {
   symbol: string;
@@ -50,7 +50,7 @@ type ActiveSymbolRow = {
 };
 
 const SETTINGS_KEY = 'bot.settings.v2';
-const defaultSettings: MinimalSettings = { tf: 1, priceUpThrPct: 0.5, oiUpThrPct: 3, signalCounterMin: 2, signalCounterMax: 3 };
+const defaultSettings: MinimalSettings = { tf: 1, priceUpThrPct: 0.5, oiUpThrPct: 3, minFundingAbs: 0, signalCounterMin: 2, signalCounterMax: 3 };
 
 function loadSettings(): MinimalSettings {
   try {
@@ -104,6 +104,23 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
+
+
+  useEffect(() => {
+    if (!botState.lastConfig) {
+      return;
+    }
+
+    setSettings((prev) => ({
+      ...prev,
+      tf: botState.lastConfig?.tf ?? prev.tf,
+      priceUpThrPct: botState.lastConfig?.priceUpThrPct ?? prev.priceUpThrPct,
+      oiUpThrPct: botState.lastConfig?.oiUpThrPct ?? prev.oiUpThrPct,
+      minFundingAbs: botState.lastConfig?.minFundingAbs ?? prev.minFundingAbs ?? 0,
+      signalCounterMin: botState.lastConfig?.signalCounterMin ?? prev.signalCounterMin,
+      signalCounterMax: botState.lastConfig?.signalCounterMax ?? prev.signalCounterMax
+    }));
+  }, [botState.lastConfig]);
 
   const refreshBotData = useCallback(async (signal?: AbortSignal) => {
     if (refreshInFlight.current) {
@@ -207,6 +224,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
         tf: settings.tf,
         priceUpThrPct: settings.priceUpThrPct,
         oiUpThrPct: settings.oiUpThrPct,
+        minFundingAbs: settings.minFundingAbs,
         signalCounterMin: settings.signalCounterMin,
         signalCounterMax: settings.signalCounterMax,
         minTriggerCount: settings.signalCounterMin,
@@ -346,6 +364,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
               <Col md={2}><Form.Label>TF</Form.Label><Form.Select value={settings.tf} onChange={(e) => setSettings((s) => ({ ...s, tf: Number(e.target.value) as MinimalSettings['tf'] }))}>{[1,3,5,10,15].map((v)=><option key={v} value={v}>{v}m</option>)}</Form.Select></Col>
               <Col md={2}><Form.Label>priceUpThrPct</Form.Label><Form.Control type="number" value={settings.priceUpThrPct} onChange={(e) => setSettings((s) => ({ ...s, priceUpThrPct: Number(e.target.value) }))} /></Col>
               <Col md={2}><Form.Label>oiUpThrPct</Form.Label><Form.Control type="number" value={settings.oiUpThrPct} onChange={(e) => setSettings((s) => ({ ...s, oiUpThrPct: Number(e.target.value) }))} /></Col>
+              <Col md={2}><Form.Label>Min Funding (abs)</Form.Label><Form.Control type="number" value={settings.minFundingAbs ?? 0} onChange={(e) => setSettings((s) => ({ ...s, minFundingAbs: Number(e.target.value) }))} /><Form.Text className="text-muted">Blocks trading if |funding| is below this threshold. Sign is taken from live funding.</Form.Text></Col>
               <Col md={2}><Form.Label>minTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMin} onChange={(e) => setSettings((s) => ({ ...s, signalCounterMin: Number(e.target.value) }))} /></Col>
               <Col md={2}><Form.Label>maxTriggerCount</Form.Label><Form.Control type="number" value={settings.signalCounterMax} onChange={(e) => setSettings((s) => ({ ...s, signalCounterMax: Number(e.target.value) }))} /></Col>
             </Row>

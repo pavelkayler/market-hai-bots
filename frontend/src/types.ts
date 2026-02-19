@@ -19,6 +19,7 @@ export type BotSettings = {
   signalCounterMax: number;
   priceUpThrPct: number;
   oiUpThrPct: number;
+  minFundingAbs: number;
   oiCandleThrPct: number;
   marginUSDT: number;
   leverage: number;
@@ -80,7 +81,7 @@ export type BotStateSymbol = {
 
 export type BotStateContract = {
   bot: { phase: 'STOPPED' | 'RUNNING' | 'PAUSED'; running: boolean; startedAt: number | null; stoppedAt: number | null; lastError: string | null };
-  config: { tfMinutes: number; priceUpThrPct: number; oiUpThrPct: number; minTriggerCount: number; maxTriggerCount: number };
+  config: { tfMinutes: number; priceUpThrPct: number; oiUpThrPct: number; minFundingAbs: number; minTriggerCount: number; maxTriggerCount: number };
   universe: { ready: boolean; symbolsCount: number; excludedCount?: number };
   activity: { queueDepth: number; activeOrders: number; openPositions: number; symbolUpdatesPerSec: number; journalAgeMs: number };
   symbols: BotStateSymbol[];

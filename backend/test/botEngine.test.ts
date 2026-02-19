@@ -18,6 +18,7 @@ const defaultConfig: BotConfig = {
   signalCounterThreshold: 2,
   priceUpThrPct: 0.5,
   oiUpThrPct: 0.5,
+  minFundingAbs: 0,
   oiCandleThrPct: 0,
   marginUSDT: 100,
   leverage: 2,
@@ -442,6 +443,62 @@ describe('BotEngine paper execution', () => {
     expect(normalized).not.toBeNull();
     expect(normalized?.holdSeconds).toBe(9);
     expect(normalized?.signalCounterThreshold).toBe(2);
+  });
+
+
+  it('normalizes missing or invalid minFundingAbs to 0', () => {
+    const missing = normalizeBotConfig({
+      mode: 'paper',
+      direction: 'long',
+      tf: 1,
+      holdSeconds: 9,
+      priceUpThrPct: 1,
+      oiUpThrPct: 1,
+      marginUSDT: 10,
+      leverage: 2,
+      tpRoiPct: 1,
+      slRoiPct: 1
+    });
+    const invalid = normalizeBotConfig({
+      mode: 'paper',
+      direction: 'long',
+      tf: 1,
+      holdSeconds: 9,
+      priceUpThrPct: 1,
+      oiUpThrPct: 1,
+      minFundingAbs: Number.NaN,
+      marginUSDT: 10,
+      leverage: 2,
+      tpRoiPct: 1,
+      slRoiPct: 1
+    });
+
+    expect(missing?.minFundingAbs).toBe(0);
+    expect(invalid?.minFundingAbs).toBe(0);
+  });
+
+  it('blocks entries when absolute funding is below minFundingAbs', () => {
+    const signals: SignalPayload[] = [];
+    let now = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const engine = new BotEngine({
+      now: () => now,
+      emitSignal: (payload) => signals.push(payload),
+      emitOrderUpdate: () => undefined,
+      emitPositionUpdate: () => undefined,
+      emitQueueUpdate: () => undefined
+    });
+
+    engine.setUniverseSymbols(['BTCUSDT']);
+    engine.start({ ...defaultConfig, direction: 'long', signalCounterThreshold: 1, priceUpThrPct: 1, oiUpThrPct: 1, minFundingAbs: 0.001 });
+
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 100, openInterestValue: 1000, openInterest: 1000, fundingRate: 0.0001, ts: now });
+    now += 60_000;
+    engine.onMarketUpdate('BTCUSDT', { markPrice: 102, openInterestValue: 1020, openInterest: 1020, fundingRate: 0.0001, ts: now });
+
+    const symbolState = engine.getSymbolState('BTCUSDT');
+    expect(signals).toHaveLength(0);
+    expect(symbolState?.pendingOrder).toBeNull();
+    expect(symbolState?.lastNoEntryReasons[0]?.code).toBe('FUNDING_ABS_BELOW_MIN');
   });
 
   it('computes entryOffsetPct=0.01% entry limit from mark for long and short', () => {
