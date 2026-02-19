@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import type { BotConfig, BotStats, BothCandidateDiagnostics, DemoRuntimeState, EntryReason, GateSnapshot, SymbolBaseline, SymbolFsmState } from './botEngine.js';
+import type { BotConfig, BotStats, BothCandidateDiagnostics, DemoRuntimeState, EntryReason, GateSnapshot, LastBlockSnapshot, SymbolBaseline, SymbolFsmState } from './botEngine.js';
 import type { PaperPendingOrder, PaperPosition } from './paperTypes.js';
 
 export type RuntimeSnapshotSymbol = {
@@ -62,6 +62,7 @@ export type RuntimeSnapshotSymbol = {
   lastSignalCount24h?: number;
   gates?: GateSnapshot | null;
   lastBothCandidate?: BothCandidateDiagnostics | null;
+  lastBlock?: LastBlockSnapshot | null;
 };
 
 export type RuntimeSnapshot = {

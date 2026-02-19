@@ -15,15 +15,13 @@ import {
   stopBot
 } from '../api';
 import { useSort } from '../hooks/useSort';
-import type { BotState, BotStateSymbol } from '../types';
+import type { BotState, UniverseSymbolStatus } from '../types';
 import { formatDuration } from '../utils/time';
 
 type Props = {
   onRefresh: () => Promise<void>;
   botState: BotState | null;
 };
-
-type UniverseSymbolStatus = 'WAIT_CANDLE' | 'WAIT_SIGNAL' | 'WAIT_CONFIRMATION' | 'ORDER_PLACED' | 'POSITION_OPEN' | 'BLACKOUT';
 
 type UniverseRow = {
   symbol: string;
@@ -36,6 +34,7 @@ type UniverseRow = {
   status: UniverseSymbolStatus;
   statusLabel: string;
   blackoutReason: string | null;
+  noEntryReason: string | null;
 };
 
 const MOSCOW_TIME_FORMAT = new Intl.DateTimeFormat('ru-RU', {
@@ -71,37 +70,6 @@ const formatPercent = (value: number | null, digits = 2) => {
   }
 
   return `${value.toFixed(digits)}%`;
-};
-
-const getSymbolStatus = (row: BotStateSymbol, botState: BotState | null): UniverseSymbolStatus => {
-  if (row.tradability === 'BLACKOUT') {
-    return 'BLACKOUT';
-  }
-
-  if (row.priceDeltaPct === null || row.oiDeltaPct === null) {
-    return 'WAIT_CANDLE';
-  }
-
-  const openPositionSymbols = new Set((botState?.positions ?? []).map((position) => position.symbol));
-  if (openPositionSymbols.has(row.symbol)) {
-    return 'POSITION_OPEN';
-  }
-
-  const openOrderSymbols = new Set((botState?.openOrders ?? []).map((order) => order.symbol));
-  if (openOrderSymbols.has(row.symbol)) {
-    return 'ORDER_PLACED';
-  }
-
-  if (row.signalCount24h <= 0) {
-    return 'WAIT_SIGNAL';
-  }
-
-  const minTriggerCount = botState?.config?.minTriggerCount;
-  if (typeof minTriggerCount === 'number' && row.signalCount24h < minTriggerCount) {
-    return 'WAIT_CONFIRMATION';
-  }
-
-  return 'WAIT_SIGNAL';
 };
 
 const sortArrow = (active: boolean, dir: 'asc' | 'desc' | null) => {
@@ -157,7 +125,7 @@ export function BotPage({ onRefresh, botState }: Props) {
 
   const universeRows = useMemo<UniverseRow[]>(() => {
     return (botState?.symbols ?? []).map((row) => {
-      const status = getSymbolStatus(row, botState);
+      const status = row.statusCode ?? (row.priceDeltaPct === null || row.oiDeltaPct === null ? 'WAIT_CANDLE' : 'WAIT_SIGNAL');
       return {
         symbol: row.symbol,
         markPrice: row.markPrice,
@@ -167,8 +135,9 @@ export function BotPage({ onRefresh, botState }: Props) {
         nextFundingTimeMs: row.nextFundingTimeMs,
         timeToFundingMs: row.timeToFundingMs,
         status,
-        statusLabel: STATUS_LABELS[status],
-        blackoutReason: row.blackoutReason ?? null
+        statusLabel: row.statusLabel ?? STATUS_LABELS[status],
+        blackoutReason: row.blackoutReason ?? null,
+        noEntryReason: row.noEntryReason ?? null
       };
     });
   }, [botState]);
@@ -275,6 +244,7 @@ export function BotPage({ onRefresh, botState }: Props) {
                       <th>{renderSortHeader('Funding rate', 'fundingRate')}</th>
                       <th>{renderSortHeader('Funding update (MSK)', 'nextFundingTimeMs')}</th>
                       <th>{renderSortHeader('Status', 'status')}</th>
+                      <th>{renderSortHeader('Why', 'noEntryReason')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -291,6 +261,13 @@ export function BotPage({ onRefresh, botState }: Props) {
                             : `${MOSCOW_TIME_FORMAT.format(new Date(row.nextFundingTimeMs))} (${formatDuration(Math.max(0, row.timeToFundingMs ?? 0))})`}
                         </td>
                         <td title={row.blackoutReason ?? undefined}>{row.statusLabel}</td>
+                        <td title={row.blackoutReason ?? undefined}>
+                          {row.status === 'BLACKOUT'
+                            ? 'Blackout'
+                            : row.status === 'WAIT_SIGNAL' || row.status === 'WAIT_CANDLE' || row.status === 'WAIT_CONFIRMATION'
+                              ? (row.noEntryReason ?? '—')
+                              : '—'}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
