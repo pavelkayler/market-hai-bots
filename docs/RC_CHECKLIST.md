@@ -63,3 +63,10 @@
 - UI-used vs backend-existing map documented.
 - Verification results include exact commands + outputs + PASS/FAIL rationale.
 - Bugs prioritized (P0/P1/P2) with reproduction + minimal fix approach.
+
+### F. Minimal trigger reliability smoke (PAPER)
+- Start bot with ready universe and `tf=1`.
+- Case 1: set very high `priceUpThrPct`/`oiUpThrPct`; verify no entry and visible reasons (`price_delta_below_threshold`, `oiv_delta_below_threshold`, `signal_counter_below_min`, `funding_missing` as applicable).
+- Case 2: set `minFundingAbs` high (e.g. `0.01`); verify no entry reason `funding_abs_below_min`.
+- Case 3: set `minFundingAbs=0` and moderate thresholds; verify signal counter increments at most once per TF bucket under frequent ticks.
+- Re-verify lifecycle: Pause/Resume/Stop/KILL and reset-all STOP-only behavior remains stable.

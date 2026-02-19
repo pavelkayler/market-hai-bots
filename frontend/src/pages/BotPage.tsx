@@ -47,6 +47,7 @@ type ActiveSymbolRow = {
   signalCount24h: number;
   lastSignalAtMs: number | null;
   blackoutReason: string | null;
+  topReason: string | null;
 };
 
 const SETTINGS_KEY = 'bot.settings.v2';
@@ -171,7 +172,8 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
         tradability: row.tradability,
         signalCount24h: row.signalCount24h,
         lastSignalAtMs: row.lastSignalAtMs,
-        blackoutReason: row.blackoutReason ?? null
+        blackoutReason: row.blackoutReason ?? null,
+        topReason: row.topReasons?.[0]?.message ?? symbolMap[row.symbol]?.topReasons?.[0]?.message ?? null
       }));
     }
 
@@ -192,7 +194,8 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
         tradability: diag.tradingAllowed ?? 'MISSING',
         signalCount24h: diag.signalCount24h ?? 0,
         lastSignalAtMs: diag.lastSignalAt ?? null,
-        blackoutReason: null
+        blackoutReason: null,
+        topReason: diag.topReasons?.[0]?.message ?? ws?.topReasons?.[0]?.message ?? null
       };
     });
   }, [cachedBotState.activeSymbolDiagnostics, cachedBotState.symbols, symbolMap]);
@@ -387,6 +390,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('nextFundingTimeMs')}>Next funding (ETA){renderActiveSortMarker('nextFundingTimeMs')}</Button></th>
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('tradability')}>Tradability{renderActiveSortMarker('tradability')}</Button></th>
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('signalCount24h')}>SignalCount{renderActiveSortMarker('signalCount24h')}</Button></th>
+                <th>Top no-entry reason</th>
                 <th><Button variant="link" className="p-0 text-decoration-none" onClick={() => setActiveSortKey('lastSignalAtMs')}>LastSignal{renderActiveSortMarker('lastSignalAtMs')}</Button></th>
               </tr></thead>
               <tbody>
@@ -401,6 +405,7 @@ export function BotPage({ botState, universeState, symbolMap, syncRest, symbolUp
                     <td className="font-monospace">{row.nextFundingTimeMs ? `${new Date(row.nextFundingTimeMs).toLocaleString()} (${toHuman(row.timeToFundingMs)})` : '—'}{row.fundingStatus === 'STALE' ? ' · stale' : ''}</td>
                     <td><Badge bg={row.tradability === 'OK' ? 'success' : row.tradability === 'MISSING' ? 'danger' : 'warning'}>{row.tradability}</Badge></td>
                     <td className="font-monospace">{row.signalCount24h}</td>
+                    <td className="small">{row.topReason ?? 'No reasons available yet'}</td>
                     <td className="font-monospace">{row.lastSignalAtMs ? new Date(row.lastSignalAtMs).toLocaleTimeString() : '—'}</td>
                   </tr>
                 ))}

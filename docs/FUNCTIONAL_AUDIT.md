@@ -241,9 +241,14 @@ Reference checklist: `docs/RC_CHECKLIST.md`.
 
 ### P0 (safety/lifecycle/contract correctness)
 
-0. **Implemented: funding absolute threshold gate (`minFundingAbs`) for PAPER minimal readiness.**
+0. **Implemented: TF bucket model + no-entry observability minimal readiness (price/OIV/funding/signal counter).**
+   - Canonical UTC TF bucket rotation now captures previous candle closes for markPrice + openInterestValue and computes deltas from previous close (`deltaPct=((current-prevClose)/prevClose)*100`).
+   - Missing previous closes explicitly block entries with deterministic reasons (`missing_prev_candle_price`, `missing_prev_candle_oiv`).
+   - Signal counter deduplicates per symbol+TF bucket and emits deterministic no-trade reason contexts (thresholds/funding/counter/bucket).
+
+1. **Implemented: funding absolute threshold gate (`minFundingAbs`) for PAPER minimal readiness.**
    - Backend config now persists additive `minFundingAbs` with default `0` and backward-compatible normalization for older profiles/snapshots.
-   - Engine blocks entries when `abs(fundingRate) < minFundingAbs` (reason `FUNDING_ABS_BELOW_MIN`), while preserving existing funding-sign direction gating.
+   - Engine blocks entries when `abs(fundingRate) < minFundingAbs` (reason `funding_abs_below_min`), while preserving existing funding-sign direction gating.
    - Quick verify: set `minFundingAbs` high (e.g., `0.01`) and observe no entries + reason; then set `0` and confirm baseline behavior returns.
 
 1. **Pause allowed while bot is STOPPED (impossible lifecycle tuple via API).**

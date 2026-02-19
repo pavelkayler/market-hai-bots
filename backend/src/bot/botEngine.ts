@@ -133,6 +133,14 @@ export type SymbolFsmState = 'IDLE' | 'HOLDING_LONG' | 'HOLDING_SHORT' | 'ARMED_
 
 export type NoEntryReason = {
   code:
+    | 'missing_prev_candle_price'
+    | 'missing_prev_candle_oiv'
+    | 'price_delta_below_threshold'
+    | 'oiv_delta_below_threshold'
+    | 'funding_missing'
+    | 'funding_abs_below_min'
+    | 'signal_counter_below_min'
+    | 'signal_counter_above_max'
     | 'TREND_BLOCK_LONG'
     | 'TREND_BLOCK_SHORT'
     | 'OI_CANDLE_GATE_FAIL'
@@ -155,6 +163,7 @@ export type NoEntryReason = {
   message: string;
   value?: number;
   threshold?: number;
+  context?: Record<string, number | string | null>;
 };
 
 export type EntryReason = 'LONG_CONTINUATION' | 'SHORT_CONTINUATION' | 'SHORT_DIVERGENCE';
@@ -199,8 +208,11 @@ export type SymbolRuntimeState = {
   prevCandleMark: number | null;
   prevTfCloseMark: number | null;
   lastCandleMark: number | null;
+  lastObservedPrice: number | null;
+  lastObservedOiv: number | null;
   lastCandleBucketStart: number | null;
   lastTfBucketStart: number | null;
+  lastBucketCloseCapturedAt: number | null;
   lastEvaluationGateTs: number | null;
   blockedUntilTs: number;
   overrideGateOnce: boolean;
@@ -448,6 +460,14 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 const PNL_SANITY_WINDOW_TRADES = 20;
 const NO_ENTRY_REASON_CODES: NoEntryReason['code'][] = [
+  'missing_prev_candle_price',
+  'missing_prev_candle_oiv',
+  'price_delta_below_threshold',
+  'oiv_delta_below_threshold',
+  'funding_missing',
+  'funding_abs_below_min',
+  'signal_counter_below_min',
+  'signal_counter_above_max',
   'TREND_BLOCK_LONG',
   'TREND_BLOCK_SHORT',
   'OI_CANDLE_GATE_FAIL',
@@ -1007,8 +1027,11 @@ export class BotEngine {
         prevCandleMark: state.prevCandleMark ?? null,
         prevTfCloseMark: state.prevTfCloseMark ?? state.prevCandleMark ?? null,
         lastCandleMark: state.lastCandleMark ?? null,
+        lastObservedPrice: state.lastObservedPrice ?? state.lastCandleMark ?? null,
+        lastObservedOiv: state.lastObservedOiv ?? state.lastCandleOi ?? null,
         lastCandleBucketStart: state.lastCandleBucketStart ?? state.lastTfBucketStart ?? null,
         lastTfBucketStart: state.lastTfBucketStart ?? state.lastCandleBucketStart ?? null,
+        lastBucketCloseCapturedAt: state.lastBucketCloseCapturedAt ?? null,
         lastEvaluationGateTs: null,
         blockedUntilTs: state.blockedUntilTs,
         overrideGateOnce: state.overrideGateOnce,
@@ -1152,8 +1175,11 @@ export class BotEngine {
         prevCandleMark: symbolState.prevCandleMark,
         prevTfCloseMark: symbolState.prevTfCloseMark,
         lastCandleMark: symbolState.lastCandleMark,
+        lastObservedPrice: symbolState.lastObservedPrice,
+        lastObservedOiv: symbolState.lastObservedOiv,
         lastCandleBucketStart: symbolState.lastCandleBucketStart,
         lastTfBucketStart: symbolState.lastTfBucketStart,
+        lastBucketCloseCapturedAt: symbolState.lastBucketCloseCapturedAt,
         tfCandle: symbolState.tfCandle ? { ...symbolState.tfCandle } : null,
         lastClosedOiCandle: symbolState.lastClosedOiCandle ? { ...symbolState.lastClosedOiCandle } : null,
         lastImpulseProcessedBucketStart: symbolState.lastImpulseProcessedBucketStart
@@ -1190,8 +1216,11 @@ export class BotEngine {
       prevCandleMark: symbolState.prevCandleMark,
       prevTfCloseMark: symbolState.prevTfCloseMark,
       lastCandleMark: symbolState.lastCandleMark,
+      lastObservedPrice: symbolState.lastObservedPrice,
+      lastObservedOiv: symbolState.lastObservedOiv,
       lastCandleBucketStart: symbolState.lastCandleBucketStart,
       lastTfBucketStart: symbolState.lastTfBucketStart,
+      lastBucketCloseCapturedAt: symbolState.lastBucketCloseCapturedAt,
       trendCandles5m: symbolState.trendCandles5m.map((candle) => ({ ...candle })),
       trendCandles15m: symbolState.trendCandles15m.map((candle) => ({ ...candle })),
       tfCandle: symbolState.tfCandle ? { ...symbolState.tfCandle } : null,
@@ -1498,6 +1527,17 @@ export class BotEngine {
     }
 
     if (symbolState.tradingAllowed !== "OK" || symbolState.blackoutActionInFlight) {
+      if (symbolState.tradingAllowed === 'MISSING') {
+        this.recordNoEntryReason(symbolState, {
+          code: 'funding_missing',
+          message: 'Funding data missing; trade skipped.',
+          context: {
+            fundingRate: symbolState.fundingRate ?? null,
+            minFundingAbs: this.state.config.minFundingAbs,
+            bucketStart: symbolState.lastTfBucketStart
+          }
+        });
+      }
       return;
     }
 
@@ -1528,9 +1568,34 @@ export class BotEngine {
       return;
     }
 
-    const { priceDeltaPct, oiDeltaPct } = this.computeDeltas(symbolState, marketState);
-    symbolState.lastPriceDeltaPct = priceDeltaPct;
-    symbolState.lastOiDeltaPct = oiDeltaPct;
+    const deltas = this.computeDeltas(symbolState, marketState);
+    symbolState.lastPriceDeltaPct = deltas.priceDeltaPct;
+    symbolState.lastOiDeltaPct = deltas.oiDeltaPct;
+    if (!deltas.canComputePrice) {
+      this.recordNoEntryReason(symbolState, {
+        code: 'missing_prev_candle_price',
+        message: 'Previous TF candle close for price is missing.',
+        context: {
+          prevClosePrice: symbolState.prevTfCloseMark,
+          bucketStart: tfBucketStart
+        }
+      });
+      return;
+    }
+    if (!deltas.canComputeOiv) {
+      this.recordNoEntryReason(symbolState, {
+        code: 'missing_prev_candle_oiv',
+        message: 'Previous TF candle close for OIV is missing.',
+        context: {
+          prevCloseOiv: symbolState.prevTfCloseOiv,
+          bucketStart: tfBucketStart
+        }
+      });
+      return;
+    }
+
+    const priceDeltaPct = deltas.priceDeltaPct;
+    const oiDeltaPct = deltas.oiDeltaPct;
     const candidate = this.getEligibleSignal(symbolState, priceDeltaPct, oiDeltaPct);
     symbolState.lastBothCandidate = candidate?.bothCandidate ?? null;
     if (symbolState.gates) {
@@ -1541,17 +1606,42 @@ export class BotEngine {
       }
     }
     if (!candidate) {
-      if ((priceDeltaPct >= this.state.config.priceUpThrPct && oiDeltaPct >= this.state.config.oiUpThrPct) || (priceDeltaPct <= -this.state.config.priceUpThrPct && oiDeltaPct <= -this.state.config.oiUpThrPct)) {
-        const fundingRate = symbolState.fundingRate;
-        const minFundingAbs = Math.max(0, this.state.config.minFundingAbs ?? 0);
-        if (Number.isFinite(fundingRate ?? Number.NaN) && fundingRate !== 0 && minFundingAbs > 0 && Math.abs(fundingRate ?? 0) < minFundingAbs) {
-          this.recordNoEntryReason(symbolState, {
-            code: 'FUNDING_ABS_BELOW_MIN',
-            message: `|fundingRate| below minFundingAbs (${fundingRate} < ${minFundingAbs}).`,
-            value: Math.abs(fundingRate ?? 0),
-            threshold: minFundingAbs
-          });
-        }
+      const absPriceThr = Math.abs(this.state.config.priceUpThrPct);
+      const absOiThr = Math.abs(this.state.config.oiUpThrPct);
+      if (Math.abs(priceDeltaPct) < absPriceThr) {
+        this.recordNoEntryReason(symbolState, {
+          code: 'price_delta_below_threshold',
+          message: 'Price delta below threshold.',
+          value: Math.abs(priceDeltaPct),
+          threshold: absPriceThr,
+          context: { deltaPricePct: priceDeltaPct, priceThrPct: this.state.config.priceUpThrPct, bucketStart: tfBucketStart }
+        });
+      }
+      if (Math.abs(oiDeltaPct) < absOiThr) {
+        this.recordNoEntryReason(symbolState, {
+          code: 'oiv_delta_below_threshold',
+          message: 'OIV delta below threshold.',
+          value: Math.abs(oiDeltaPct),
+          threshold: absOiThr,
+          context: { deltaOivPct: oiDeltaPct, oiThrPct: this.state.config.oiUpThrPct, bucketStart: tfBucketStart }
+        });
+      }
+      const fundingRate = symbolState.fundingRate;
+      const minFundingAbs = Math.max(0, this.state.config.minFundingAbs ?? 0);
+      if (!Number.isFinite(fundingRate ?? Number.NaN) || fundingRate === 0) {
+        this.recordNoEntryReason(symbolState, {
+          code: 'funding_missing',
+          message: 'Funding rate missing or zero; trade skipped.',
+          context: { fundingRate: fundingRate ?? null, minFundingAbs, bucketStart: tfBucketStart }
+        });
+      } else if (minFundingAbs > 0 && Math.abs(fundingRate ?? 0) < minFundingAbs) {
+        this.recordNoEntryReason(symbolState, {
+          code: 'funding_abs_below_min',
+          message: `|fundingRate| below minFundingAbs (${fundingRate} < ${minFundingAbs}).`,
+          value: Math.abs(fundingRate ?? 0),
+          threshold: minFundingAbs,
+          context: { fundingRate: fundingRate ?? null, minFundingAbs, bucketStart: tfBucketStart }
+        });
       }
       return;
     }
@@ -1597,11 +1687,13 @@ export class BotEngine {
     symbolState.holdStartTs = now;
 
     if (!confirmed) {
+      const code: NoEntryReason['code'] = signalCount24h < minCount ? 'signal_counter_below_min' : 'signal_counter_above_max';
       this.recordNoEntryReason(symbolState, {
-        code: 'SIGNAL_COUNTER_OUT_OF_RANGE',
-        message: `Need ${minCount} signals in last 24h (count=${signalCount24h}).`,
+        code,
+        message: `Signal counter out of range (count=${signalCount24h}, min=${minCount}, max=${maxCount}).`,
         value: signalCount24h,
-        threshold: minCount
+        threshold: signalCount24h < minCount ? minCount : maxCount,
+        context: { counter: signalCount24h, min: minCount, max: maxCount, bucketStart: tfBucketStart }
       });
       this.persistSnapshot();
       return;
@@ -2037,8 +2129,18 @@ export class BotEngine {
     if (entry.code === 'NO_CONTINUATION') {
       return `${entry.code} (confirmZ=${(gates?.confirmZ ?? 0).toFixed(3)}%; need >=${(this.state.config?.confirmMinContinuationPct ?? 0).toFixed(3)}%)`;
     }
-    if (entry.code === 'SIGNAL_COUNTER_OUT_OF_RANGE') {
-      return `${entry.code} (Need ${this.state.config?.signalCounterThreshold ?? this.state.config?.signalCounterMin ?? 1} signals in last 24h; count=${Math.floor(entry.value ?? 0)})`;
+    if (entry.code === 'missing_prev_candle_price' || entry.code === 'missing_prev_candle_oiv') {
+      return `${entry.code} (bucket=${entry.context?.bucketStart ?? symbolState.lastTfBucketStart ?? 'n/a'})`;
+    }
+    if (entry.code === 'price_delta_below_threshold' || entry.code === 'oiv_delta_below_threshold') {
+      const delta = typeof entry.context?.deltaPricePct === 'number' ? entry.context.deltaPricePct : entry.context?.deltaOivPct;
+      return `${entry.code} (delta=${Number(delta ?? entry.value ?? 0).toFixed(3)}% < thr=${Number(entry.threshold ?? 0).toFixed(3)}%)`;
+    }
+    if (entry.code === 'funding_missing' || entry.code === 'funding_abs_below_min') {
+      return `${entry.code} (funding=${entry.context?.fundingRate ?? 'n/a'} minAbs=${entry.context?.minFundingAbs ?? this.state.config?.minFundingAbs ?? 0})`;
+    }
+    if (entry.code === 'signal_counter_below_min' || entry.code === 'signal_counter_above_max' || entry.code === 'SIGNAL_COUNTER_OUT_OF_RANGE') {
+      return `${entry.code} (count=${Math.floor(entry.value ?? 0)} min=${this.state.config?.signalCounterMin ?? 1} max=${this.state.config?.signalCounterMax ?? Number.MAX_SAFE_INTEGER})`;
     }
     const valuePart = typeof entry.value === 'number' ? ` value=${entry.value.toFixed(4)}` : '';
     const thresholdPart = typeof entry.threshold === 'number' ? ` thr=${entry.threshold}` : '';
@@ -2061,8 +2163,11 @@ export class BotEngine {
       prevCandleMark: null,
       prevTfCloseMark: null,
       lastCandleMark: null,
+      lastObservedPrice: null,
+      lastObservedOiv: null,
       lastCandleBucketStart: null,
       lastTfBucketStart: null,
+      lastBucketCloseCapturedAt: null,
       lastEvaluationGateTs: null,
       blockedUntilTs: 0,
       overrideGateOnce: false,
@@ -2697,8 +2802,11 @@ export class BotEngine {
     symbolState.prevCandleMark = marketState.markPrice;
     symbolState.prevTfCloseMark = null;
     symbolState.lastCandleMark = marketState.markPrice;
+    symbolState.lastObservedPrice = marketState.markPrice;
+    symbolState.lastObservedOiv = oiNow;
     symbolState.lastCandleBucketStart = bucketStart;
     symbolState.lastTfBucketStart = bucketStart;
+    symbolState.lastBucketCloseCapturedAt = null;
     symbolState.tfCandle = {
       bucketStart,
       openTs: now,
@@ -3207,6 +3315,8 @@ export class BotEngine {
         openOi: oiNow,
         closeOi: oiNow
       };
+      symbolState.lastObservedPrice = marketState.markPrice;
+      symbolState.lastObservedOiv = oiNow;
       return;
     }
 
@@ -3215,11 +3325,12 @@ export class BotEngine {
       symbolState.lastCandleBucketStart = candle.bucketStart;
       symbolState.lastTfBucketStart = candle.bucketStart;
       symbolState.prevCandleMark = candle.openMark;
-      symbolState.prevTfCloseMark = candle.closeMark;
-      symbolState.lastCandleMark = candle.closeMark;
+      symbolState.prevTfCloseMark = symbolState.lastObservedPrice ?? candle.closeMark;
+      symbolState.lastCandleMark = symbolState.prevTfCloseMark;
       symbolState.prevCandleOi = candle.openOi;
-      symbolState.prevTfCloseOiv = candle.closeOi;
-      symbolState.lastCandleOi = candle.closeOi;
+      symbolState.prevTfCloseOiv = symbolState.lastObservedOiv ?? candle.closeOi;
+      symbolState.lastCandleOi = symbolState.prevTfCloseOiv;
+      symbolState.lastBucketCloseCapturedAt = now;
 
       symbolState.tfCandle = {
         bucketStart,
@@ -3233,17 +3344,19 @@ export class BotEngine {
       };
 
       symbolState.lastImpulseProcessedBucketStart = null;
-      return;
+    } else {
+      candle.closeMark = marketState.markPrice;
+      candle.highMark = Math.max(candle.highMark, marketState.markPrice);
+      candle.lowMark = Math.min(candle.lowMark, marketState.markPrice);
+      candle.closeOi = oiNow;
+      symbolState.lastCandleBucketStart = candle.bucketStart;
+      symbolState.lastTfBucketStart = candle.bucketStart;
+      symbolState.lastCandleMark = candle.closeMark;
+      symbolState.lastCandleOi = candle.closeOi;
     }
 
-    candle.closeMark = marketState.markPrice;
-    candle.highMark = Math.max(candle.highMark, marketState.markPrice);
-    candle.lowMark = Math.min(candle.lowMark, marketState.markPrice);
-    candle.closeOi = oiNow;
-    symbolState.lastCandleBucketStart = candle.bucketStart;
-    symbolState.lastTfBucketStart = candle.bucketStart;
-    symbolState.lastCandleMark = candle.closeMark;
-    symbolState.lastCandleOi = candle.closeOi;
+    symbolState.lastObservedPrice = marketState.markPrice;
+    symbolState.lastObservedOiv = oiNow;
   }
 
   private onTfCandleClosed(symbolState: SymbolRuntimeState, candle: TfCandleState): void {
@@ -3336,15 +3449,17 @@ export class BotEngine {
     return marketState.openInterestValue;
   }
 
-  private computeDeltas(symbolState: SymbolRuntimeState, marketState: MarketState): { priceDeltaPct: number; oiDeltaPct: number } {
-    if (!symbolState.prevCandleMark || !symbolState.prevCandleOi || symbolState.prevCandleMark <= 0 || symbolState.prevCandleOi <= 0) {
-      return { priceDeltaPct: 0, oiDeltaPct: 0 };
-    }
-
+  private computeDeltas(symbolState: SymbolRuntimeState, marketState: MarketState): { priceDeltaPct: number; oiDeltaPct: number; canComputePrice: boolean; canComputeOiv: boolean } {
+    const prevClosePrice = symbolState.prevTfCloseMark;
+    const prevCloseOiv = symbolState.prevTfCloseOiv;
+    const canComputePrice = typeof prevClosePrice === 'number' && Number.isFinite(prevClosePrice) && prevClosePrice > 0;
+    const canComputeOiv = typeof prevCloseOiv === 'number' && Number.isFinite(prevCloseOiv) && prevCloseOiv > 0;
     const oiNow = this.getOiForSignals(marketState);
     return {
-      priceDeltaPct: ((marketState.markPrice - symbolState.prevCandleMark) / symbolState.prevCandleMark) * 100,
-      oiDeltaPct: ((oiNow - symbolState.prevCandleOi) / symbolState.prevCandleOi) * 100
+      priceDeltaPct: canComputePrice ? ((marketState.markPrice - prevClosePrice) / prevClosePrice) * 100 : 0,
+      oiDeltaPct: canComputeOiv ? ((oiNow - prevCloseOiv) / prevCloseOiv) * 100 : 0,
+      canComputePrice,
+      canComputeOiv
     };
   }
 

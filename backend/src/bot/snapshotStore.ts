@@ -22,8 +22,11 @@ export type RuntimeSnapshotSymbol = {
   prevCandleMark?: number | null;
   prevTfCloseMark?: number | null;
   lastCandleMark?: number | null;
+  lastObservedPrice?: number | null;
+  lastObservedOiv?: number | null;
   lastCandleBucketStart?: number | null;
   lastTfBucketStart?: number | null;
+  lastBucketCloseCapturedAt?: number | null;
   trend5mBucketStart?: number | null;
   trend5mPrevClose?: number | null;
   trend5mLastClose?: number | null;
@@ -52,7 +55,7 @@ export type RuntimeSnapshotSymbol = {
     triggerBucketStart?: number;
     continuationWindowEndBucketStart?: number;
   } | null;
-  lastNoEntryReasons?: Array<{ code: string; message: string; value?: number; threshold?: number }>;
+  lastNoEntryReasons?: Array<{ code: string; message: string; value?: number; threshold?: number; context?: Record<string, number | string | null> }>;
   entryReason?: EntryReason | null;
   lastPriceDeltaPct?: number | null;
   lastOiDeltaPct?: number | null;
