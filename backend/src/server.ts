@@ -266,7 +266,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return entries.filter((entry) => !excludedSet.has(entry.symbol));
   };
 
-  const buildBroadcastBotState = () => {
+  const buildBroadcastBotState = (version = stateVersion) => {
     const state = botEngine.getState();
     const stats = botEngine.getStats();
     const perf = getPerfMetrics();
@@ -337,7 +337,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       .filter((value): value is NonNullable<typeof value> => value !== null);
 
     return {
-      stateVersion,
+      stateVersion: version,
       running: state.running,
       paused: state.paused,
       pauseReason: stats.guardrailPauseReason,
@@ -362,13 +362,16 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     };
   };
 
-  const buildApiBotState = async () => {
-    stateVersion += 1;
+  const buildApiBotState = async (version = stateVersion + 1) => {
+    stateVersion = version;
     const state = botEngine.getState();
     const perf = getPerfMetrics();
     const now = Date.now();
-    const symbols = botEngine.getRuntimeSymbols();
+    const runtimeSymbols = botEngine.getRuntimeSymbols();
     const universe = await universeService.get();
+    const baseSymbols = universe?.ready && Array.isArray(universe.symbols) && universe.symbols.length > 0
+      ? universe.symbols.map((entry) => entry.symbol)
+      : runtimeSymbols;
     const exclusions = await universeExclusionsService.get();
     const phase: 'STOPPED' | 'RUNNING' | 'PAUSED' = state.paused ? 'PAUSED' : state.running ? 'RUNNING' : 'STOPPED';
 
@@ -406,7 +409,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         symbolUpdatesPerSec: Number.isFinite(perf.evalsPerSec) ? Number(perf.evalsPerSec.toFixed(2)) : 0,
         journalAgeMs: lastJournalTs > 0 ? Math.max(0, now - lastJournalTs) : 0
       },
-      symbols: symbols.map((symbol) => {
+      symbols: baseSymbols.map((symbol) => {
         const runtime = botEngine.getSymbolState(symbol);
         const market = marketHub.getState(symbol);
         const marketWithFunding = market ? withFundingSnapshot(symbol, market, now) : null;
@@ -447,13 +450,33 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         };
       }),
       // legacy fields kept for additive-safe migration
-      ...buildBroadcastBotState()
+      ...buildBroadcastBotState(version)
     };
   };
 
+  const buildSafeStatePayload = async (version: number) => {
+    try {
+      return await buildApiBotState(version);
+    } catch (error) {
+      app.log.warn({ err: error }, 'Failed to build full bot state payload for websocket broadcast');
+      const legacyState = buildBroadcastBotState(version);
+      return {
+        ...legacyState,
+        bot: {
+          ...(legacyState as { bot?: Record<string, unknown> }).bot,
+          lastError: 'STATE_BROADCAST_FAILED'
+        }
+      };
+    }
+  };
+
   const broadcastBotState = (): void => {
-    stateVersion += 1;
-    broadcast('state', buildBroadcastBotState());
+    const version = stateVersion + 1;
+    stateVersion = version;
+    void (async () => {
+      const payload = await buildSafeStatePayload(version);
+      broadcast('state', payload);
+    })();
   };
 
   const rotatePerfWindow = (nowMs: number): void => {
@@ -936,7 +959,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.post('/api/bot/refresh', async () => {
     const snapshot = await buildApiBotState();
-    broadcast('state', buildBroadcastBotState());
+    broadcast('state', snapshot);
     return snapshot;
   });
 
@@ -1435,14 +1458,19 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         wsClients.delete(socket as { send: (payload: string) => unknown });
       });
 
-      socket.send(
-        JSON.stringify({
-          type: 'state',
-          ts: Date.now(),
-          payload: buildBroadcastBotState()
-        })
-      );
-      wsFramesSent += 1;
+      void (async () => {
+        const version = stateVersion + 1;
+        stateVersion = version;
+        const payload = await buildSafeStatePayload(version);
+        socket.send(
+          JSON.stringify({
+            type: 'state',
+            ts: Date.now(),
+            payload
+          })
+        );
+        wsFramesSent += 1;
+      })();
     });
   });
 

@@ -108,6 +108,73 @@ describe('route contract stability', () => {
 
 
 
+
+  it('/api/bot/state uses full universe symbols list and refresh payload keeps v2+legacy fields', async () => {
+    await app.close();
+    app = buildIsolatedServer({
+      marketClient: new FakeMarketClient(
+        [
+          { symbol: 'BTCUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 },
+          { symbol: 'ETHUSDT', qtyStep: 0.001, minOrderQty: 0.001, maxOrderQty: 100 }
+        ],
+        new Map([
+          [
+            'BTCUSDT',
+            {
+              symbol: 'BTCUSDT',
+              turnover24h: 20_000_000,
+              highPrice24h: 102,
+              lowPrice24h: 100,
+              markPrice: 101,
+              openInterestValue: 100
+            }
+          ],
+          [
+            'ETHUSDT',
+            {
+              symbol: 'ETHUSDT',
+              turnover24h: 15_000_000,
+              highPrice24h: 202,
+              lowPrice24h: 190,
+              markPrice: 200,
+              openInterestValue: 300
+            }
+          ]
+        ])
+      ),
+      tickerStream: new FakeTickerStream()
+    });
+
+    const createUniverse = await app.inject({ method: 'POST', url: '/api/universe/create', payload: { minVolPct: 0, minTurnover: 1 } });
+    expect(createUniverse.statusCode).toBe(200);
+
+    const stateResponse = await app.inject({ method: 'GET', url: '/api/bot/state' });
+    expect(stateResponse.statusCode).toBe(200);
+    const stateBody = stateResponse.json() as { universe: { symbolsCount: number }; symbols: Array<{ symbol: string }> };
+
+    expect(stateBody.universe.symbolsCount).toBe(2);
+    expect(stateBody.symbols).toHaveLength(2);
+    expect(stateBody.symbols.map((row) => row.symbol).sort()).toEqual(['BTCUSDT', 'ETHUSDT']);
+
+    const refreshResponse = await app.inject({ method: 'POST', url: '/api/bot/refresh' });
+    expect(refreshResponse.statusCode).toBe(200);
+    const refreshBody = refreshResponse.json() as {
+      symbols: Array<{ symbol: string }>;
+      config: Record<string, unknown>;
+      universe: { ready: boolean };
+      running: boolean;
+      queueDepth: number;
+      stateVersion?: number;
+    };
+
+    expect(refreshBody.symbols).toHaveLength(2);
+    expect(refreshBody.config).toBeTruthy();
+    expect(refreshBody.universe.ready).toBe(true);
+    expect(typeof refreshBody.running).toBe('boolean');
+    expect(typeof refreshBody.queueDepth).toBe('number');
+    expect(typeof refreshBody.stateVersion).toBe('number');
+  });
+
   it('/api/bot/state symbol rows include additive funding diagnostics fields', async () => {
     await app.close();
     app = buildIsolatedServer({
