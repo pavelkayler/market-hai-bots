@@ -13,15 +13,25 @@ import { resetStore } from "../state/store.js";
  * WS hub: frontend <-> backend.
  * Route: GET /ws (websocket upgrade)
  */
-export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUniverseRebuilt?: (symbols: string[]) => void }) {
+export function registerWsHub(
+  app: FastifyInstance,
+  store: Store,
+  opts?: { onUniverseRebuilt?: (symbols: string[]) => void; onReady?: (broadcastSnapshot: () => void) => void },
+) {
   const rest = new BybitRest({
     baseUrl: process.env.BYBIT_REST_BASE_URL ?? "https://api.bybit.com",
     timeoutMs: Number(process.env.BYBIT_REST_TIMEOUT_MS ?? 8000),
   });
 
   const clients = new Set<WebSocket>();
+  const syncTickerUniverse = () => {
+    if (!opts?.onUniverseRebuilt) return;
+    const desired = store.botRunState === "RUNNING" ? store.universe.symbols : [];
+    opts.onUniverseRebuilt(desired);
+  };
 
   const broadcastSnapshot = () => {
+    app.log.debug({ clients: clients.size }, "[ws] broadcast snapshot");
     const snap: ServerMessage = { type: "SNAPSHOT", snapshot: store.snapshot() };
     const raw = JSON.stringify(snap);
     for (const c of clients) {
@@ -33,9 +43,12 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
     }
   };
 
+  opts?.onReady?.(broadcastSnapshot);
+
   app.get("/ws", { websocket: true }, (conn: any, _req: any) => {
     const socket = (conn?.socket ?? conn) as WebSocket;
     clients.add(socket);
+    app.log.info({ clients: clients.size }, "[ws] client connected");
 
     // On connect: push snapshot
     try {
@@ -47,15 +60,18 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
 
     socket.on("close", () => {
       clients.delete(socket);
+      app.log.info({ clients: clients.size }, "[ws] client disconnected");
     });
 
     socket.on("error", () => {
       clients.delete(socket);
+      app.log.warn({ clients: clients.size }, "[ws] client socket error");
     });
 
     socket.on("message", async (raw) => {
       try {
         const parsed = JSON.parse(raw.toString()) as ClientMessage;
+        app.log.info({ type: (parsed as any).type }, "[ws] client message");
 
         if (parsed.type === "PING") {
           const pong: ServerMessage = { type: "PONG", serverTimeMs: Date.now(), clientTimeMs: parsed.clientTimeMs };
@@ -90,11 +106,13 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
         if (parsed.type === "REBUILD_UNIVERSE") {
           try {
             const res = await buildUniverse({ rest, config: store.universeConfig });
+            app.log.info({ selected: res.selectedSymbols.length, eligible: res.totalEligibleSymbols }, "[universe] rebuilt");
             store.universe.totalSymbols = res.totalEligibleSymbols;
             store.universe.selectedSymbols = res.selectedSymbols.length;
+            store.universe.symbols = res.selectedSymbols;
             store.symbols = res.symbolMetrics;
 
-            if (opts?.onUniverseRebuilt) opts.onUniverseRebuilt(res.selectedSymbols);
+            syncTickerUniverse();
 
             const ack: ServerMessage = { type: "ACK", ok: true, requestType: parsed.type };
             socket.send(JSON.stringify(ack));
@@ -111,8 +129,10 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
           const name = nameRaw.length > 0 ? nameRaw : defaultUniverseName(store.universeConfig);
 
           const res = await buildUniverse({ rest, config: store.universeConfig });
+          app.log.info({ selected: res.selectedSymbols.length, eligible: res.totalEligibleSymbols }, "[universe] rebuilt for preset");
           store.universe.totalSymbols = res.totalEligibleSymbols;
           store.universe.selectedSymbols = res.selectedSymbols.length;
+          store.universe.symbols = res.selectedSymbols;
           store.symbols = res.symbolMetrics;
           store.currentUniverseName = name;
 
@@ -127,7 +147,7 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
           if (i >= 0) store.savedUniverses[i] = preset;
           else store.savedUniverses.push(preset);
 
-          if (opts?.onUniverseRebuilt) opts.onUniverseRebuilt(res.selectedSymbols);
+          syncTickerUniverse();
 
           const ack: ServerMessage = { type: "ACK", ok: true, requestType: parsed.type };
           socket.send(JSON.stringify(ack));
@@ -146,6 +166,8 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
             currentUniverseName: store.currentUniverseName,
           });
           store.universe.selectedSymbols = store.symbols.length;
+          store.universe.symbols = store.symbols.map((s) => s.symbol);
+          syncTickerUniverse();
 
           const ack: ServerMessage = { type: "ACK", ok: true, requestType: parsed.type };
           socket.send(JSON.stringify(ack));
@@ -168,6 +190,7 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
               }
             }
           }
+          syncTickerUniverse();
 
           const ack: ServerMessage = { type: "ACK", ok: true, requestType: parsed.type };
           socket.send(JSON.stringify(ack));
@@ -184,6 +207,7 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
             tradeHistory: store.tradeHistory,
           });
           store.botRunState = "KILLED";
+          syncTickerUniverse();
 
           const ack: ServerMessage = { type: "ACK", ok: true, requestType: parsed.type };
           socket.send(JSON.stringify(ack));
@@ -193,6 +217,7 @@ export function registerWsHub(app: FastifyInstance, store: Store, opts?: { onUni
 
         if (parsed.type === "RESET_ALL") {
           resetStore(store);
+          syncTickerUniverse();
           const ack: ServerMessage = { type: "ACK", ok: true, requestType: parsed.type };
           socket.send(JSON.stringify(ack));
           broadcastSnapshot();

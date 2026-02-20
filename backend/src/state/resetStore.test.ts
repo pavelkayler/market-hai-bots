@@ -22,8 +22,8 @@ describe("resetStore (Step 16)", () => {
     expect(s.openPositions.length).toBe(0);
     expect(s.tradeHistory.length).toBe(0);
     expect(s.savedUniverses.length).toBe(0);
-    expect(s.currentUniverseName).toBeUndefined();
-    expect(s.universeConfig.minVolatilityPct).toBe(1);
+    expect(s.currentUniverseName).toBeNull();
+    expect(s.universeConfig.minVolatilityPct).toBe(3);
     expect(s.botConfig.leverage).toBe(10);
   });
 });

@@ -72,6 +72,9 @@ export class TriggerEngine {
       st.lastSignalAtMs = undefined;
     }
     // reflect to symbol for UI
+    if ((symbol.triggerCountToday ?? 0) > st.triggerCountToday) {
+      st.triggerCountToday = symbol.triggerCountToday;
+    }
     symbol.triggerCountToday = st.triggerCountToday;
     symbol.lastSignalAtMs = st.lastSignalAtMs ?? null;
 

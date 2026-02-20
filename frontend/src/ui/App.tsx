@@ -55,7 +55,7 @@ function useWsSnapshot() {
     ws.send(JSON.stringify(msg));
   };
 
-  const doRefresh = () => wsSend({ type: "PING" });
+  const doRefresh = () => wsSend({ type: "REFRESH_SNAPSHOT" });
 
   useEffect(() => {
     const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
@@ -319,7 +319,7 @@ function DashboardPage({
   const sendRemoveUniverseSymbol = (symbol: string) => wsSend({ type: "REMOVE_UNIVERSE_SYMBOL", symbol });
   const sendRefreshSignals = () => wsSend({ type: "REFRESH_SIGNALS" } as any);
 
-  const universeRows = useMemo(() => sortBy(snapshot?.universeRows ?? [], universeSort), [snapshot?.universeRows, universeSort]);
+  const universeRows = useMemo(() => sortBy(snapshot?.symbols ?? [], universeSort), [snapshot?.symbols, universeSort]);
   const resultRows = useMemo(() => sortBy(snapshot?.tradeResults ?? [], resultsSort), [snapshot?.tradeResults, resultsSort]);
   const historyRows = useMemo(() => sortBy(snapshot?.tradeHistory ?? [], historySort), [snapshot?.tradeHistory, historySort]);
   const fundingRows = useMemo(() => sortBy(snapshot?.fundingStats?.buckets ?? [], fundingSort), [snapshot?.fundingStats?.buckets, fundingSort]);
@@ -404,6 +404,9 @@ function DashboardPage({
               <div className="mt-3 d-flex gap-2 flex-wrap">
                 <Button variant="outline-primary" onClick={saveUniverseConfig}>
                   Save Filters
+                </Button>
+                <Button variant="outline-secondary" onClick={() => wsSend({ type: "REBUILD_UNIVERSE" })}>
+                  Rebuild Universe
                 </Button>
                 <Button variant="primary" onClick={() => sendSaveUniversePreset(universeName)}>
                   Save Universe

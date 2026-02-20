@@ -22,6 +22,13 @@ export interface UniverseConfig {
   minTurnoverUSDT: number;    // e.g. 10_000_000
 }
 
+export interface UniversePreset {
+  name: string;
+  createdAtMs: number;
+  config: UniverseConfig;
+  symbols: string[];
+}
+
 /** Strategy configuration */
 export interface BotConfig {
   timeframe: Timeframe;
@@ -113,6 +120,11 @@ export interface TradeResultRow {
 export interface BotSnapshot {
   serverTimeMs: number;
 
+  wsStatus?: {
+    backendToBybit: "CONNECTED" | "DISCONNECTED";
+    lastHeartbeatMs: number | null;
+  };
+
   connections: {
     frontendToBackend: "CONNECTED" | "DISCONNECTED"; // from FE perspective
     backendToBybit: "CONNECTED" | "DISCONNECTED";    // actual Bybit WS
@@ -131,6 +143,7 @@ export interface BotSnapshot {
   };
 
   symbols: SymbolMetrics[];
+  signalRows: SignalRow[];
 
   openOrders: PaperOrder[];
   openPositions: PaperPosition[];
@@ -138,8 +151,12 @@ export interface BotSnapshot {
 tradeHistory: PaperPosition[];
 // Aggregated per-symbol results
 tradeResults: TradeResultRow[];
+tradeResultsBySymbol?: TradeResultRow[];
+fundingStats?: { buckets: FundingBucketRow[] };
+feesSummary?: { entryFeesUSDT: number; exitFeesUSDT: number; totalFeesUSDT: number };
+signalsUpdatedAtMs?: number;
 savedUniverses: UniversePreset[];
-currentUniverseName?: string;
+currentUniverseName: string | null;
 }
 
 /** WS client->server messages */
@@ -148,8 +165,12 @@ export type ClientMessage =
   | { type: "REFRESH_SNAPSHOT" }
   | { type: "REFRESH_SIGNALS" }
   | { type: "SET_BOT_RUN_STATE"; state: BotRunState }
+  | { type: "KILL_ALL" }
+  | { type: "RESET_ALL" }
   | { type: "SET_UNIVERSE_CONFIG"; config: UniverseConfig }
-  | { type: "REBUILD_UNIVERSE" };
+  | { type: "REBUILD_UNIVERSE" }
+  | { type: "SAVE_UNIVERSE_PRESET"; name?: string }
+  | { type: "REMOVE_UNIVERSE_SYMBOL"; symbol: string };
 
 /** WS server->client messages */
 export type ServerMessage =
@@ -181,4 +202,12 @@ export type SignalRow = {
   priceChangeTodayPct: number | null;
   oiValueChangeTodayPct: number | null;
   lastUpdateAgeSec: number | null;
+};
+
+export type WsClientMessage = ClientMessage;
+export type WsServerMessage = ServerMessage;
+export type UniverseRow = SymbolMetrics;
+export type SortState<T> = {
+  key: keyof T;
+  dir: "asc" | "desc";
 };
