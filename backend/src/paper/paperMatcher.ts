@@ -1,6 +1,6 @@
 import type { BotConfig, PaperOrder, PaperPosition, SymbolMetrics } from "../domain/contracts.js";
 import { uid } from "../utils/id.js";
-import { calcQtyFromMargin, pnlFromPrices, roiPctFromPnl } from "./paperMath.js";
+import { applyFeesToPnl, calcQtyFromMargin, feeUSDT, pnlFromPrices, roiPctFromPnl } from "./paperMath.js";
 
 /**
  * Step 7: paper matching + TP/SL exits.
@@ -36,10 +36,10 @@ export class PaperMatcher {
       const qty = calcQtyFromMargin({ marginUSDT: botConfig.marginUSDT, leverage: botConfig.leverage, entryPrice: entry });
 
       const pos: PaperPosition = {
-        entryFeeUSDT: feeUSDT({ role: "TAKER", price: fillPrice, qty }),
-        fundingRateAtEntry: sym.fundingRate,
-        fundingAbsAtEntry: Math.abs(sym.fundingRate),
-        nextFundingTimeMsAtEntry: sym.nextFundingTimeMs,
+        entryFeeUSDT: feeUSDT({ role: "TAKER", price: entry, qty }),
+        fundingRateAtEntry: symbol.fundingRate,
+        fundingAbsAtEntry: Math.abs(symbol.fundingRate),
+        nextFundingTimeMsAtEntry: symbol.nextFundingTimeMs,
         id: uid("pos_"),
         symbol: symbol.symbol,
         side,
@@ -82,30 +82,30 @@ export class PaperMatcher {
 
       if (!hitTp && !hitSl) {
         // keep live pnl in snapshot
-        const exitFeeUSDT = feeUSDT({ role: "MAKER", price: exitPrice, qty: p.qty });
-    p.exitFeeUSDT = exitFeeUSDT;
-    const pnlAfterFees = applyFeesToPnl({ pnlUSDT: pnl, entryFeeUSDT: p.entryFeeUSDT ?? 0, exitFeeUSDT });
-    p.pnlUSDT = pnlAfterFees;
+        const exitFeeUSDT = feeUSDT({ role: "MAKER", price: symbol.markPrice, qty: p.qty });
+        p.exitFeeUSDT = exitFeeUSDT;
+        const pnlAfterFees = applyFeesToPnl({ pnlUSDT: pnl, entryFeeUSDT: p.entryFeeUSDT ?? 0, exitFeeUSDT });
+        p.pnlUSDT = pnlAfterFees;
         p.pnlRoiPct = roiPct;
         continue;
       }
 
-p.status = "CLOSED";
+      p.status = "CLOSED";
 
       p.exitPrice = symbol.markPrice;
       p.closedAtMs = nowMs;
-      const exitFeeUSDT = feeUSDT({ role: "MAKER", price: exitPrice, qty: p.qty });
-    p.exitFeeUSDT = exitFeeUSDT;
-    const pnlAfterFees = applyFeesToPnl({ pnlUSDT: pnl, entryFeeUSDT: p.entryFeeUSDT ?? 0, exitFeeUSDT });
-    p.pnlUSDT = pnlAfterFees;
-p.pnlRoiPct = roiPct;
+      const exitFeeUSDT = feeUSDT({ role: "MAKER", price: symbol.markPrice, qty: p.qty });
+      p.exitFeeUSDT = exitFeeUSDT;
+      const pnlAfterFees = applyFeesToPnl({ pnlUSDT: pnl, entryFeeUSDT: p.entryFeeUSDT ?? 0, exitFeeUSDT });
+      p.pnlUSDT = pnlAfterFees;
+      p.pnlRoiPct = roiPct;
 
-if (!p.isRecorded) {
-  p.isRecorded = true;
-  tradeHistory.push({ ...p });
-}
+      if (!p.isRecorded) {
+        p.isRecorded = true;
+        tradeHistory.push({ ...p });
+      }
 
-symbol.status = "POSITION_CLOSED";
+      symbol.status = "POSITION_CLOSED";
 
       symbol.reason = hitTp ? `TP hit (${tp}% ROI)` : `SL hit (${botConfig.slRoiPct}% ROI)`;
     }

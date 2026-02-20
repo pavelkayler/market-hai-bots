@@ -103,8 +103,22 @@ process.on("SIGTERM", shutdown);
     botRunState: store.botRunState,
   }));
 
+  let broadcastSnapshot: (() => void) | null = null;
   // WS hub
-  registerWsHub(app, store, { onUniverseRebuilt: (syms) => { candleMgr.resetSymbols(syms); triggerEngine.resetSymbols(syms); } });
+  registerWsHub(app, store, {
+    onUniverseRebuilt: (syms) => {
+      candleMgr.resetSymbols(syms);
+      triggerEngine.resetSymbols(syms);
+      tickerStream.setSymbols(syms);
+    },
+    onReady: (b) => {
+      broadcastSnapshot = b;
+    },
+  });
+
+  setInterval(() => {
+    broadcastSnapshot?.();
+  }, 1000);
 
   // CANDLE/DELTA LOOP (Step 5): backend computes deltas each 1s based on selected timeframe
   setInterval(() => {

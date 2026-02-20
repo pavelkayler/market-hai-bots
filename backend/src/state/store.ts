@@ -35,7 +35,7 @@ export class Store {
   tradeHistory: PaperPosition[] = [];
 
   savedUniverses: UniversePreset[] = [];
-  currentUniverseName?: string;
+  currentUniverseName: string | null = null;
 
   // Signals table cache (recompute max every 10s)
   private signalRowsCache: any[] = [];
@@ -152,8 +152,14 @@ export class Store {
 
     const signals = this.computeSignalRows(nowMs);
 
+    const tradeResults = computeTradeResults(this.tradeHistory);
+
     return {
       serverTimeMs: nowMs,
+      wsStatus: {
+        backendToBybit: this.backendToBybit,
+        lastHeartbeatMs: nowMs,
+      },
       connections: {
         frontendToBackend: "CONNECTED",
         backendToBybit: this.backendToBybit,
@@ -168,11 +174,14 @@ export class Store {
       openOrders: this.openOrders.filter((o) => o.status === "OPEN"),
       openPositions: this.openPositions.filter((p) => p.status === "OPEN"),
       tradeHistory: this.tradeHistory,
-      tradeResults: computeTradeResults(this.tradeHistory),
+      tradeResults,
+      tradeResultsBySymbol: tradeResults,
       fundingStats: { buckets: computeFundingBuckets(this.tradeHistory) },
       feesSummary: { entryFeesUSDT, exitFeesUSDT, totalFeesUSDT },
       signalRows: signals.rows as any,
       signalsUpdatedAtMs: signals.updatedAtMs,
+      savedUniverses: this.savedUniverses,
+      currentUniverseName: this.currentUniverseName,
     };
   }
 }
@@ -195,7 +204,7 @@ export function resetStore(s: Store): void {
   s.tradeHistory = [];
 
   s.savedUniverses = [];
-  s.currentUniverseName = undefined;
+  s.currentUniverseName = null;
 
   s.forceSignalsRefresh();
 }

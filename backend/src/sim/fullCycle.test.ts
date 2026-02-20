@@ -71,16 +71,16 @@ describe("Step 10: full cycle (paper)", () => {
     expect(sym.status).toBe("AWAITING_CONFIRMATION");
 
     // second trigger must be in next 1m bucket (gate: 1 trigger per candle)
-    sym.markPrice = 106;
-    sym.oiValue = 1250;
-    sim.step(store, t0 + 122_000); // next minute => should place order
+    sym.markPrice = 110;
+    sym.oiValue = 1400;
+    sim.step(store, t0 + 131_000); // next bucket => should place order
     expect(sym.status).toBe("ORDER_PLACED");
     expect(store.openOrders.length).toBe(1);
 
     const order = store.openOrders[0];
     // entry price should be 1% below mark (LONG)
     // order placed at markPrice*(1-0.01)
-    expect(order.entryPrice).toBeCloseTo(106 * 0.99, 8);
+    expect(order.entryPrice).toBeCloseTo(110 * 0.99, 8);
 
     // Fill: set mark below entry
     sym.markPrice = order.entryPrice - 0.01;
